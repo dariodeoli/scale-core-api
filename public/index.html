@@ -262,7 +262,7 @@ h1 { font-style: italic; letter-spacing: -.5px; }
     </div>
 
     <p class="foot">
-        <b>Cómo funciona:</b> cada carga de la página suma un contador del día vía <b>Abacus</b> (servicio gratuito, sin base de datos propia ni mantenimiento).
+        <b>Cómo funciona:</b> cada carga de la página registra un evento mínimo en la base de datos propia de Scale.
         Se registran: cargas de página, visitas desde móvil, clicks en botones de WhatsApp (con interés por plan Silver/Gold/Diamond) y envíos del formulario.
         Los datos empiezan a acumularse desde la publicación del sitio — los días sin tráfico registrado aparecen en cero.
         Este panel es de solo lectura: abrirlo no suma visitas.
@@ -270,13 +270,10 @@ h1 { font-style: italic; letter-spacing: -.5px; }
 </div>
 
 <script>
-var NS = 'scaleparaguay_com';
-var API = 'https://abacus.jasoncameron.dev/get/' + NS;
-var AUTH = '/api';
+var API = '/api';
 var DAYS = 14;
 var mode = 'month';
 var selectedMonth = fmtMonth(new Date());
-var CACHE_KEY = 'panel-cache-v3';
 
 function fmtDate(d) { return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
 function fmtMonth(d) { return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0'); }
@@ -285,16 +282,6 @@ function niceDate(iso) {
     var d = new Date(iso + 'T12:00:00');
     var dias = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
     return dias[d.getDay()] + ' ' + labelDate(iso);
-}
-
-function getCount(key) {
-    var ctl = ('AbortController' in window) ? new AbortController() : null;
-    var t = ctl ? setTimeout(function(){ ctl.abort(); }, 8000) : null;
-    return fetch(API + '/' + key, ctl ? { signal: ctl.signal } : {}).then(function(r) {
-        if (t) clearTimeout(t);
-        if (!r.ok) return 0;
-        return r.json().then(function(j) { return (j && (j.value ?? j.count ?? (j.data && j.data.count))) || 0; });
-    }).catch(function() { if (t) clearTimeout(t); return 0; });
 }
 
 async function checkAuth() {
@@ -343,41 +330,31 @@ function loadAll() {
     var status = document.getElementById('status');
     status.className = 'status loading';
     status.textContent = 'Cargando datos…';
-
-    // Caché: pinta al instante lo último conocido (aunque sea viejo) y refresca por detrás
-    try {
-        var c = JSON.parse(sessionStorage.getItem(CACHE_KEY) || 'null');
-        if (c && c.tot) {
-            renderTotals(c.tot);
-            renderDaily(c.dates, c.v, c.w, c.tot);
-            status.textContent = 'Actualizando…';
-        }
-    } catch(e) {}
-
     var dates = getDates();
-    var now = new Date();
-    var mesAct = mode === 'month' ? selectedMonth : fmtMonth(now);
+    var mesAct = mode === 'month' ? selectedMonth : fmtMonth(new Date());
     var mesPrev = fmtMonth(new Date(Number(mesAct.slice(0,4)), Number(mesAct.slice(5,7)) - 2, 15));
-    var hoy = dates[dates.length-1], ayer = dates[dates.length-2] || hoy;
-
-    // TODO EN PARALELO — sin colas. Los totales pintan apenas llegan.
-    var tKeys = ['v-' + hoy, 'v-' + ayer, 'w-' + hoy, 'vm-' + mesAct, 'vm-' + mesPrev, 'wm-' + mesAct, 'fm-' + mesAct, 'mo-' + mesAct, 'vt', 'ps-' + mesAct, 'pg-' + mesAct, 'pd-' + mesAct];
-    var pTot = Promise.all(tKeys.map(getCount));
-    var pV = Promise.all(dates.map(function(dt) { return getCount('v-' + dt); }));
-    var pW = Promise.all(dates.map(function(dt) { return getCount('w-' + dt); }));
-
-    var tot = null;
-    pTot.then(function(t) {
-        tot = { vHoy: t[0], vAyer: t[1], wHoy: t[2], vmAct: t[3], vmPrev: t[4], wmAct: t[5], fmAct: t[6], moAct: t[7], vt: t[8], ps: t[9], pg: t[10], pd: t[11] };
-        renderTotals(tot);
-        if (status.className.indexOf('err') === -1) status.textContent = 'Cargando gráfico…';
-    });
-
-    Promise.all([pTot, pV, pW]).then(function(res) {
-        var v = res[1], w = res[2];
-        if (tot && tot.vHoy > v[v.length-1]) v[v.length-1] = tot.vHoy;
-        renderDaily(dates, v, w, tot);
-        try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), dates: dates, v: v, w: w, tot: tot })); } catch(e) {}
+    var rangeStart = fmtDate(new Date(new Date().getFullYear(), new Date().getMonth() - 11, 1));
+    fetch(API + '/metrics?from=' + rangeStart + '&to=' + fmtDate(new Date()), {credentials:'include'}).then(function(r) {
+        if (!r.ok) throw new Error('No se pudieron cargar las métricas');
+        return r.json();
+    }).then(function(data) {
+        var counts = {};
+        (data.events || []).forEach(function(row) { counts[row.name + '|' + row.event_date] = Number(row.count) || 0; });
+        function value(name, date) { return counts[name + '|' + date] || 0; }
+        function period(name, list) { return list.reduce(function(total, date) { return total + value(name, date); }, 0); }
+        function all(name) { return Object.keys(counts).filter(function(key) { return key.indexOf(name + '|') === 0; }).reduce(function(total, key) { return total + counts[key]; }, 0); }
+        var today = fmtDate(new Date()), yesterday = fmtDate(new Date(Date.now()-86400000));
+        var activeMonthDates = monthDates(mesAct), previousMonthDates = monthDates(mesPrev);
+        var tot = {
+            vHoy:value('page_view',today), vAyer:value('page_view',yesterday), wHoy:value('whatsapp_click',today),
+            vmAct:period('page_view',activeMonthDates), vmPrev:period('page_view',previousMonthDates),
+            wmAct:period('whatsapp_click',activeMonthDates), fmAct:period('form_submit',activeMonthDates),
+            moAct:period('mobile_view',activeMonthDates), vt:all('page_view'),
+            ps:period('plan_silver',activeMonthDates), pg:period('plan_gold',activeMonthDates), pd:period('plan_diamond',activeMonthDates)
+        };
+        var v = dates.map(function(date) { return value('page_view',date); });
+        var w = dates.map(function(date) { return value('whatsapp_click',date); });
+        renderTotals(tot); renderDaily(dates, v, w, tot);
         status.textContent = 'Actualizado ' + new Date().toLocaleTimeString('es-PY', {hour:'2-digit',minute:'2-digit'});
         status.className = 'status';
     }).catch(function() {

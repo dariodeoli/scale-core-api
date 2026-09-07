@@ -13,6 +13,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const bootstrapEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const bootstrapPassword = process.env.ADMIN_PASSWORD || '';
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
+const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com']);
 let databaseReady = false;
 
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
@@ -34,8 +35,20 @@ async function session(req) {
   return r.rows[0] || null;
 }
 function security(res, extra={}) { res.setHeader('X-Content-Type-Options','nosniff'); res.setHeader('X-Frame-Options','DENY'); res.setHeader('Referrer-Policy','no-referrer'); res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline' data:; img-src 'self' data:; script-src 'self' 'unsafe-inline' data:; connect-src 'self' https://scaleparaguay.com https://www.scaleparaguay.com"); Object.entries(extra).forEach(([k,v])=>res.setHeader(k,v)); }
+function cors(req, res) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  if (!allowedOrigins.has(origin)) return false;
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Vary', 'Origin');
+  return true;
+}
 const server = http.createServer(async (req,res) => {
-  security(res, { 'Access-Control-Allow-Origin': allowedOrigin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type' });
+  security(res);
+  if (!cors(req, res)) return send(res,403,{error:'Origen no permitido'});
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -49,8 +62,20 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:u}) : send(res,401,{error:'No autenticado'}); }
-    if (url.pathname === '/api/events' && req.method === 'POST') { const {name,metadata={}}=await body(req); if(!/^[a-z0-9:_-]{1,80}$/i.test(name||'')) return send(res,400,{error:'Evento inválido'}); await db.query('insert into events(name,metadata) values($1,$2)',[name,metadata]); return send(res,202,{ok:true}); }
-    if (url.pathname === '/api/metrics' && req.method === 'GET') { if(!(await session(req))) return send(res,401,{error:'No autenticado'}); const r=await db.query("select name,event_date,count(*)::int as count from events group by name,event_date order by event_date desc"); return send(res,200,{events:r.rows}); }
+    if (url.pathname === '/api/events' && req.method === 'POST') {
+      const {name,metadata={}}=await body(req);
+      if(!/^[a-z0-9:_-]{1,80}$/i.test(name||'') || !metadata || Array.isArray(metadata) || typeof metadata !== 'object') return send(res,400,{error:'Evento inválido'});
+      await db.query('insert into events(name,metadata) values($1,$2)',[name,metadata]);
+      return send(res,202,{ok:true});
+    }
+    if (url.pathname === '/api/metrics' && req.method === 'GET') {
+      if(!(await session(req))) return send(res,401,{error:'No autenticado'});
+      const from=url.searchParams.get('from') || new Date(Date.now()-366*86400000).toISOString().slice(0,10);
+      const to=url.searchParams.get('to') || new Date().toISOString().slice(0,10);
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return send(res,400,{error:'Rango inválido'});
+      const r=await db.query("select name,event_date::text as event_date,count(*)::int as count from events where event_date between $1 and $2 group by name,event_date order by event_date desc,name",[from,to]);
+      return send(res,200,{events:r.rows});
+    }
     if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); return res.end(await fs.readFile(path.join(root,'public/index.html'))); }
     send(res,404,{error:'No encontrado'});
   } catch (e) { console.error(e); send(res,500,{error:'Error interno'}); }
