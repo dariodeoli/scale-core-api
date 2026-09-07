@@ -13,7 +13,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const bootstrapEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const bootstrapPassword = process.env.ADMIN_PASSWORD || '';
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
-const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com']);
+const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com']);
 let databaseReady = false;
 
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
@@ -34,6 +34,7 @@ async function session(req) {
   const r = await db.query('select u.id,u.email,u.role from sessions s join users u on u.id=s.user_id where s.id=$1 and s.expires_at>now()', [token]);
   return r.rows[0] || null;
 }
+function can(user, roles) { return Boolean(user && roles.includes(user.role)); }
 function security(res, extra={}) { res.setHeader('X-Content-Type-Options','nosniff'); res.setHeader('X-Frame-Options','DENY'); res.setHeader('Referrer-Policy','no-referrer'); res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline' data:; img-src 'self' data:; script-src 'self' 'unsafe-inline' data:; connect-src 'self' https://scaleparaguay.com https://www.scaleparaguay.com"); Object.entries(extra).forEach(([k,v])=>res.setHeader(k,v)); }
 function cors(req, res) {
   const origin = req.headers.origin;
@@ -75,6 +76,43 @@ const server = http.createServer(async (req,res) => {
       if(!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return send(res,400,{error:'Rango inválido'});
       const r=await db.query("select name,event_date::text as event_date,count(*)::int as count from events where event_date between $1 and $2 group by name,event_date order by event_date desc,name",[from,to]);
       return send(res,200,{events:r.rows});
+    }
+    if (url.pathname === '/api/agency/clients' && req.method === 'GET') {
+      if (!(await session(req))) return send(res,401,{error:'No autenticado'});
+      const r = await db.query('select * from agency_clients order by active desc,name');
+      return send(res,200,{clients:r.rows});
+    }
+    if (url.pathname === '/api/agency/clients' && req.method === 'POST') {
+      const user = await session(req); if (!can(user,['owner','admin','management','sales'])) return send(res,403,{error:'Sin permiso'});
+      const {name='',email=null,phone=null,notes=null}=await body(req);
+      if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 120) return send(res,400,{error:'Nombre inválido'});
+      const r=await db.query('insert into agency_clients(name,email,phone,notes) values($1,$2,$3,$4) returning *',[name.trim(),email||null,phone||null,notes||null]);
+      return send(res,201,{client:r.rows[0]});
+    }
+    if (url.pathname === '/api/agency/projects' && req.method === 'GET') {
+      if (!(await session(req))) return send(res,401,{error:'No autenticado'});
+      const r=await db.query("select p.*,c.name as client_name,count(o.id)::int as work_order_count from agency_projects p join agency_clients c on c.id=p.client_id left join agency_work_orders o on o.project_id=p.id group by p.id,c.name order by p.created_at desc");
+      return send(res,200,{projects:r.rows});
+    }
+    if (url.pathname === '/api/agency/projects' && req.method === 'POST') {
+      const user = await session(req); if (!can(user,['owner','admin','management','sales','production'])) return send(res,403,{error:'Sin permiso'});
+      const {name='',clientId,driveUrl=null}=await body(req);
+      if (typeof name !== 'string' || name.trim().length < 2 || !Number.isInteger(Number(clientId))) return send(res,400,{error:'Proyecto inválido'});
+      const r=await db.query('insert into agency_projects(name,client_id,drive_url) values($1,$2,$3) returning *',[name.trim(),Number(clientId),driveUrl||null]);
+      return send(res,201,{project:r.rows[0]});
+    }
+    if (url.pathname === '/api/agency/work-orders' && req.method === 'GET') {
+      if (!(await session(req))) return send(res,401,{error:'No autenticado'});
+      const r=await db.query('select o.*,p.name as project_name,c.name as client_name,u.email as assignee_email from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id left join users u on u.id=o.assigned_user_id order by o.updated_at desc');
+      return send(res,200,{workOrders:r.rows});
+    }
+    if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {
+      const user = await session(req); if (!can(user,['owner','admin','management','production','editor'])) return send(res,403,{error:'Sin permiso'});
+      const {title='',projectId,status='to_record',description=null,driveUrl=null}=await body(req);
+      const allowedStatuses=['blocked','to_record','recorded','editing','review','approved','published'];
+      if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(projectId)) || !allowedStatuses.includes(status)) return send(res,400,{error:'Orden inválida'});
+      const r=await db.query('insert into agency_work_orders(title,project_id,status,description,drive_url) values($1,$2,$3,$4,$5) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null]);
+      return send(res,201,{workOrder:r.rows[0]});
     }
     if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); return res.end(await fs.readFile(path.join(root,'public/index.html'))); }
     send(res,404,{error:'No encontrado'});
