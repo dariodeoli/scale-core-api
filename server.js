@@ -12,6 +12,8 @@ const db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.e
 const root = path.dirname(fileURLToPath(import.meta.url));
 const bootstrapEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const bootstrapPassword = process.env.ADMIN_PASSWORD || '';
+const scaleOsOwnerEmail = (process.env.SCALE_OS_OWNER_EMAIL || '').trim().toLowerCase();
+const scaleOsOwnerPassword = process.env.SCALE_OS_OWNER_PASSWORD || '';
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
 const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com']);
 let databaseReady = false;
@@ -23,11 +25,14 @@ const body = async (req) => { let s=''; for await (const c of req) s += c; retur
 const id = () => crypto.randomBytes(32).toString('hex');
 async function init() {
   await db.query(await fs.readFile(path.join(root, 'schema.sql'), 'utf8'));
-  if (bootstrapEmail && bootstrapPassword) {
-    const hash = await bcrypt.hash(bootstrapPassword, 12);
-    const user = await db.query('insert into users(email,password_hash) values($1,$2) on conflict(email) do update set password_hash=excluded.password_hash returning id', [bootstrapEmail, hash]);
+  async function provisionOwner(email, password) {
+    if (!email || !password) return;
+    const hash = await bcrypt.hash(password, 12);
+    const user = await db.query('insert into users(email,password_hash) values($1,$2) on conflict(email) do update set password_hash=excluded.password_hash returning id', [email, hash]);
     await db.query("insert into organization_members(organization_id,user_id,role) select id,$1,'owner' from organizations where slug='scale' on conflict(organization_id,user_id) do nothing", [user.rows[0].id]);
   }
+  await provisionOwner(bootstrapEmail, bootstrapPassword);
+  await provisionOwner(scaleOsOwnerEmail, scaleOsOwnerPassword);
 }
 async function session(req) {
   const token = parseCookies(req).scale_session;
