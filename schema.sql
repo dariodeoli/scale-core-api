@@ -107,3 +107,35 @@ create index if not exists agency_projects_organization_idx on agency_projects(o
 alter table agency_work_orders add column if not exists organization_id bigint references organizations(id) on delete cascade;
 update agency_work_orders set organization_id=(select organization_id from agency_projects p where p.id=agency_work_orders.project_id) where organization_id is null;
 create index if not exists agency_work_orders_organization_idx on agency_work_orders(organization_id,status,due_date);
+
+create table if not exists agency_budgets (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  client_id bigint not null references agency_clients(id) on delete restrict,
+  number text not null,
+  title text not null,
+  currency text not null default 'PYG' check (currency in ('PYG','USD')),
+  status text not null default 'draft' check (status in ('draft','sent','accepted','rejected','expired')),
+  valid_until date,
+  subtotal numeric(14,2) not null default 0,
+  tax_rate numeric(5,4) not null default .10,
+  total numeric(14,2) not null default 0,
+  notes text,
+  public_token text unique,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(organization_id,number)
+);
+create index if not exists agency_budgets_organization_status_idx on agency_budgets(organization_id,status,created_at desc);
+
+create table if not exists agency_budget_items (
+  id bigserial primary key,
+  budget_id bigint not null references agency_budgets(id) on delete cascade,
+  position integer not null,
+  description text not null,
+  quantity numeric(10,2) not null default 1 check (quantity > 0),
+  unit_price numeric(14,2) not null check (unit_price >= 0),
+  total numeric(14,2) not null check (total >= 0),
+  created_at timestamptz not null default now(),
+  unique(budget_id,position)
+);

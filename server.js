@@ -151,6 +151,32 @@ const server = http.createServer(async (req,res) => {
         return send(res,201,{member:{id:account.rows[0].id,email:normalizedEmail,...membership.rows[0]}});
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
     }
+    if (url.pathname === '/api/agency/budgets' && req.method === 'GET') {
+      const user = await session(req); if (!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
+      const r = await db.query("select b.*,c.name as client_name,count(i.id)::int as item_count from agency_budgets b join agency_clients c on c.id=b.client_id left join agency_budget_items i on i.budget_id=b.id where b.organization_id=$1 group by b.id,c.name order by b.created_at desc",[user.organization_id]);
+      return send(res,200,{budgets:r.rows});
+    }
+    if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {
+      const user = await session(req); if (!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
+      const {title='',clientId,currency='PYG',items=[],notes=null,validUntil=null} = await body(req);
+      if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(clientId)) || !['PYG','USD'].includes(currency) || !Array.isArray(items) || !items.length || items.length > 100) return send(res,400,{error:'Presupuesto inválido'});
+      const normalizedItems = items.map((item) => ({ description: typeof item?.description === 'string' ? item.description.trim() : '', quantity: Number(item?.quantity), unitPrice: Number(item?.unitPrice) }));
+      if (normalizedItems.some(item => item.description.length < 2 || !Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.unitPrice) || item.unitPrice < 0)) return send(res,400,{error:'Ítems de presupuesto inválidos'});
+      const client = await db.connect();
+      try {
+        await client.query('begin');
+        const belongs = await client.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]);
+        if (!belongs.rows[0]) { await client.query('rollback'); return send(res,404,{error:'Cliente no encontrado'}); }
+        const subtotal = normalizedItems.reduce((sum,item) => sum + item.quantity * item.unitPrice, 0);
+        const total = subtotal * 1.1;
+        const draft = await client.query('insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,notes,valid_until,public_token) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *',[user.organization_id,Number(clientId),'PENDIENTE',title.trim(),currency,subtotal,total,notes || null,validUntil || null,crypto.randomBytes(18).toString('base64url')]);
+        const number = `P-${new Date().getFullYear()}-${String(draft.rows[0].id).padStart(4,'0')}`;
+        const budget = await client.query('update agency_budgets set number=$1 where id=$2 returning *',[number,draft.rows[0].id]);
+        for (const [position,item] of normalizedItems.entries()) await client.query('insert into agency_budget_items(budget_id,position,description,quantity,unit_price,total) values($1,$2,$3,$4,$5,$6)',[budget.rows[0].id,position + 1,item.description,item.quantity,item.unitPrice,item.quantity * item.unitPrice]);
+        await client.query('commit');
+        return send(res,201,{budget:budget.rows[0]});
+      } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
+    }
     const orderMatch = url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)$/);
     if (orderMatch && req.method === 'PATCH') {
       const user = await session(req); if (!can(user,['owner','admin','management','production','editor'])) return send(res,403,{error:'Sin permiso'});
