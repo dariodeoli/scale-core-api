@@ -66,3 +66,44 @@ create table if not exists agency_work_orders (
   updated_at timestamptz not null default now()
 );
 create index if not exists agency_work_orders_status_idx on agency_work_orders(status, due_date);
+
+-- Multiempresa: cada agencia opera dentro de una organización aislada.
+create table if not exists organizations (
+  id bigserial primary key,
+  slug text unique not null,
+  name text not null,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+insert into organizations(slug,name) values('scale','Scale Strategy Group') on conflict(slug) do nothing;
+
+create table if not exists organization_members (
+  organization_id bigint not null references organizations(id) on delete cascade,
+  user_id bigint not null references users(id) on delete cascade,
+  role text not null check (role in ('owner','admin','management','finance','sales','production','editor','viewer')),
+  created_at timestamptz not null default now(),
+  primary key(organization_id,user_id)
+);
+insert into organization_members(organization_id,user_id,role)
+select o.id,u.id,case when u.role='admin' then 'owner' else u.role end
+from organizations o cross join users u where o.slug='scale'
+on conflict(organization_id,user_id) do nothing;
+
+alter table sessions add column if not exists organization_id bigint references organizations(id) on delete cascade;
+update sessions set organization_id=(select organization_id from organization_members m where m.user_id=sessions.user_id order by m.organization_id limit 1) where organization_id is null;
+
+alter table events add column if not exists organization_id bigint references organizations(id) on delete cascade;
+update events set organization_id=(select id from organizations where slug='scale') where organization_id is null;
+create index if not exists events_organization_date_idx on events(organization_id,event_date);
+
+alter table agency_clients add column if not exists organization_id bigint references organizations(id) on delete cascade;
+update agency_clients set organization_id=(select id from organizations where slug='scale') where organization_id is null;
+create index if not exists agency_clients_organization_idx on agency_clients(organization_id,active,name);
+
+alter table agency_projects add column if not exists organization_id bigint references organizations(id) on delete cascade;
+update agency_projects set organization_id=(select organization_id from agency_clients c where c.id=agency_projects.client_id) where organization_id is null;
+create index if not exists agency_projects_organization_idx on agency_projects(organization_id,status);
+
+alter table agency_work_orders add column if not exists organization_id bigint references organizations(id) on delete cascade;
+update agency_work_orders set organization_id=(select organization_id from agency_projects p where p.id=agency_work_orders.project_id) where organization_id is null;
+create index if not exists agency_work_orders_organization_idx on agency_work_orders(organization_id,status,due_date);
