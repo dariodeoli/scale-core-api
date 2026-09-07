@@ -1,0 +1,7 @@
+{
+  "name": "scale-core-api",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "bcryptjs": "^2.4.3", "pg": "^8.13.1" }
+}
