@@ -177,6 +177,42 @@ const server = http.createServer(async (req,res) => {
         return send(res,201,{budget:budget.rows[0]});
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
     }
+    if (url.pathname === '/api/agency/accounts' && req.method === 'GET') {
+      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const r=await db.query('select * from bank_accounts where organization_id=$1 order by active desc,name',[user.organization_id]);
+      return send(res,200,{accounts:r.rows});
+    }
+    if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {
+      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const {name='',accountType='bank',currency='PYG'}=await body(req);
+      if(typeof name !== 'string' || name.trim().length<2 || !['bank','cash','digital','investment'].includes(accountType) || !['PYG','USD'].includes(currency)) return send(res,400,{error:'Cuenta inválida'});
+      const r=await db.query('insert into bank_accounts(organization_id,name,account_type,currency) values($1,$2,$3,$4) returning *',[user.organization_id,name.trim(),accountType,currency]);
+      return send(res,201,{account:r.rows[0]});
+    }
+    if (url.pathname === '/api/agency/invoices' && req.method === 'GET') {
+      const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
+      const r=await db.query('select i.*,c.name as client_name from agency_invoices i join agency_clients c on c.id=i.client_id where i.organization_id=$1 order by i.created_at desc',[user.organization_id]);
+      return send(res,200,{invoices:r.rows});
+    }
+    if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {
+      const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
+      const {clientId,total,currency='PYG',dueOn=null,notes=null}=await body(req); const amount=Number(total);
+      if(!Number.isInteger(Number(clientId)) || !Number.isFinite(amount) || amount<0 || !['PYG','USD'].includes(currency)) return send(res,400,{error:'Factura inválida'});
+      const client=await db.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]); if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
+      const draft=await db.query('insert into agency_invoices(organization_id,client_id,number,total,currency,due_on,notes) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(clientId),'PENDIENTE',amount,currency,dueOn || null,notes || null]);
+      const number=`F-${new Date().getFullYear()}-${String(draft.rows[0].id).padStart(4,'0')}`;
+      const r=await db.query('update agency_invoices set number=$1 where id=$2 returning *',[number,draft.rows[0].id]);
+      return send(res,201,{invoice:r.rows[0]});
+    }
+    if (url.pathname === '/api/agency/payments' && req.method === 'POST') {
+      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const {invoiceId,accountId,amount,receivedOn=null,reference=null}=await body(req); const paid=Number(amount);
+      if(!Number.isInteger(Number(invoiceId)) || !Number.isInteger(Number(accountId)) || !Number.isFinite(paid) || paid<=0) return send(res,400,{error:'Pago inválido'});
+      const valid=await db.query('select i.currency from agency_invoices i join bank_accounts a on a.id=$2 and a.organization_id=i.organization_id and a.currency=i.currency where i.id=$1 and i.organization_id=$3',[Number(invoiceId),Number(accountId),user.organization_id]);
+      if(!valid.rows[0]) return send(res,404,{error:'Factura o cuenta no encontrada, o monedas distintas'});
+      const r=await db.query('insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference) values($1,$2,$3,$4,$5,$6) returning *',[user.organization_id,Number(invoiceId),Number(accountId),paid,receivedOn || new Date().toISOString().slice(0,10),reference || null]);
+      return send(res,201,{payment:r.rows[0]});
+    }
     const orderMatch = url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)$/);
     if (orderMatch && req.method === 'PATCH') {
       const user = await session(req); if (!can(user,['owner','admin','management','production','editor'])) return send(res,403,{error:'Sin permiso'});

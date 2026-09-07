@@ -139,3 +139,66 @@ create table if not exists agency_budget_items (
   created_at timestamptz not null default now(),
   unique(budget_id,position)
 );
+
+create table if not exists bank_accounts (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  name text not null,
+  account_type text not null check (account_type in ('bank','cash','digital','investment')),
+  currency text not null default 'PYG' check (currency in ('PYG','USD')),
+  balance numeric(14,2) not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(organization_id,name,currency)
+);
+create index if not exists bank_accounts_organization_idx on bank_accounts(organization_id,active);
+
+create table if not exists agency_invoices (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  client_id bigint not null references agency_clients(id) on delete restrict,
+  budget_id bigint references agency_budgets(id) on delete set null,
+  number text not null,
+  status text not null default 'issued' check (status in ('draft','issued','partial','paid','overdue','cancelled')),
+  currency text not null default 'PYG' check (currency in ('PYG','USD')),
+  total numeric(14,2) not null check (total >= 0),
+  paid_amount numeric(14,2) not null default 0 check (paid_amount >= 0),
+  issued_on date not null default current_date,
+  due_on date,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(organization_id,number)
+);
+create index if not exists agency_invoices_organization_status_idx on agency_invoices(organization_id,status,due_on);
+
+create table if not exists agency_payments (
+  id bigserial primary key,
+  organization_id bigint not null references organizations(id) on delete cascade,
+  invoice_id bigint not null references agency_invoices(id) on delete restrict,
+  account_id bigint not null references bank_accounts(id) on delete restrict,
+  amount numeric(14,2) not null check (amount > 0),
+  received_on date not null default current_date,
+  reference text,
+  created_at timestamptz not null default now()
+);
+create index if not exists agency_payments_organization_idx on agency_payments(organization_id,received_on desc);
+
+create or replace function sync_agency_payment() returns trigger language plpgsql as $$
+declare payment_invoice bigint; payment_account bigint; payment_org bigint; payment_amount numeric(14,2); total_paid numeric(14,2); invoice_total numeric(14,2);
+begin
+  payment_invoice := coalesce(new.invoice_id,old.invoice_id); payment_account := coalesce(new.account_id,old.account_id); payment_org := coalesce(new.organization_id,old.organization_id); payment_amount := coalesce(new.amount,0) - coalesce(old.amount,0);
+  if tg_op = 'UPDATE' and new.account_id <> old.account_id then
+    update bank_accounts set balance=balance-old.amount,updated_at=now() where id=old.account_id and organization_id=old.organization_id;
+    update bank_accounts set balance=balance+new.amount,updated_at=now() where id=new.account_id and organization_id=new.organization_id;
+  elsif payment_amount <> 0 then
+    update bank_accounts set balance=balance+payment_amount,updated_at=now() where id=payment_account and organization_id=payment_org;
+  end if;
+  select coalesce(sum(amount),0) into total_paid from agency_payments where invoice_id=payment_invoice and organization_id=payment_org;
+  select total into invoice_total from agency_invoices where id=payment_invoice and organization_id=payment_org;
+  update agency_invoices set paid_amount=total_paid,status=case when total_paid >= invoice_total then 'paid' when total_paid > 0 then 'partial' else 'issued' end,updated_at=now() where id=payment_invoice and organization_id=payment_org;
+  return coalesce(new,old);
+end $$;
+drop trigger if exists agency_payments_sync on agency_payments;
+create trigger agency_payments_sync after insert or update or delete on agency_payments for each row execute function sync_agency_payment();
