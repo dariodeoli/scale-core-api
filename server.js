@@ -16,6 +16,7 @@ const scaleOsOwnerEmail = (process.env.SCALE_OS_OWNER_EMAIL || '').trim().toLowe
 const scaleOsOwnerPassword = process.env.SCALE_OS_OWNER_PASSWORD || '';
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
 const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com']);
+const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer'];
 let databaseReady = false;
 
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
@@ -125,6 +126,30 @@ const server = http.createServer(async (req,res) => {
       if(!project.rows[0]) return send(res,404,{error:'Proyecto no encontrado'});
       const r=await db.query('insert into agency_work_orders(title,project_id,status,description,drive_url,organization_id) values($1,$2,$3,$4,$5,$6) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null,user.organization_id]);
       return send(res,201,{workOrder:r.rows[0]});
+    }
+    if (url.pathname === '/api/agency/members' && req.method === 'GET') {
+      const user = await session(req); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      const r = await db.query('select u.id,u.email,m.role,m.created_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 order by m.created_at asc',[user.organization_id]);
+      return send(res,200,{members:r.rows});
+    }
+    if (url.pathname === '/api/agency/members' && req.method === 'POST') {
+      const user = await session(req); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      const {email='',password='',role='viewer'} = await body(req); const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+      if (!/^\S+@\S+\.\S+$/.test(normalizedEmail) || typeof password !== 'string' || password.length < 12 || !memberRoles.includes(role) || (role === 'owner' && user.role !== 'owner')) return send(res,400,{error:'Datos de usuario inválidos'});
+      const client = await db.connect();
+      try {
+        await client.query('begin');
+        let account = await client.query('select id from users where email=$1',[normalizedEmail]);
+        if (!account.rows[0]) {
+          const hash = await bcrypt.hash(password,12);
+          account = await client.query('insert into users(email,password_hash,role) values($1,$2,$3) returning id',[normalizedEmail,hash,role]);
+        }
+        const existing = await client.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,account.rows[0].id]);
+        if (existing.rows[0]) { await client.query('rollback'); return send(res,409,{error:'Ese usuario ya pertenece a esta empresa'}); }
+        const membership = await client.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3) returning organization_id,user_id,role,created_at',[user.organization_id,account.rows[0].id,role]);
+        await client.query('commit');
+        return send(res,201,{member:{id:account.rows[0].id,email:normalizedEmail,...membership.rows[0]}});
+      } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
     }
     const orderMatch = url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)$/);
     if (orderMatch && req.method === 'PATCH') {
