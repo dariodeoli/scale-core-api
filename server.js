@@ -13,6 +13,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const bootstrapEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const bootstrapPassword = process.env.ADMIN_PASSWORD || '';
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
+let databaseReady = false;
 
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
 const cookie = (name, value, maxAge) => `${name}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
@@ -38,7 +39,7 @@ const server = http.createServer(async (req,res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    if (url.pathname === '/health') return send(res,200,{ok:true});
+    if (url.pathname === '/health') return send(res,databaseReady ? 200 : 503,{ok:databaseReady,database:databaseReady ? 'ready' : 'initializing'});
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
       const { email='', password='' } = await body(req); const e=email.trim().toLowerCase();
       const r=await db.query('select id,password_hash from users where email=$1',[e]);
@@ -54,4 +55,9 @@ const server = http.createServer(async (req,res) => {
     send(res,404,{error:'No encontrado'});
   } catch (e) { console.error(e); send(res,500,{error:'Error interno'}); }
 });
-init().then(()=>server.listen(port,()=>console.log(`Scale Core API listening on ${port}`))).catch(e=>{console.error(e);process.exit(1)});
+server.listen(port, () => {
+  console.log(`Scale Core API listening on ${port}`);
+  init()
+    .then(() => { databaseReady = true; console.log('Scale database ready'); })
+    .catch((error) => { console.error('Database initialization failed', error); });
+});
