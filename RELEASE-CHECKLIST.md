@@ -2,7 +2,7 @@
 
 ## Alcance de esta entrega
 
-- [x] CRUD de planes, pipeline, inventario; conversión idempotente de lead a cliente.
+- [x] Creación, consulta y edición de planes, pipeline e inventario; conversión idempotente de lead a cliente.
 - [x] Edición de clientes, proyectos y órdenes; responsables, plazos, horas y enlaces HTTPS.
 - [x] Aprobaciones internas de 1-3 pasos y estado publicado, con validación de permisos.
 - [x] Suspensión, reactivación, cambio de rol y reenvío de invitación; sesiones invalidadas.
@@ -10,11 +10,17 @@
 - [x] Presupuestos de varios ítems, edición, PDF, enlace revocable, aceptación y conversión a factura.
 - [x] Cotización de referencia por día; panel financiero separado por moneda e historial de actividad.
 - [x] Crear otra empresa sin compartir sus datos; guía de inicio de cinco pasos.
-- [ ] Verificación final del PDF generado en producción y de ambos despliegues.
+- [x] Ambos despliegues finalizados en Owncoding Hub; frontend publicado y rutas privadas verificadas por HTTP.
+- [x] PDF privado generado en producción (A4, una página, 38.280 bytes) y revisado visualmente, sin cortes ni superposiciones.
+- [x] Copia diaria local de PostgreSQL, retención de siete días; primera ejecución exitosa el 8 de septiembre de 2026 a las 03:24 UTC.
 
 ## Pruebas y despliegue
 
 Ejecutar `node test-suite.mjs`, `node test-operations.mjs`, `node --experimental-vm-modules test-auth.mjs` y el build de Scale OS. Las pruebas usan PostgreSQL efímero, no envían correos reales ni modifican producción.
+
+Los tres conjuntos de pruebas y el build pasaron. En producción se verificaron por HTTP sesión, miembros, colaboradores, leads, inventario, planes, actividad, resumen financiero y configuración. Los accesos anónimos a datos privados fueron rechazados. Se creó únicamente una propuesta demostrativa adicional, «Demo · Propuesta con PDF», por Gs. 1.320.000; no se registraron cobros reales para esta prueba.
+
+Versiones publicadas: API `6c44bd0` y frontend `9b8f75e`. La API se construye ahora desde `/Dockerfile` (antes Railpack ignoraba la instalación de Chromium); despliegue correctivo `6dz6shtrzeudsf7xdizccfri`, finalizado a las 03:30 UTC. Este ajuste es necesario para conservar la generación de PDF en los próximos despliegues.
 
 Cambios aditivos de base de datos. Si falla salud, autenticación o guardado, volver a las versiones anteriores del API y frontend desde Owncoding Hub; no eliminar tablas ni registros nuevos. Los cambios ajenos de WEEM/Dadoo quedan fuera de los commits de esta entrega.
 
