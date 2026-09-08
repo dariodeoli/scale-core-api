@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import pg from 'pg';
+import { operations } from './operations.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -34,6 +35,7 @@ const body = async (req) => { let s=''; for await (const c of req) s += c; retur
 const id = () => crypto.randomBytes(32).toString('hex');
 async function sendInvitation(email, organizationName, role) {
   if (!resendApiKey) return false;
+  organizationName=organizationName.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const response = await fetch('https://api.resend.com/emails', { method:'POST', headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({from:invitationFrom,to:[email],subject:`Te invitaron a ${organizationName} en Scale OS`,html:`<main style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:32px"><h1>Tu acceso está listo</h1><p>Fuiste invitado/a a <strong>${organizationName}</strong> con permiso de <strong>${role}</strong>.</p><p>Ingresá con este mismo correo, usando Google o tu contraseña.</p><p><a href="${appUrl}" style="display:inline-block;padding:12px 18px;background:#4D065B;color:#fff;border-radius:8px;text-decoration:none">Abrir Scale OS</a></p></main>`}) });
   return response.ok;
 }
@@ -52,6 +54,7 @@ async function init() {
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_treasury_ledger.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_google_oauth.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_people_commissions_comments.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_operations_complete.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
@@ -93,6 +96,7 @@ const server = http.createServer(async (req,res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (await operations({req,res,url,db,session,body,send})) return;
     if (url.pathname === '/' && req.method === 'GET') {
       res.writeHead(302, { Location: 'https://app.scaleparaguay.com' });
       return res.end();
@@ -111,14 +115,15 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/auth/google/start' && req.method === 'GET') {
       if (!googleClientId || !googleClientSecret) return send(res,503,{error:'Google OAuth aún no está configurado'});
-      const organizationSlug = url.searchParams.get('organization') || process.env.DEFAULT_ORGANIZATION_SLUG || 'scale';
+      const organizationSlug = '';
       const state = id();
       await db.query('insert into oauth_states(state,organization_slug,redirect_uri,expires_at) values($1,$2,$3,now()+interval \'10 minutes\')',[state,organizationSlug,googleRedirectUri]);
       const params = new URLSearchParams({ client_id: googleClientId, redirect_uri: googleRedirectUri, response_type: 'code', scope: 'openid email profile', state, prompt: 'select_account' });
-      res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`}); return res.end();
+      res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)}); return res.end();
     }
     if (url.pathname === '/api/auth/google/callback' && req.method === 'GET') {
       const state = url.searchParams.get('state') || ''; const code = url.searchParams.get('code') || '';
+      if (!state || parseCookies(req).scale_oauth_state !== state) {res.writeHead(302,{Location:`${appUrl}/?authError=La%20sesión%20de%20Google%20venció.%20Intentá%20nuevamente.`});return res.end();}
       const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri',[state]);
       if (!saved.rows[0] || !code) return send(res,400,{error:'Sesión de Google inválida o vencida'});
       const tokenResponse = await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({code,client_id:googleClientId,client_secret:googleClientSecret,redirect_uri:saved.rows[0].redirect_uri,grant_type:'authorization_code'})});
@@ -128,10 +133,17 @@ const server = http.createServer(async (req,res) => {
       if (!profileResponse.ok) return send(res,401,{error:'No se pudo obtener el perfil de Google'});
       const profile = await profileResponse.json(); const email = String(profile.email || '').trim().toLowerCase();
       if (!email || profile.email_verified !== true) return send(res,403,{error:'La cuenta de Google no está verificada'});
-      const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.slug=$2 and o.active=true',[email,saved.rows[0].organization_slug]);
+      const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.active=true order by o.name',[email]);
       if (!member.rows[0]) { res.writeHead(302,{Location:`${appUrl}/?authError=${encodeURIComponent('Tu correo de Google todavía no fue invitado a esta empresa. Pedí una invitación al administrador.')}`}); return res.end(); }
-      const sessionToken=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[sessionToken,member.rows[0].id,member.rows[0].organization_id]);
-      res.writeHead(302,{'Location':appUrl,'Set-Cookie':cookie('scale_session',sessionToken,604800)}); return res.end();
+      const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
+      res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)}); return res.end();
+    }
+    if(url.pathname==='/api/auth/google/complete' && req.method==='GET') {
+      const ticket=url.searchParams.get('ticket')||'';
+      const saved=await db.query('delete from oauth_handoffs where token_hash=$1 and expires_at>now() returning user_id,organization_id',[crypto.createHash('sha256').update(ticket).digest('hex')]);
+      if(!saved.rows[0]) {res.writeHead(302,{Location:`${appUrl}/?authError=El%20acceso%20venció.%20Intentá%20nuevamente.`});return res.end();}
+      const token=id();await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,saved.rows[0].user_id,saved.rows[0].organization_id]);
+      res.writeHead(302,{Location:`${appUrl}/?chooseCompany=1`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:u}) : send(res,401,{error:'No autenticado'}); }
@@ -264,7 +276,7 @@ const server = http.createServer(async (req,res) => {
         const membership = await client.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3) returning organization_id,user_id,role,created_at',[user.organization_id,account.rows[0].id,role]);
         await client.query('commit');
         const member={id:account.rows[0].id,email:normalizedEmail,...membership.rows[0]};
-        const emailSent=await sendInvitation(normalizedEmail,user.organization_name,role);
+        const emailSent=await sendInvitation(normalizedEmail,user.organization_name,role).catch(()=>false);
         return send(res,201,{member,emailSent});
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
     }

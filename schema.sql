@@ -84,10 +84,7 @@ create table if not exists organization_members (
   created_at timestamptz not null default now(),
   primary key(organization_id,user_id)
 );
-insert into organization_members(organization_id,user_id,role)
-select o.id,u.id,case when u.role='admin' then 'owner' else u.role end
-from organizations o cross join users u where o.slug='scale'
-on conflict(organization_id,user_id) do nothing;
+-- Memberships are granted explicitly by invitations or owner provisioning.
 
 alter table sessions add column if not exists organization_id bigint references organizations(id) on delete cascade;
 update sessions set organization_id=(select organization_id from organization_members m where m.user_id=sessions.user_id order by m.organization_id limit 1) where organization_id is null;
