@@ -51,6 +51,7 @@ async function init() {
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_client_payment_status.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_treasury_ledger.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_google_oauth.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_people_commissions_comments.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
@@ -134,6 +135,18 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:u}) : send(res,401,{error:'No autenticado'}); }
+    if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
+      const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
+      const r=await db.query('select o.id,o.slug,o.name,m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true order by o.name',[user.id]);
+      return send(res,200,{organizations:r.rows,currentOrganizationId:user.organization_id});
+    }
+    if (url.pathname === '/api/auth/switch-organization' && req.method === 'POST') {
+      const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'}); const {organizationId}=await body(req);
+      const membership=await db.query('select 1 from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and m.organization_id=$2 and o.active=true',[user.id,Number(organizationId)]);
+      if(!membership.rows[0]) return send(res,403,{error:'No pertenecés a esa empresa'});
+      const token=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,user.id,Number(organizationId)]);
+      return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session',token,604800)});
+    }
     if (url.pathname === '/api/events' && req.method === 'POST') {
       const {name,metadata={}}=await body(req);
       if(!/^[a-z0-9:_-]{1,80}$/i.test(name||'') || !metadata || Array.isArray(metadata) || typeof metadata !== 'object') return send(res,400,{error:'Evento inválido'});
