@@ -55,6 +55,7 @@ async function init() {
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_google_oauth.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_people_commissions_comments.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_operations_complete.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_referral_discounts.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);

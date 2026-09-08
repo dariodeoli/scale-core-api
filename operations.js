@@ -13,7 +13,8 @@ export async function operations({req,res,url,db,session,body,send}) {
  const collaboratorMatch=url.pathname.match(/^\/api\/agency\/collaborators(?:\/(\d+))?$/);
  const commissionMatch=url.pathname.match(/^\/api\/agency\/commissions(?:\/(\d+))?$/);
  const payoutRoute=url.pathname==='/api/agency/payouts';
- if(!commentMatch&&!collaboratorMatch&&!commissionMatch&&!payoutRoute) return false;
+ const discountMatch=url.pathname.match(/^\/api\/agency\/referral-discounts(?:\/(\d+))?$/);
+ if(!commentMatch&&!collaboratorMatch&&!commissionMatch&&!payoutRoute&&!discountMatch) return false;
  const user=await session(req);
  if(!user) {send(res,401,{error:'No autenticado'});return true;}
  const allowed=commentMatch ? req.method==='GET'||user.role!=='viewer' : financeRoles.includes(user.role);
@@ -24,7 +25,20 @@ export async function operations({req,res,url,db,session,body,send}) {
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const org=user.organization_id;
   let result, status=200;
-  if(commentMatch) {
+  if(discountMatch) {
+   if(req.method==='GET')result={discounts:(await c.query('select d.*,i.number as invoice_number,i.currency,a.name as client_name from agency_referral_discounts d join agency_invoices i on i.id=d.invoice_id join agency_clients a on a.id=i.client_id where d.organization_id=$1 order by d.created_at desc',[org])).rows};
+   else if(req.method==='POST'||(req.method==='PATCH'&&discountMatch[1])) {
+    const b=await body(req);let existing,invoiceId;
+    if(discountMatch[1]){existing=(await c.query('select * from agency_referral_discounts where id=$1 and organization_id=$2 for update',[discountMatch[1],org])).rows[0];if(!existing||existing.status!=='applied')fail('Descuento no disponible para revertir',409);invoiceId=existing.invoice_id;}
+    else invoiceId=identifier(b.invoice_id);
+    const i=(await c.query('select * from agency_invoices where id=$1 and organization_id=$2 for update',[invoiceId,org])).rows[0];if(!i)fail('Factura no encontrada',404);if(i.status==='cancelled')fail('Factura cancelada');
+    const amount=existing?Number(existing.amount):money(b.amount);const total=Math.round((Number(i.total)+(existing?amount:-amount))*100)/100;
+    if(total<Number(i.paid_amount)||total<0)fail('El descuento supera el saldo pendiente');
+    if(existing)result={discount:(await c.query("update agency_referral_discounts set status='reversed' where id=$1 and organization_id=$2 returning *",[existing.id,org])).rows[0]};
+    else{const referrer=text(b.referrer,120),reason=text(b.reason,500);if(!referrer||!reason)fail('Indicá quién refirió y el motivo');result={discount:(await c.query('insert into agency_referral_discounts(organization_id,invoice_id,referrer,amount,reason,created_by_user_id) values($1,$2,$3,$4,$5,$6) returning *',[org,invoiceId,referrer,amount,reason,user.id])).rows[0]};status=201;}
+    await c.query("update agency_invoices set total=$1,status=case when paid_amount >= $1 then 'paid' when paid_amount>0 then 'partial' else 'issued' end,updated_at=now() where id=$2 and organization_id=$3",[total,invoiceId,org]);
+   }else fail('Método no permitido',405);
+  } else if(commentMatch) {
    await belongs(c,'agency_projects',commentMatch[1],org);
    if(req.method==='GET') result={comments:(await c.query('select c.*,u.email as author_email from agency_project_comments c left join users u on u.id=c.author_user_id where c.organization_id=$1 and c.project_id=$2 order by c.created_at,c.id',[org,commentMatch[1]])).rows};
    else if(req.method==='POST') {const b=text((await body(req)).body);if(!b) fail('Escribí un comentario');result={comment:(await c.query('insert into agency_project_comments(organization_id,project_id,author_user_id,body) values($1,$2,$3,$4) returning *',[org,commentMatch[1],user.id,b])).rows[0]};status=201;}
