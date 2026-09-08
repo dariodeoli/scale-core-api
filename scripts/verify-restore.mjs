@@ -13,7 +13,7 @@ if(!/^scale_restore_[a-f0-9]{24}$/.test(name)||decodeURIComponent(sourceUrl.path
 const source=new pg.Client({connectionString:sourceUrl.href});
 const restoredUrl=new URL(sourceUrl);restoredUrl.pathname='/'+name;
 const restored=new pg.Client({connectionString:restoredUrl.href});
-let created=false,connected=false,dir;
+let created=false,connected=false,dir,stage='connect';
 const env={...process.env,PGHOST:sourceUrl.hostname,PGPORT:sourceUrl.port||'5432',PGUSER:decodeURIComponent(sourceUrl.username),PGPASSWORD:decodeURIComponent(sourceUrl.password),PGDATABASE:decodeURIComponent(sourceUrl.pathname.slice(1)),PGSSLMODE:sourceUrl.searchParams.get('sslmode')||'prefer'};
 const fingerprint=async(client,table)=>{if(!/^[a-z_][a-z0-9_]*$/.test(table))throw new Error('Unexpected table name');return(await client.query(`select count(*)::int as count,md5(coalesce(string_agg(md5(row_to_json(t)::text),'' order by md5(row_to_json(t)::text)),'')) as digest from "${table}" t`)).rows[0];};
 try{
@@ -23,15 +23,15 @@ try{
  const snapshot=(await source.query('select pg_export_snapshot() as id')).rows[0].id;
  const tables=(await source.query("select tablename from pg_tables where schemaname='public' order by tablename")).rows.map(r=>r.tablename);
  const expected=new Map();for(const table of tables)expected.set(table,await fingerprint(source,table));
- await exec('pg_dump',['--format=custom','--no-owner','--no-acl','--schema=public','--snapshot='+snapshot,'--file='+path.join(dir,'verification.dump')],{env,timeout:180000,maxBuffer:1024*1024});
+ stage='dump';await exec('pg_dump',['--format=custom','--no-owner','--no-acl','--schema=public','--snapshot='+snapshot,'--file='+path.join(dir,'verification.dump')],{env,timeout:180000,maxBuffer:1024*1024});
  await source.query('commit');
- await exec('pg_restore',['--exit-on-error','--no-owner','--no-acl','--dbname='+name,path.join(dir,'verification.dump')],{env,timeout:180000,maxBuffer:1024*1024});
- await restored.connect();connected=true;let records=0;
+ stage='restore';await exec('pg_restore',['--clean','--if-exists','--exit-on-error','--no-owner','--no-acl','--dbname='+name,path.join(dir,'verification.dump')],{env,timeout:180000,maxBuffer:1024*1024});
+ stage='compare';await restored.connect();connected=true;let records=0;
  for(const table of tables){const result=await fingerprint(restored,table),want=expected.get(table);if(result.count!==want.count||result.digest!==want.digest)throw new Error('Restored data mismatch: '+table);records+=result.count;}
  const constraints=(await restored.query("select count(*)::int as count from pg_constraint where connamespace='public'::regnamespace and not convalidated")).rows[0].count;
  if(constraints)throw new Error('Unvalidated constraints in restored database');
  console.log(JSON.stringify({event:'restore_verification_passed',tables:tables.length,records,sourceUnchanged:true}));
-}catch(error){console.error(JSON.stringify({event:'restore_verification_failed',code:error.code||'CHECK_FAILED',message: error.message?.startsWith('Restored data mismatch')?error.message:'Check failed; inspect infrastructure configuration without exposing credentials'}));process.exitCode=1;}
+}catch(error){let detail=String(error.stderr||'').split('\n').find(l=>l.includes('error:'))||'';for(const secret of [decodeURIComponent(sourceUrl.password),sourceUrl.password,sourceUrl.href])if(secret)detail=detail.split(secret).join('[redacted]');console.error(JSON.stringify({event:'restore_verification_failed',stage,code:error.code||'CHECK_FAILED',detail:detail.slice(0,300),message: error.message?.startsWith('Restored data mismatch')?error.message:'Check failed; inspect infrastructure configuration without exposing credentials'}));process.exitCode=1;}
 finally{
  if(connected)await restored.end();
  await source.query('rollback').catch(()=>{});

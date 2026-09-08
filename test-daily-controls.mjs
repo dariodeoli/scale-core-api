@@ -52,6 +52,8 @@ assert.equal((await call(`/api/agency/reconciliation/${cash}/auto`,'POST')).matc
 assert.equal((await call(`/api/agency/reconciliation/${cash}/auto`,'POST')).matched,0);
 const rec=await call(`/api/agency/reconciliation?accountId=${cash}`);assert.equal(rec.lines.filter(l=>l.match_id).length,3);
 assert.equal((await call(`/api/agency/reconciliation/${rec.lines[0].id}/unmatch`,'POST')).status,200);
+assert.equal((await call('/api/agency/reconciliation','POST',{accountId:cash,lines:[{...lines[2],external_id:'bank-duplicate-reference'}]})).imported,1);
+assert.equal((await call(`/api/agency/reconciliation/${cash}/auto`,'POST')).matched,0,'Ambiguous references must remain pending');
 assert.equal((await call(`/api/agency/reconciliation?accountId=${cash}`,'GET',{}, {...user,organization_id:other})).status,404);
 assert.equal((await query('select balance from bank_accounts where id=$1',[cash])).rows[0].balance,'1000000.00');
 const project=(await query("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Project') returning id",[org,client])).rows[0].id;
@@ -59,6 +61,10 @@ const order=(await query("insert into agency_work_orders(organization_id,project
 r=await call(`/api/agency/work-orders/${order}/client-review`,'POST');assert.equal(r.status,200);let token=r.url.split('/').at(-1);
 assert.equal((await call(`/api/agency/work-orders/${order}/publish`,'POST')).status,400);
 assert.equal((await call(`/review/${token}`)).status,200);
+await call(`/api/agency/work-orders/${order}`,'PATCH',{drive_url:'https://drive.google.com/new-version'});
+assert.equal((await call(`/review/${token}/respond`,'POST',{},null,'name=QA&action=approve')).status,409);
+r=await call(`/api/agency/work-orders/${order}/client-review`,'POST');
+assert.equal((await call(`/review/${token}`)).status,404,'Previous pending link is revoked');token=r.url.split('/').at(-1);
 assert.equal((await call(`/review/${token}/respond`,'POST',{},null,'name=QA&action=changes&feedback=Corregir+el+logo')).status,303);
 assert.equal((await query('select status from agency_work_orders where id=$1',[order])).rows[0].status,'editing');
 assert.equal((await call(`/review/${token}/respond`,'POST',{},null,'name=QA&action=approve')).status,409);
@@ -66,6 +72,7 @@ await query("update agency_work_orders set status='approved',approval_step=1 whe
 r=await call(`/api/agency/work-orders/${order}/client-review`,'POST');token=r.url.split('/').at(-1);
 assert.equal((await call(`/review/${token}/respond`,'POST',{},null,'name=QA&action=approve')).status,303);
 assert.equal((await call(`/api/agency/work-orders/${order}/publish`,'POST')).status,200);
+assert.equal((await call(`/api/agency/work-orders/${order}/client-review`,'POST',{}, {...user,role:'editor'})).status,403);
 assert.equal((await call('/review/'+'0'.repeat(64))).status,404);
 const doc={number:'QA',title:'Custom',organization_name:'Scale',client_name:'Demo',currency:'USD',subtotal:100,total:110,tax_rate:.1,notes:'Hidden notes',sections:[{type:'text',title:'Alcance',body:'<script>unsafe</script>',enabled:true},{type:'items',enabled:true},{type:'totals',enabled:true},{type:'notes',enabled:false}]};
 const html=budgetDocument(doc,[{description:'One',quantity:1,unit_price:100,total:100}]);assert.ok(html.indexOf('Alcance')<html.indexOf('<table>'));assert.ok(!html.includes('Hidden notes'));assert.ok(html.includes('&lt;script&gt;'));assert.ok(!html.includes('<script>'));
