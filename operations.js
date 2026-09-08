@@ -12,13 +12,14 @@ const option = (value, choices) => choices.includes(value) ? value : fail('Opci�
 const email = value => !value ? null : /^\S+@\S+\.\S+$/.test(value) ? text(value,254).toLowerCase() : fail('Email inválido');
 async function belongs(c,table,id,org) { if(!id)return;const row=(await c.query(`select * from ${table} where id=$1 and organization_id=$2`,[id,org])).rows[0];if(!row)fail('Registro no encontrado',404);await assertRecordAvailable(c,table,row); }
 export async function operations({req,res,url,db,session,body,send,sendInvitation=async()=>false}) {
+ const teamRoute=url.pathname==='/api/agency/team';
  const commentMatch=url.pathname.match(/^\/api\/agency\/projects\/(\d+)\/comments$/);
  const collaboratorMatch=url.pathname.match(/^\/api\/agency\/collaborators(?:\/(\d+))?$/);
  const commissionMatch=url.pathname.match(/^\/api\/agency\/commissions(?:\/(\d+))?$/);
  const payoutRoute=url.pathname==='/api/agency/payouts';
  const discountMatch=url.pathname.match(/^\/api\/agency\/referral-discounts(?:\/(\d+))?$/);
  const jobMatch=url.pathname.match(/^\/api\/agency\/job-roles(?:\/(\d+))?$/);
- if(!commentMatch&&!collaboratorMatch&&!commissionMatch&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
+ if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!commissionMatch&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
  const user=await session(req);
  if(!user) {send(res,401,{error:'No autenticado'});return true;}
  const allowed=commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? ['owner','admin'].includes(user.role) : financeRoles.includes(user.role);
@@ -29,7 +30,13 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const org=user.organization_id;
   let result, status=200, notifyEmail=null;
-  if(jobMatch) {
+  if(teamRoute){
+   if(req.method!=='GET')fail('Método no permitido',405);
+   const collaborators=(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows;
+   const members=(await c.query('select u.id,u.email,m.role,m.active,m.removed_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 order by u.email',[org])).rows;
+   const archivedProfiles=(await c.query("select c.id,c.user_id,c.email from agency_collaborators c join agency_archived_records a on a.organization_id=c.organization_id and a.record_id=c.id and a.kind='collaborators' where c.organization_id=$1",[org])).rows;
+   result={collaborators,members,archivedProfiles};
+  }else if(jobMatch) {
    await c.query('select ensure_agency_job_catalog($1)',[org]);
    if(req.method==='GET')result={roles:(await c.query('select * from agency_job_roles where organization_id=$1 order by active desc,name',[org])).rows};
    else if(req.method==='POST'&&!jobMatch[1]) {const name=text((await body(req)).name,120);if(!name)fail('Ingresá el cargo');result={role:(await c.query('insert into agency_job_roles(organization_id,name) values($1,$2) returning *',[org,name])).rows[0]};status=201;}
@@ -61,6 +68,10 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     const name=text(b.full_name,120);if(name.length<2) fail('Ingresá el nombre');
     for(const key of ['started_on','ended_on'])if(b[key] instanceof Date)b[key]=b[key].toISOString().slice(0,10);
     const contact=email(b.email);let uid=optionalId(b.user_id);
+    if(!collaboratorMatch[1]&&contact){
+     await c.query('select id from organizations where id=$1 for update',[org]);
+     if((await c.query('select id from agency_collaborators where organization_id=$1 and lower(trim(email))=$2',[org,contact])).rows.length)fail('Esta persona ya tiene un perfil en la empresa. Buscalo en Equipo o restauralo desde Papelera.',409);
+    }
     if(uid&&String(uid)!==String(previous.user_id||'')&&!['owner','admin'].includes(user.role))fail('Solo administración puede vincular accesos',403);
     if(uid&&!(await c.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[org,uid])).rows.length) fail('El acceso debe pertenecer a esta empresa');
     if(uid&&contact){const linked=(await c.query('select email from users where id=$1',[uid])).rows[0];if(linked.email!==contact){if(incoming.user_id)fail('El acceso debe coincidir con el correo de contacto');uid=null;}}

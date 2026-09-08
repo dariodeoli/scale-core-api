@@ -73,4 +73,18 @@ assert.equal((await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{phot
 assert.equal((await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{photo_url:''},{...user,role:'viewer'})).status,403);
 assert.equal((await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{photo_url:'data:application/pdf;base64,YQ=='})).status,400);
 r=await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{photo_url:''});assert.equal(r.status,200);assert.equal(r.collaborator.photo_url,null);
-await pg.close();console.log('PASS: collaborators, comments, commissions, payouts, insufficient funds, duplicate payout, tenant isolation, role restrictions, profile photos and audit');
+// One directory joins access and people, without changing financial history or permissions.
+const beforeTeam=(await sql('select balance from bank_accounts where id=$1',[account])).rows[0].balance;
+const team=await call('/api/agency/team');assert.equal(team.status,200);assert.ok(team.collaborators.some(p=>String(p.id)===String(minimal.id)));assert.ok(team.members.some(m=>String(m.id)===String(minimal.user_id)));
+assert.ok(team.members.every(m=>!Object.hasOwn(m,'password_hash')));
+assert.equal((await call('/api/agency/team','GET',{}, {...user,role:'editor'})).status,403);
+assert.equal((await call('/api/agency/team','GET',{}, {...user,role:'viewer'})).status,403);
+assert.equal((await call('/api/agency/team','GET',{}, {...user,role:'finance'})).status,200);
+assert.equal((await call('/api/agency/team','GET',{}, {...user,organization_id:other})).collaborators.length,0);
+assert.equal((await call('/api/agency/team','POST')).status,405);
+assert.equal((await call('/api/agency/collaborators','POST',{full_name:'Duplicate',email:'NEW@example.invalid'})).status,409);
+await sql("insert into agency_archived_records(organization_id,kind,record_id) values($1,'collaborators',$2)",[org,minimal.id]);
+const archived=await call('/api/agency/team');assert.ok(!archived.collaborators.some(p=>String(p.id)===String(minimal.id)));assert.ok(archived.archivedProfiles.some(p=>String(p.id)===String(minimal.id)));
+assert.equal((await call('/api/agency/collaborators','POST',{full_name:'Duplicate archived',email:'new@example.invalid'})).status,409);
+assert.equal((await sql('select balance from bank_accounts where id=$1',[account])).rows[0].balance,beforeTeam);
+await pg.close();console.log('PASS: collaborators, comments, commissions, payouts, tenant isolation, profile photos, unified directory, permission boundaries, archived profiles, duplicate prevention and audit');
