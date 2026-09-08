@@ -60,6 +60,10 @@ const server = http.createServer(async (req,res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname === '/' && req.method === 'GET') {
+      res.writeHead(302, { Location: 'https://app.scaleparaguay.com' });
+      return res.end();
+    }
     if (url.pathname === '/health') return send(res,databaseReady ? 200 : 503,{ok:databaseReady,database:databaseReady ? 'ready' : 'initializing'});
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
       const { email='', password='' } = await body(req); const e=email.trim().toLowerCase();
