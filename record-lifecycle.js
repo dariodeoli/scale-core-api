@@ -45,7 +45,7 @@ export async function recordLifecycle({req,res,url,db,session,send}) {
    const records=(await c.query(queries.join(' union all ')+' order by removed_at desc',[org])).rows;
    await c.query('commit');send(res,200,{records});return true;
   }
-  const [,kind,key,restore]=match;
+  const [,kind,rawKey,restore]=match,key=String(BigInt(rawKey));
   if(kind==='members'){
    if(restore)fail('Para devolver acceso, enviá una nueva invitación desde Equipo');
    await c.query('select id from organizations where id=$1 for update',[org]);

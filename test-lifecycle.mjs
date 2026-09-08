@@ -68,6 +68,7 @@ await query('update bank_accounts set balance=100 where id=$1',[keys.accounts]);
 assert.equal((await call(`/api/agency/accounts/${keys.accounts}`,'DELETE')).status,400);
 assert.equal((await query('select balance,active from bank_accounts where id=$1',[keys.accounts])).rows[0].balance,'100.00');
 assert.equal((await call(`/api/agency/members/${uid}`,'DELETE')).status,400,'self removal');
+assert.equal((await call(`/api/agency/members/0${uid}`,'DELETE')).status,400,'self removal with equivalent ID');
 assert.equal((await call(`/api/agency/members/${uid}`,'DELETE',{...user,id:memberId,role:'admin'})).status,403,'admin cannot remove owner');
 assert.equal((await call(`/api/agency/members/${uid}`,'DELETE',{...user,id:memberId})).status,400,'last owner safeguard');
 assert.equal((await call(`/api/agency/members/${memberId}`,'DELETE')).status,200);

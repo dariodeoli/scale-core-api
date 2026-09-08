@@ -48,7 +48,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
    if(req.method!=='PATCH'||action)fail('Método no permitido',405);
    const b=await body(req),role=option(b.role??current.role,roles),active=b.active??current.active;
    if(typeof active!=='boolean')fail('Estado inválido');
-   if(String(key)===String(user.id)&&(role!==current.role||!active))fail('No podés quitarte tu propio acceso');
+   if(BigInt(key)===BigInt(user.id)&&(role!==current.role||!active))fail('No podés quitarte tu propio acceso');
    if(user.role!=='owner'&&(current.role==='owner'||role==='owner'))fail('Solo el propietario puede cambiar este rol',403);
    if(current.role==='owner'&&(!active||role!=='owner')){const n=await c.query("select count(*)::int as count from organization_members where organization_id=$1 and role='owner' and active=true",[org]);if(n.rows[0].count<=1)fail('Debe quedar al menos un propietario activo');}
    await c.query('update organization_members set role=$1,active=$2 where user_id=$3 and organization_id=$4',[role,active,key,org]);await c.query('delete from sessions where user_id=$1 and organization_id=$2',[key,org]);result={ok:true};
