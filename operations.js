@@ -1,4 +1,5 @@
 import { collaboratorAccess } from './collaborator-access.js';
+import { profilePhoto } from './media-policy.js';
 const financeRoles = ['owner','admin','finance'];
 function fail(message, status=400) { throw Object.assign(new Error(message),{status}); }
 const text = (value, max=2000) => typeof value==='string' && value.length<=max ? value.trim() : fail('Texto inválido');
@@ -65,7 +66,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     const jobId=optionalId(b.job_role_id);let jobTitle=text(b.job_title||'',120);
     if(Object.hasOwn(incoming,'job_role_id')&&!jobId)jobTitle='';
     if(jobId){const j=(await c.query('select * from agency_job_roles where id=$1 and organization_id=$2',[jobId,org])).rows[0];if(!j||(!j.active&&String(jobId)!==String(previous.job_role_id)))fail('Elegí un cargo activo de esta empresa');jobTitle=j.name;}
-    const photo=text(b.photo_url||'',2048);if(photo&&!/^https:\/\//.test(photo)) fail('La foto debe tener una URL HTTPS');
+    const photo=Object.hasOwn(incoming,'photo_url') ? await profilePhoto(incoming.photo_url) : previous.photo_url || null;
     const day=b.payment_day?Number(b.payment_day):null;if(day!==null&&(!Number.isInteger(day)||day<1||day>31)) fail('Día de pago inválido');
     const start=date(b.started_on),end=date(b.ended_on);if(start&&end&&end<start) fail('La salida no puede ser anterior al ingreso');
     const access=await collaboratorAccess(c,{email:contact,org,actorRole:user.role,active:b.active!==false,previousUserId:uid});uid=access.userId;notifyEmail=access.notifyEmail;

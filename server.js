@@ -11,6 +11,7 @@ import { passwordAccess, throttle } from './password-access.js';
 import { financeControls } from './finance-controls.js';
 import { contentReview } from './content-review.js';
 import { budgetSections } from './budget-sections.js';
+import { externalLink } from './media-policy.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -253,7 +254,8 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','sales','production'])) return send(res,403,{error:'Sin permiso'});
-      const {name='',clientId,driveUrl=null}=await body(req);
+      const {name='',clientId,driveUrl:rawDriveUrl=null}=await body(req);
+      const driveUrl=externalLink(rawDriveUrl);
       if (typeof name !== 'string' || name.trim().length < 2 || !Number.isInteger(Number(clientId))) return send(res,400,{error:'Proyecto inválido'});
       const client=await db.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]);
       if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
@@ -267,7 +269,8 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','production','editor'])) return send(res,403,{error:'Sin permiso'});
-      const {title='',projectId,status='to_record',description=null,driveUrl=null}=await body(req);
+      const {title='',projectId,status='to_record',description=null,driveUrl:rawDriveUrl=null}=await body(req);
+      const driveUrl=externalLink(rawDriveUrl);
       const allowedStatuses=['blocked','to_record','recorded','editing','review'];
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(projectId)) || !allowedStatuses.includes(status)) return send(res,400,{error:'Orden inválida'});
       const project=await db.query('select id from agency_projects where id=$1 and organization_id=$2',[Number(projectId),user.organization_id]);

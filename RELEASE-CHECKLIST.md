@@ -33,6 +33,16 @@ Cambios aditivos de base de datos. Si falla salud, autenticación o guardado, vo
 - La guía de cinco pasos no obliga a completar datos. Los presupuestos permiten secciones de texto reordenables y visibilidad; no un editor de maquetación libre tipo Canva.
 - Algunos movimientos históricos no capturaron autor. Se recuperaron únicamente atribuciones sustentadas por los registros originales; no inventar las restantes.
 
+## Enlaces de Drive y fotos — alcance del 08-09-2026
+
+Dario confirmó que archivos y carpetas se gestionan únicamente por enlace, sin alojar sus contenidos en el admin. No hace falta conectar una cuenta ni descargar archivos mediante la API de Drive para este alcance. Los permisos del enlace siguen siendo responsabilidad de Google Drive.
+
+- Alta y edición de proyectos/órdenes conservan enlaces HTTPS a archivos o carpetas; rechazan enlaces locales, datos embebidos y URLs con credenciales. El servidor no visita ni descarga el destino.
+- La única carga de imagen incorporada es la foto del colaborador: selector JPG/PNG/WebP hasta 4 MB, reducción local antes de enviar, validación/recodificación en servidor, miniatura WebP hasta 256 × 256 sin metadatos. Se guarda en el perfil de la base existente, protegido por permisos y empresa. Las modificaciones conservan auditoría, incluida la foto anterior; quitarla del perfil no purga el historial ni las copias.
+- No hay un alojamiento general de videos, documentos ni adjuntos. No cambia la generación bajo demanda de presupuestos PDF ni el importador de filas CSV.
+- Pruebas: `node test-media.mjs`, suites existentes y build frontend. Nueva dependencia Sharp 0.35.4; auditoría npm de producción sin vulnerabilidades reportadas al realizar el cambio.
+- Reversión: restaurar las versiones API `5328275` y frontend `7747420` si fallan salud, autenticación o guardado. No se requieren migraciones ni eliminación de fotos guardadas; el lector anterior puede mostrar las miniaturas, aunque no editarlas con su campo URL antiguo.
+
 ## Segunda ampliación — publicada y verificada por API
 
 - Reversión de cobros como contramovimiento inmutable, con motivo, responsable y saldo suficiente. Cobros y transferencias aceptan identificador de reintento para evitar duplicados.
