@@ -26,9 +26,17 @@ const cookie = (name, value, maxAge) => `${name}=${value}; Max-Age=${maxAge}; Pa
 const parseCookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(v => { const i=v.indexOf('='); return [v.slice(0,i).trim(), decodeURIComponent(v.slice(i+1))]; }));
 const body = async (req) => { let s=''; for await (const c of req) s += c; return s ? JSON.parse(s) : {}; };
 const id = () => crypto.randomBytes(32).toString('hex');
+async function runOptionalMigration(filename) {
+  try {
+    await db.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
+  } catch (error) {
+    if (error && typeof error === 'object' && error.code === 'ENOENT') return;
+    throw error;
+  }
+}
 async function init() {
   await db.query(await fs.readFile(path.join(root, 'schema.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_dadoo_hub.sql'), 'utf8'));
+  await runOptionalMigration('20260908_dadoo_hub.sql');
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_client_payment_status.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_treasury_ledger.sql'), 'utf8'));
   async function provisionOwner(email, password) {
