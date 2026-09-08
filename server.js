@@ -56,6 +56,7 @@ async function init() {
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_people_commissions_comments.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_operations_complete.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_referral_discounts.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_collaborator_profiles.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
@@ -97,7 +98,7 @@ const server = http.createServer(async (req,res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    if (await operations({req,res,url,db,session,body,send})) return;
+    if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {
       res.writeHead(302, { Location: 'https://app.scaleparaguay.com' });
       return res.end();
