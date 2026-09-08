@@ -16,6 +16,10 @@ const scaleOsOwnerEmail = (process.env.SCALE_OS_OWNER_EMAIL || '').trim().toLowe
 const scaleOsOwnerPassword = process.env.SCALE_OS_OWNER_PASSWORD || '';
 const dadooOwnerEmail = (process.env.DADOO_OWNER_EMAIL || '').trim().toLowerCase();
 const dadooOwnerPassword = process.env.DADOO_OWNER_PASSWORD || '';
+const googleClientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
+const googleRedirectUri = (process.env.GOOGLE_REDIRECT_URI || 'https://admin.scaleparaguay.com/api/auth/google/callback').trim();
+const appUrl = (process.env.APP_URL || 'https://app.scaleparaguay.com').replace(/\/$/, '');
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
 const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com', 'https://dadoocapital.com', 'https://www.dadoocapital.com', 'https://admin.dadoocapital.com']);
 const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer'];
@@ -39,6 +43,7 @@ async function init() {
   await runOptionalMigration('20260908_dadoo_hub.sql');
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_client_payment_status.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_treasury_ledger.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_google_oauth.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
@@ -92,6 +97,33 @@ const server = http.createServer(async (req,res) => {
       if (!r.rows[0].organization_id) return send(res,403,{error:'Usuario sin organización asignada'});
       const token=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,r.rows[0].id,r.rows[0].organization_id]);
       return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session',token,604800)});
+    }
+    if (url.pathname === '/api/auth/providers' && req.method === 'GET') {
+      return send(res,200,{google:Boolean(googleClientId && googleClientSecret)});
+    }
+    if (url.pathname === '/api/auth/google/start' && req.method === 'GET') {
+      if (!googleClientId || !googleClientSecret) return send(res,503,{error:'Google OAuth aún no está configurado'});
+      const organizationSlug = url.searchParams.get('organization') || process.env.DEFAULT_ORGANIZATION_SLUG || 'scale';
+      const state = id();
+      await db.query('insert into oauth_states(state,organization_slug,redirect_uri,expires_at) values($1,$2,$3,now()+interval \'10 minutes\')',[state,organizationSlug,googleRedirectUri]);
+      const params = new URLSearchParams({ client_id: googleClientId, redirect_uri: googleRedirectUri, response_type: 'code', scope: 'openid email profile', state, prompt: 'select_account' });
+      res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`}); return res.end();
+    }
+    if (url.pathname === '/api/auth/google/callback' && req.method === 'GET') {
+      const state = url.searchParams.get('state') || ''; const code = url.searchParams.get('code') || '';
+      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri',[state]);
+      if (!saved.rows[0] || !code) return send(res,400,{error:'Sesión de Google inválida o vencida'});
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({code,client_id:googleClientId,client_secret:googleClientSecret,redirect_uri:saved.rows[0].redirect_uri,grant_type:'authorization_code'})});
+      if (!tokenResponse.ok) return send(res,401,{error:'No se pudo validar Google'});
+      const tokenData = await tokenResponse.json();
+      const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:`Bearer ${tokenData.access_token}`}});
+      if (!profileResponse.ok) return send(res,401,{error:'No se pudo obtener el perfil de Google'});
+      const profile = await profileResponse.json(); const email = String(profile.email || '').trim().toLowerCase();
+      if (!email || profile.email_verified !== true) return send(res,403,{error:'La cuenta de Google no está verificada'});
+      const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.slug=$2 and o.active=true',[email,saved.rows[0].organization_slug]);
+      if (!member.rows[0]) return send(res,403,{error:'Tu correo de Google todavía no fue invitado a esta empresa'});
+      const sessionToken=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[sessionToken,member.rows[0].id,member.rows[0].organization_id]);
+      res.writeHead(302,{'Location':appUrl,'Set-Cookie':cookie('scale_session',sessionToken,604800)}); return res.end();
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:u}) : send(res,401,{error:'No autenticado'}); }
