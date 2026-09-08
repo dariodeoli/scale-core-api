@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import pg from 'pg';
 import { operations } from './operations.js';
+import { suite } from './agency-suite.js';
+import { passwordAccess, throttle } from './password-access.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -31,7 +33,7 @@ let databaseReady = false;
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
 const cookie = (name, value, maxAge) => `${name}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
 const parseCookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(v => { const i=v.indexOf('='); return [v.slice(0,i).trim(), decodeURIComponent(v.slice(i+1))]; }));
-const body = async (req) => { let s=''; for await (const c of req) s += c; return s ? JSON.parse(s) : {}; };
+const body = async (req) => { let s=''; for await (const c of req) {s += c;if(s.length>1048576)throw Object.assign(new Error('Solicitud demasiado grande'),{status:413});} return s ? JSON.parse(s) : {}; };
 const id = () => crypto.randomBytes(32).toString('hex');
 async function sendInvitation(email, organizationName, role) {
   if (!resendApiKey) return false;
@@ -39,6 +41,7 @@ async function sendInvitation(email, organizationName, role) {
   const response = await fetch('https://api.resend.com/emails', { method:'POST', headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({from:invitationFrom,to:[email],subject:`Te invitaron a ${organizationName} en Scale OS`,html:`<main style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:32px"><h1>Tu acceso está listo</h1><p>Fuiste invitado/a a <strong>${organizationName}</strong> con permiso de <strong>${role}</strong>.</p><p>Ingresá con este mismo correo, usando Google o tu contraseña.</p><p><a href="${appUrl}" style="display:inline-block;padding:12px 18px;background:#4D065B;color:#fff;border-radius:8px;text-decoration:none">Abrir Scale OS</a></p></main>`}) });
   return response.ok;
 }
+async function sendReset(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'},body:JSON.stringify({from:invitationFrom,to:[email],subject:'Establecé tu contraseña de Scale OS',html:`<main style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:32px"><h1>Tu contraseña</h1><p>Este enlace es de un solo uso y vence en una hora. Si no lo solicitaste, ignorá este correo.</p><a href="${appUrl}/?resetToken=${token}">Establecer contraseña</a></main>`})});return response.ok;}
 async function runOptionalMigration(filename) {
   try {
     await db.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
@@ -57,10 +60,11 @@ async function init() {
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_operations_complete.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_referral_discounts.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_collaborator_profiles.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_agency_suite.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
-    const user = await db.query('insert into users(email,password_hash) values($1,$2) on conflict(email) do update set password_hash=excluded.password_hash returning id', [email, hash]);
+    const user = await db.query('insert into users(email,password_hash) values($1,$2) on conflict(email) do update set email=excluded.email returning id', [email, hash]);
     await db.query("insert into organization_members(organization_id,user_id,role) select id,$1,'owner' from organizations where slug='scale' on conflict(organization_id,user_id) do nothing", [user.rows[0].id]);
   }
   await provisionOwner(bootstrapEmail, bootstrapPassword);
@@ -76,7 +80,7 @@ async function provisionOwnerForOrganization(email, password, slug) {
 async function session(req) {
   const token = parseCookies(req).scale_session;
   if (!token) return null;
-  const r = await db.query('select u.id,u.email,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true', [token]);
+  const r = await db.query('select u.id,u.email,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true', [token]);
   return r.rows[0] || null;
 }
 function can(user, roles) { return Boolean(user && roles.includes(user.role)); }
@@ -98,6 +102,8 @@ const server = http.createServer(async (req,res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
+    if(await suite({req,res,url,db,session,body,send,sendInvitation}))return;
     if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {
       res.writeHead(302, { Location: 'https://app.scaleparaguay.com' });
@@ -106,7 +112,8 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/health') return send(res,databaseReady ? 200 : 503,{ok:databaseReady,database:databaseReady ? 'ready' : 'initializing'});
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
       const { email='', password='' } = await body(req); const e=email.trim().toLowerCase();
-      const r=await db.query('select u.id,u.password_hash,(select organization_id from organization_members where user_id=u.id order by organization_id limit 1) as organization_id from users u where u.email=$1',[e]);
+      if(!await throttle(db,'login:'+e,30))return send(res,429,{error:'Demasiados intentos. Esperá 15 minutos.'});
+      const r=await db.query('select u.id,u.password_hash,(select organization_id from organization_members where user_id=u.id and active=true order by organization_id limit 1) as organization_id from users u where u.email=$1',[e]);
       if (!r.rows[0] || !(await bcrypt.compare(password,r.rows[0].password_hash))) return send(res,401,{error:'Credenciales inválidas'});
       if (!r.rows[0].organization_id) return send(res,403,{error:'Usuario sin organización asignada'});
       const token=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,r.rows[0].id,r.rows[0].organization_id]);
@@ -135,7 +142,7 @@ const server = http.createServer(async (req,res) => {
       if (!profileResponse.ok) return send(res,401,{error:'No se pudo obtener el perfil de Google'});
       const profile = await profileResponse.json(); const email = String(profile.email || '').trim().toLowerCase();
       if (!email || profile.email_verified !== true) return send(res,403,{error:'La cuenta de Google no está verificada'});
-      const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.active=true order by o.name',[email]);
+      const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.active=true and m.active=true order by o.name',[email]);
       if (!member.rows[0]) { res.writeHead(302,{Location:`${appUrl}/?authError=${encodeURIComponent('Tu correo de Google todavía no fue invitado a esta empresa. Pedí una invitación al administrador.')}`}); return res.end(); }
       const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
       res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)}); return res.end();
@@ -151,12 +158,18 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:u}) : send(res,401,{error:'No autenticado'}); }
     if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query('select o.id,o.slug,o.name,m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true order by o.name',[user.id]);
+      const r=await db.query('select o.id,o.slug,o.name,m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true order by o.name',[user.id]);
       return send(res,200,{organizations:r.rows,currentOrganizationId:user.organization_id});
+    }
+    if(url.pathname==='/api/auth/organizations'&&req.method==='POST'){
+      const user=await session(req);if(!can(user,['owner','admin']))return send(res,403,{error:'Solo administración puede crear una empresa'});
+      const b=await body(req),name=typeof b.name==='string'?b.name.trim():'',slug=typeof b.slug==='string'?b.slug.trim().toLowerCase():'';
+      if(name.length<2||name.length>160||!/^\w[\w-]{2,59}$/.test(slug))return send(res,400,{error:'Nombre y código de empresa inválidos'});
+      const c=await db.connect();try{await c.query('begin');const org=(await c.query('insert into organizations(name,slug) values($1,$2) returning *',[name,slug])).rows[0];await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);await c.query('commit');return send(res,201,{organization:org});}catch(e){await c.query('rollback');return send(res,e.code==='23505'?409:500,{error:e.code==='23505'?'Ese código ya está utilizado':'No se pudo crear la empresa'});}finally{c.release();}
     }
     if (url.pathname === '/api/auth/switch-organization' && req.method === 'POST') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'}); const {organizationId}=await body(req);
-      const membership=await db.query('select 1 from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and m.organization_id=$2 and o.active=true',[user.id,Number(organizationId)]);
+      const membership=await db.query('select 1 from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and m.organization_id=$2 and o.active=true and m.active=true',[user.id,Number(organizationId)]);
       if(!membership.rows[0]) return send(res,403,{error:'No pertenecés a esa empresa'});
       const token=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,user.id,Number(organizationId)]);
       return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session',token,604800)});
@@ -249,7 +262,7 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','production','editor'])) return send(res,403,{error:'Sin permiso'});
       const {title='',projectId,status='to_record',description=null,driveUrl=null}=await body(req);
-      const allowedStatuses=['blocked','to_record','recorded','editing','review','approved','published'];
+      const allowedStatuses=['blocked','to_record','recorded','editing','review'];
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(projectId)) || !allowedStatuses.includes(status)) return send(res,400,{error:'Orden inválida'});
       const project=await db.query('select id from agency_projects where id=$1 and organization_id=$2',[Number(projectId),user.organization_id]);
       if(!project.rows[0]) return send(res,404,{error:'Proyecto no encontrado'});
@@ -258,7 +271,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/members' && req.method === 'GET') {
       const user = await session(req); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
-      const r = await db.query('select u.id,u.email,m.role,m.created_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 order by m.created_at asc',[user.organization_id]);
+      const r = await db.query('select u.id,u.email,m.role,m.active,m.created_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 order by m.created_at asc',[user.organization_id]);
       return send(res,200,{members:r.rows});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'POST') {
@@ -289,7 +302,8 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
-      const {title='',clientId,currency='PYG',items=[],notes=null,validUntil=null} = await body(req);
+      const {title='',clientId,currency='PYG',items=[],notes=null,validUntil=null,tax_rate=.1} = await body(req);
+      if(![0,.05,.1].includes(Number(tax_rate)))return send(res,400,{error:'IVA inválido'});
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(clientId)) || !['PYG','USD'].includes(currency) || !Array.isArray(items) || !items.length || items.length > 100) return send(res,400,{error:'Presupuesto inválido'});
       const normalizedItems = items.map((item) => ({ description: typeof item?.description === 'string' ? item.description.trim() : '', quantity: Number(item?.quantity), unitPrice: Number(item?.unitPrice) }));
       if (normalizedItems.some(item => item.description.length < 2 || !Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.unitPrice) || item.unitPrice < 0)) return send(res,400,{error:'Ítems de presupuesto inválidos'});
@@ -299,9 +313,10 @@ const server = http.createServer(async (req,res) => {
         const belongs = await client.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]);
         if (!belongs.rows[0]) { await client.query('rollback'); return send(res,404,{error:'Cliente no encontrado'}); }
         const subtotal = normalizedItems.reduce((sum,item) => sum + item.quantity * item.unitPrice, 0);
-        const total = subtotal * 1.1;
+        const total = Math.round(subtotal * (1+Number(tax_rate))*100)/100;
         const draft = await client.query('insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,notes,valid_until,public_token) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *',[user.organization_id,Number(clientId),'PENDIENTE',title.trim(),currency,subtotal,total,notes || null,validUntil || null,crypto.randomBytes(18).toString('base64url')]);
         const number = `P-${new Date().getFullYear()}-${String(draft.rows[0].id).padStart(4,'0')}`;
+        await client.query('update agency_budgets set tax_rate=$1 where id=$2',[Number(tax_rate),draft.rows[0].id]);
         const budget = await client.query('update agency_budgets set number=$1 where id=$2 returning *',[number,draft.rows[0].id]);
         for (const [position,item] of normalizedItems.entries()) await client.query('insert into agency_budget_items(budget_id,position,description,quantity,unit_price,total) values($1,$2,$3,$4,$5,$6)',[budget.rows[0].id,position + 1,item.description,item.quantity,item.unitPrice,item.quantity * item.unitPrice]);
         await client.query('commit');

@@ -12,5 +12,7 @@ export async function collaboratorAccess(c, { email, org, actorRole, active, pre
     account = (await c.query("insert into users(email,password_hash,role) values($1,$2,'viewer') on conflict(email) do update set email=excluded.email returning id", [email, hash])).rows[0];
   }
   const membership = await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'viewer') on conflict(organization_id,user_id) do nothing returning user_id", [org, account.id]);
+  const current=(await c.query('select active from organization_members where organization_id=$1 and user_id=$2',[org,account.id])).rows[0];
+  if(current.active===false)return {userId:account.id,status:'suspended'};
   return { userId: account.id, status: membership.rows.length ? 'invited' : 'linked', notifyEmail: membership.rows.length ? email : null };
 }

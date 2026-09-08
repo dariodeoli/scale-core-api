@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 const db=new PGlite();
 await db.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const f of ['20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
+for(const f of ['20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_agency_suite.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const query=(s,v)=>db.query(s,v);
 const org=(await query("insert into organizations(slug,name) values('other','Another agency') returning id")).rows[0].id;
 const scale=(await query("select id from organizations where slug='scale'")).rows[0].id;
@@ -41,4 +41,5 @@ r=await request('/api/auth/organizations',{cookie});assert.equal(JSON.parse(r.bo
 r=await request('/api/auth/switch-organization',{cookie,method:'POST',payload:{organizationId:scale}});assert.equal(r.status,200);const switched=r.headers['Set-Cookie'].split(';')[0];
 r=await request('/api/auth/me',{cookie:switched});assert.equal(JSON.parse(r.body).user.role,'viewer');assert.equal(JSON.parse(r.body).user.organization_slug,'scale');
 profile={email:'uninvited@example.invalid',email_verified:true};r=await callback();assert.ok(r.headers.Location.includes('authError'));assert.equal(r.headers['Set-Cookie'],undefined);
+await query('update organization_members set active=false where user_id=$1',[uid]);profile={email:'member@example.invalid',email_verified:true};r=await callback();assert.ok(r.headers.Location.includes('authError'));assert.equal((await request('/api/auth/me',{cookie:switched})).status,401);
 await db.close();console.log('PASS: Google browser-state binding, membership in non-Scale agency, app session handoff, single-use ticket, denied nonmembers, agency choice, tenant-specific roles');

@@ -4,7 +4,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {operations} from './operations.js';
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 const sql=(s,v)=>pg.query(s,v);
 const org=(await sql("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await sql("insert into organizations(slug,name) values('test-other','Other') returning id")).rows[0].id;
