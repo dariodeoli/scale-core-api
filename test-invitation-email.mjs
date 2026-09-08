@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {invitationEmail} from './invitation-email.js';
+const message=invitationEmail({email:'test@example.invalid',organizationName:'Agency & Partners <Test>\r\n',role:'editor',appUrl:'https://app.scaleparaguay.com'});
+assert.equal(message.subject,'Invitación a Agency & Partners <Test> · Scale OS');
+assert.ok(!message.subject.includes('\n'));
+assert.ok(message.html.includes('Agency &amp; Partners &lt;Test&gt;'));
+assert.ok(message.html.includes('test@example.invalid'));
+assert.ok(message.text.includes('Tu permiso: Editor'));
+assert.ok(message.text.includes('https://app.scaleparaguay.com/'));
+assert.ok(message.html.includes('href="https://app.scaleparaguay.com/"'));
+assert.ok(!message.html.includes('<img'));
+assert.ok(message.html.length<12000);
+assert.throws(()=>invitationEmail({email:'x',organizationName:'x',role:'viewer',appUrl:'javascript:alert(1)'}));
+console.log('PASS: invitation HTML and plain text, Spanish permissions, escaped identity, safe direct URL, no image/tracking pixel');

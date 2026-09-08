@@ -12,6 +12,8 @@ import { financeControls } from './finance-controls.js';
 import { contentReview } from './content-review.js';
 import { budgetSections } from './budget-sections.js';
 import { externalLink } from './media-policy.js';
+import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
+import { invitationEmail } from './invitation-email.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -41,8 +43,7 @@ const body = async (req) => { let s=''; for await (const c of req) {s += c;if(s.
 const id = () => crypto.randomBytes(32).toString('hex');
 async function sendInvitation(email, organizationName, role) {
   if (!resendApiKey) return false;
-  organizationName=organizationName.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const response = await fetch('https://api.resend.com/emails', { method:'POST', headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({from:invitationFrom,to:[email],subject:`Te invitaron a ${organizationName} en Scale OS`,html:`<main style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:32px"><h1>Tu acceso está listo</h1><p>Fuiste invitado/a a <strong>${organizationName}</strong> con permiso de <strong>${role}</strong>.</p><p>Ingresá con este mismo correo, usando Google o tu contraseña.</p><p><a href="${appUrl}" style="display:inline-block;padding:12px 18px;background:#4D065B;color:#fff;border-radius:8px;text-decoration:none">Abrir Scale OS</a></p></main>`}) });
+  const response = await fetch('https://api.resend.com/emails', { method:'POST', signal:AbortSignal.timeout(10000), headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({from:invitationFrom,to:[email],...invitationEmail({email,organizationName,role,appUrl})}) });
   return response.ok;
 }
 async function sendReset(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'},body:JSON.stringify({from:invitationFrom,to:[email],subject:'Establecé tu contraseña de Scale OS',html:`<main style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:32px"><h1>Tu contraseña</h1><p>Este enlace es de un solo uso y vence en una hora. Si no lo solicitaste, ignorá este correo.</p><a href="${appUrl}/?resetToken=${token}">Establecer contraseña</a></main>`})});return response.ok;}
@@ -97,7 +98,7 @@ function cors(req, res) {
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   res.setHeader('Vary', 'Origin');
   return true;
 }
@@ -107,6 +108,7 @@ const server = http.createServer(async (req,res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if(await recordLifecycle({req,res,url,db,session,send}))return;
     if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
     if(await financeControls({req,res,url,db,session,body,send}))return;
     if(await contentReview({req,res,url,db,session,body,send}))return;
@@ -199,7 +201,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/hub/organizations' && req.method === 'GET') {
       const user=await session(req); if(!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
-      const r=await db.query('select o.slug,o.name,o.active,m.role from organizations o join organization_members m on m.organization_id=o.id where m.user_id=$1 order by o.name',[user.id]);
+      const r=await db.query('select o.slug,o.name,o.active,m.role from organizations o join organization_members m on m.organization_id=o.id where m.user_id=$1 and m.active=true and m.removed_at is null order by o.name',[user.id]);
       return send(res,200,{organizations:r.rows});
     }
     if (url.pathname === '/api/hub/overview' && req.method === 'GET') {
@@ -211,7 +213,7 @@ const server = http.createServer(async (req,res) => {
         coalesce(sum(case when v.metric_key='sales' then v.value else 0 end),0)::numeric as sales
         from organizations o join organization_members m on m.organization_id=o.id
         left join hub_metric_values v on v.organization_id=o.id and v.period_end >= current_date - interval '30 days'
-        where m.user_id=$1 and o.active=true group by o.id order by o.name`,[user.id]);
+        where m.user_id=$1 and m.active=true and m.removed_at is null and o.active=true group by o.id order by o.name`,[user.id]);
       return send(res,200,{organizations:r.rows});
     }
     if (url.pathname === '/api/hub/metrics' && req.method === 'POST') {
@@ -237,7 +239,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r = await db.query('select * from agency_clients where organization_id=$1 order by active desc,name',[user.organization_id]);
+      const r = await db.query(`select c.* from agency_clients c where organization_id=$1 and ${visibleRecord('c','clients')} order by active desc,name`,[user.organization_id]);
       return send(res,200,{clients:r.rows});
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'POST') {
@@ -249,7 +251,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query("select p.*,c.name as client_name,count(o.id)::int as work_order_count from agency_projects p join agency_clients c on c.id=p.client_id left join agency_work_orders o on o.project_id=p.id where p.organization_id=$1 group by p.id,c.name order by p.created_at desc",[user.organization_id]);
+      const r=await db.query(`select p.*,c.name as client_name,count(o.id)::int as work_order_count from agency_projects p join agency_clients c on c.id=p.client_id left join agency_work_orders o on o.project_id=p.id and ${visibleRecord('o','work-orders')} where p.organization_id=$1 and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} group by p.id,c.name order by p.created_at desc`,[user.organization_id]);
       return send(res,200,{projects:r.rows});
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'POST') {
@@ -257,14 +259,14 @@ const server = http.createServer(async (req,res) => {
       const {name='',clientId,driveUrl:rawDriveUrl=null}=await body(req);
       const driveUrl=externalLink(rawDriveUrl);
       if (typeof name !== 'string' || name.trim().length < 2 || !Number.isInteger(Number(clientId))) return send(res,400,{error:'Proyecto inválido'});
-      const client=await db.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]);
+      const client=await db.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[Number(clientId),user.organization_id]);
       if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
       const r=await auditedQuery(user,req,'insert into agency_projects(name,client_id,drive_url,organization_id) values($1,$2,$3,$4) returning *',[name.trim(),Number(clientId),driveUrl||null,user.organization_id]);
       return send(res,201,{project:r.rows[0]});
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query('select o.*,p.name as project_name,c.name as client_name,u.email as assignee_email from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id left join users u on u.id=o.assigned_user_id where o.organization_id=$1 order by o.updated_at desc',[user.organization_id]);
+      const r=await db.query(`select o.*,p.name as project_name,c.name as client_name,u.email as assignee_email from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id left join users u on u.id=o.assigned_user_id where o.organization_id=$1 and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} order by o.updated_at desc`,[user.organization_id]);
       return send(res,200,{workOrders:r.rows});
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {
@@ -273,14 +275,14 @@ const server = http.createServer(async (req,res) => {
       const driveUrl=externalLink(rawDriveUrl);
       const allowedStatuses=['blocked','to_record','recorded','editing','review'];
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(projectId)) || !allowedStatuses.includes(status)) return send(res,400,{error:'Orden inválida'});
-      const project=await db.query('select id from agency_projects where id=$1 and organization_id=$2',[Number(projectId),user.organization_id]);
+      const project=await db.query(`select p.id from agency_projects p join agency_clients c on c.id=p.client_id where p.id=$1 and p.organization_id=$2 and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')}`,[Number(projectId),user.organization_id]);
       if(!project.rows[0]) return send(res,404,{error:'Proyecto no encontrado'});
       const r=await auditedQuery(user,req,'insert into agency_work_orders(title,project_id,status,description,drive_url,organization_id) values($1,$2,$3,$4,$5,$6) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null,user.organization_id]);
       return send(res,201,{workOrder:r.rows[0]});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'GET') {
       const user = await session(req); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
-      const r = await db.query('select u.id,u.email,m.role,m.active,m.created_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 order by m.created_at asc',[user.organization_id]);
+      const r = await db.query('select u.id,u.email,m.role,m.active,m.created_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 and m.removed_at is null order by m.created_at asc',[user.organization_id]);
       return send(res,200,{members:r.rows});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'POST') {
@@ -296,9 +298,10 @@ const server = http.createServer(async (req,res) => {
           const hash = await bcrypt.hash(password || id(),12);
           account = await client.query('insert into users(email,password_hash,role) values($1,$2,$3) returning id',[normalizedEmail,hash,role]);
         }
-        const existing = await client.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,account.rows[0].id]);
-        if (existing.rows[0]) { await client.query('rollback'); return send(res,409,{error:'Ese usuario ya pertenece a esta empresa'}); }
-        const membership = await client.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3) returning organization_id,user_id,role,created_at',[user.organization_id,account.rows[0].id,role]);
+        await client.query('select id from organizations where id=$1 for update',[user.organization_id]);
+        const existing = await client.query('select removed_at from organization_members where organization_id=$1 and user_id=$2 for update',[user.organization_id,account.rows[0].id]);
+        if (existing.rows[0]&&!existing.rows[0].removed_at) { await client.query('rollback'); return send(res,409,{error:'Ese usuario ya pertenece a esta empresa'}); }
+        const membership = await client.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3) on conflict(organization_id,user_id) do update set role=excluded.role,active=true,removed_at=null,created_at=now() returning organization_id,user_id,role,created_at',[user.organization_id,account.rows[0].id,role]);
         await client.query('commit');
         const member={id:account.rows[0].id,email:normalizedEmail,...membership.rows[0]};
         const emailSent=await sendInvitation(normalizedEmail,user.organization_name,role).catch(()=>false);
@@ -307,7 +310,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'GET') {
       const user = await session(req); if (!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
-      const r = await db.query("select b.*,c.name as client_name,count(i.id)::int as item_count from agency_budgets b join agency_clients c on c.id=b.client_id left join agency_budget_items i on i.budget_id=b.id where b.organization_id=$1 group by b.id,c.name order by b.created_at desc",[user.organization_id]);
+      const r = await db.query(`select b.*,c.name as client_name,count(i.id)::int as item_count from agency_budgets b join agency_clients c on c.id=b.client_id left join agency_budget_items i on i.budget_id=b.id where b.organization_id=$1 and ${visibleRecord('b','budgets')} group by b.id,c.name order by b.created_at desc`,[user.organization_id]);
       return send(res,200,{budgets:r.rows});
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {
@@ -321,7 +324,7 @@ const server = http.createServer(async (req,res) => {
       const client = await db.connect();
       try {
         await client.query('begin');
-        const belongs = await client.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]);
+        const belongs = await client.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[Number(clientId),user.organization_id]);
         await auditContext(client,user,req);
         if (!belongs.rows[0]) { await client.query('rollback'); return send(res,404,{error:'Cliente no encontrado'}); }
         const subtotal = normalizedItems.reduce((sum,item) => sum + item.quantity * item.unitPrice, 0);
@@ -337,7 +340,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/accounts' && req.method === 'GET') {
       const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
-      const r=await db.query('select a.*,u.email as custodian_email from bank_accounts a left join users u on u.id=a.custodian_user_id where a.organization_id=$1 order by a.active desc,a.name',[user.organization_id]);
+      const r=await db.query(`select a.*,u.email as custodian_email from bank_accounts a left join users u on u.id=a.custodian_user_id where a.organization_id=$1 and ${visibleRecord('a','accounts')} order by a.active desc,a.name`,[user.organization_id]);
       return send(res,200,{accounts:r.rows});
     }
     if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {
@@ -363,7 +366,7 @@ const server = http.createServer(async (req,res) => {
       const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
       const {clientId,total,currency='PYG',dueOn=null,notes=null}=await body(req); const amount=Number(total);
       if(!Number.isInteger(Number(clientId)) || !Number.isFinite(amount) || amount<0 || !['PYG','USD'].includes(currency)) return send(res,400,{error:'Factura inválida'});
-      const client=await db.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]); if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
+      const client=await db.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[Number(clientId),user.organization_id]); if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
       const number=`F-${new Date().getFullYear()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
       const r=await auditedQuery(user,req,'insert into agency_invoices(organization_id,client_id,number,total,currency,due_on,notes) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(clientId),number,amount,currency,dueOn || null,notes || null]);
       return send(res,201,{invoice:r.rows[0]});
@@ -413,7 +416,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/summary' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query("select (select count(*)::int from agency_clients where organization_id=$1 and active=true) as active_clients, (select count(*)::int from agency_projects where organization_id=$1 and status='active') as active_projects, (select count(*)::int from agency_work_orders where organization_id=$1 and status not in ('approved','published')) as open_orders",[user.organization_id]);
+      const r=await db.query(`select (select count(*)::int from agency_clients c where organization_id=$1 and active=true and ${visibleRecord('c','clients')}) as active_clients, (select count(*)::int from agency_projects p join agency_clients c on c.id=p.client_id where p.organization_id=$1 and p.status='active' and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')}) as active_projects, (select count(*)::int from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id where o.organization_id=$1 and o.status not in ('approved','published') and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')}) as open_orders`,[user.organization_id]);
       return send(res,200,{summary:r.rows[0]});
     }
     if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); return res.end(await fs.readFile(path.join(root,'public/index.html'))); }

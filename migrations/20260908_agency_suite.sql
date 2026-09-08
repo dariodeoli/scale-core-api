@@ -1,4 +1,10 @@
 alter table organization_members add column if not exists active boolean not null default true;
+alter table organization_members add column if not exists removed_at timestamptz;
+create table if not exists agency_archived_records (
+ organization_id bigint not null references organizations(id),kind text not null,
+ record_id bigint not null,removed_by bigint references users(id),removed_at timestamptz not null default now(),
+ primary key(organization_id,kind,record_id)
+);
 alter table agency_projects add column if not exists approval_levels smallint not null default 1 check(approval_levels between 1 and 3);
 alter table agency_work_orders add column if not exists approval_step smallint not null default 0;
 alter table agency_budgets add column if not exists share_enabled boolean not null default false;
@@ -37,7 +43,7 @@ create table if not exists password_resets (
 );
 create table if not exists auth_throttles (key text primary key,count integer not null default 1,expires_at timestamptz not null);
 do $$ declare t text;begin
- foreach t in array array['agency_plans','agency_leads','agency_inventory','agency_clients','agency_projects','agency_work_orders','agency_budgets','organization_members','bank_accounts','agency_payments','account_transfers','agency_invoices'] loop
+ foreach t in array array['agency_archived_records','agency_plans','agency_leads','agency_inventory','agency_clients','agency_projects','agency_work_orders','agency_budgets','organization_members','bank_accounts','agency_payments','account_transfers','agency_invoices'] loop
   execute format('drop trigger if exists operation_audit on %I',t);
   execute format('create trigger operation_audit after insert or update or delete on %I for each row execute function audit_agency_operation()',t);
  end loop;

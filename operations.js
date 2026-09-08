@@ -1,5 +1,6 @@
 import { collaboratorAccess } from './collaborator-access.js';
 import { profilePhoto } from './media-policy.js';
+import {visibleRecord,assertRecordAvailable} from './record-lifecycle.js';
 const financeRoles = ['owner','admin','finance'];
 function fail(message, status=400) { throw Object.assign(new Error(message),{status}); }
 const text = (value, max=2000) => typeof value==='string' && value.length<=max ? value.trim() : fail('Texto inválido');
@@ -9,7 +10,7 @@ function money(value, zero=false) { const n=Number(value); if(!Number.isFinite(n
 function date(value) { if(!value) return null; const parsed=new Date(value); if(!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==value) fail('Fecha inválida'); return value; }
 const option = (value, choices) => choices.includes(value) ? value : fail('Opción inválida');
 const email = value => !value ? null : /^\S+@\S+\.\S+$/.test(value) ? text(value,254).toLowerCase() : fail('Email inválido');
-async function belongs(c,table,id,org) { if(id && !(await c.query(`select id from ${table} where id=$1 and organization_id=$2`,[id,org])).rows.length) fail('Registro no encontrado',404); }
+async function belongs(c,table,id,org) { if(!id)return;const row=(await c.query(`select * from ${table} where id=$1 and organization_id=$2`,[id,org])).rows[0];if(!row)fail('Registro no encontrado',404);await assertRecordAvailable(c,table,row); }
 export async function operations({req,res,url,db,session,body,send,sendInvitation=async()=>false}) {
  const commentMatch=url.pathname.match(/^\/api\/agency\/projects\/(\d+)\/comments$/);
  const collaboratorMatch=url.pathname.match(/^\/api\/agency\/collaborators(?:\/(\d+))?$/);
@@ -53,9 +54,9 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
    else if(req.method==='POST') {const b=text((await body(req)).body);if(!b) fail('Escribí un comentario');result={comment:(await c.query('insert into agency_project_comments(organization_id,project_id,author_user_id,body) values($1,$2,$3,$4) returning *',[org,commentMatch[1],user.id,b])).rows[0]};status=201;}
    else fail('Método no permitido',405);
   } else if(collaboratorMatch) {
-   if(req.method==='GET') result={collaborators:(await c.query('select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 order by c.active desc,c.full_name',[org])).rows};
+   if(req.method==='GET') result={collaborators:(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows};
    else if(req.method==='POST'||(req.method==='PATCH'&&collaboratorMatch[1])) {
-    let previous={};if(collaboratorMatch[1]){previous=(await c.query('select * from agency_collaborators where id=$1 and organization_id=$2 for update',[collaboratorMatch[1],org])).rows[0];if(!previous)fail('Registro no encontrado',404);}
+    let previous={};if(collaboratorMatch[1]){previous=(await c.query('select * from agency_collaborators where id=$1 and organization_id=$2 for update',[collaboratorMatch[1],org])).rows[0];if(!previous)fail('Registro no encontrado',404);await assertRecordAvailable(c,'agency_collaborators',previous);}
     const incoming=await body(req), b={compensation_type:'fixed',compensation_amount:0,currency:'PYG',active:true,...previous,...incoming};
     const name=text(b.full_name,120);if(name.length<2) fail('Ingresá el nombre');
     for(const key of ['started_on','ended_on'])if(b[key] instanceof Date)b[key]=b[key].toISOString().slice(0,10);
