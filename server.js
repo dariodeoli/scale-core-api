@@ -20,6 +20,8 @@ const googleClientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
 const googleRedirectUri = (process.env.GOOGLE_REDIRECT_URI || 'https://admin.scaleparaguay.com/api/auth/google/callback').trim();
 const appUrl = (process.env.APP_URL || 'https://app.scaleparaguay.com').replace(/\/$/, '');
+const resendApiKey = process.env.RESEND_API_KEY || '';
+const invitationFrom = process.env.EMAIL_FROM || 'Scale OS <invitaciones@owncoding.dev>';
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
 const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com', 'https://dadoocapital.com', 'https://www.dadoocapital.com', 'https://admin.dadoocapital.com']);
 const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer'];
@@ -30,6 +32,11 @@ const cookie = (name, value, maxAge) => `${name}=${value}; Max-Age=${maxAge}; Pa
 const parseCookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(v => { const i=v.indexOf('='); return [v.slice(0,i).trim(), decodeURIComponent(v.slice(i+1))]; }));
 const body = async (req) => { let s=''; for await (const c of req) s += c; return s ? JSON.parse(s) : {}; };
 const id = () => crypto.randomBytes(32).toString('hex');
+async function sendInvitation(email, organizationName, role) {
+  if (!resendApiKey) return false;
+  const response = await fetch('https://api.resend.com/emails', { method:'POST', headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({from:invitationFrom,to:[email],subject:`Te invitaron a ${organizationName} en Scale OS`,html:`<main style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:32px"><h1>Tu acceso está listo</h1><p>Fuiste invitado/a a <strong>${organizationName}</strong> con permiso de <strong>${role}</strong>.</p><p>Ingresá con este mismo correo, usando Google o tu contraseña.</p><p><a href="${appUrl}" style="display:inline-block;padding:12px 18px;background:#4D065B;color:#fff;border-radius:8px;text-decoration:none">Abrir Scale OS</a></p></main>`}) });
+  return response.ok;
+}
 async function runOptionalMigration(filename) {
   try {
     await db.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
@@ -121,7 +128,7 @@ const server = http.createServer(async (req,res) => {
       const profile = await profileResponse.json(); const email = String(profile.email || '').trim().toLowerCase();
       if (!email || profile.email_verified !== true) return send(res,403,{error:'La cuenta de Google no está verificada'});
       const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.slug=$2 and o.active=true',[email,saved.rows[0].organization_slug]);
-      if (!member.rows[0]) return send(res,403,{error:'Tu correo de Google todavía no fue invitado a esta empresa'});
+      if (!member.rows[0]) { res.writeHead(302,{Location:`${appUrl}/?authError=${encodeURIComponent('Tu correo de Google todavía no fue invitado a esta empresa. Pedí una invitación al administrador.')}`}); return res.end(); }
       const sessionToken=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[sessionToken,member.rows[0].id,member.rows[0].organization_id]);
       res.writeHead(302,{'Location':appUrl,'Set-Cookie':cookie('scale_session',sessionToken,604800)}); return res.end();
     }
@@ -230,20 +237,22 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/agency/members' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
       const {email='',password='',role='viewer'} = await body(req); const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
-      if (!/^\S+@\S+\.\S+$/.test(normalizedEmail) || typeof password !== 'string' || password.length < 12 || !memberRoles.includes(role) || (role === 'owner' && user.role !== 'owner')) return send(res,400,{error:'Datos de usuario inválidos'});
+      if (!/^\S+@\S+\.\S+$/.test(normalizedEmail) || (password && (typeof password !== 'string' || password.length < 12)) || !memberRoles.includes(role) || (role === 'owner' && user.role !== 'owner')) return send(res,400,{error:'Datos de invitación inválidos'});
       const client = await db.connect();
       try {
         await client.query('begin');
         let account = await client.query('select id from users where email=$1',[normalizedEmail]);
         if (!account.rows[0]) {
-          const hash = await bcrypt.hash(password,12);
+          const hash = await bcrypt.hash(password || id(),12);
           account = await client.query('insert into users(email,password_hash,role) values($1,$2,$3) returning id',[normalizedEmail,hash,role]);
         }
         const existing = await client.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,account.rows[0].id]);
         if (existing.rows[0]) { await client.query('rollback'); return send(res,409,{error:'Ese usuario ya pertenece a esta empresa'}); }
         const membership = await client.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3) returning organization_id,user_id,role,created_at',[user.organization_id,account.rows[0].id,role]);
         await client.query('commit');
-        return send(res,201,{member:{id:account.rows[0].id,email:normalizedEmail,...membership.rows[0]}});
+        const member={id:account.rows[0].id,email:normalizedEmail,...membership.rows[0]};
+        const emailSent=await sendInvitation(normalizedEmail,user.organization_name,role);
+        return send(res,201,{member,emailSent});
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'GET') {
