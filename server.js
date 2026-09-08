@@ -45,26 +45,24 @@ async function sendInvitation(email, organizationName, role) {
   return response.ok;
 }
 async function sendReset(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'},body:JSON.stringify({from:invitationFrom,to:[email],subject:'Establecé tu contraseña de Scale OS',html:`<main style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:32px"><h1>Tu contraseña</h1><p>Este enlace es de un solo uso y vence en una hora. Si no lo solicitaste, ignorá este correo.</p><a href="${appUrl}/?resetToken=${token}">Establecer contraseña</a></main>`})});return response.ok;}
-async function runOptionalMigration(filename) {
+async function runOptionalMigration(filename,client=db) {
   try {
-    await db.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
+    await client.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
   } catch (error) {
     if (error && typeof error === 'object' && error.code === 'ENOENT') return;
     throw error;
   }
 }
 async function init() {
-  await db.query(await fs.readFile(path.join(root, 'schema.sql'), 'utf8'));
-  await runOptionalMigration('20260908_dadoo_hub.sql');
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_client_payment_status.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_treasury_ledger.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_google_oauth.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_people_commissions_comments.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_operations_complete.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_referral_discounts.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_collaborator_profiles.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_agency_suite.sql'), 'utf8'));
-  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_daily_controls.sql'), 'utf8'));
+  const migration=await db.connect();
+  try{
+    await migration.query('begin');
+    await migration.query("select pg_advisory_xact_lock(hashtextextended('scale-core-schema',0))");
+    await migration.query(await fs.readFile(path.join(root,'schema.sql'),'utf8'));
+    await runOptionalMigration('20260908_dadoo_hub.sql',migration);
+    for(const filename of ['20260908_client_payment_status.sql','20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await migration.query(await fs.readFile(path.join(root,'migrations',filename),'utf8'));
+    await migration.query('commit');
+  }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);

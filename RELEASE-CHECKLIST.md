@@ -24,17 +24,16 @@ Versiones publicadas: API `6c44bd0` y frontend `9b8f75e`. La API se construye ah
 
 Cambios aditivos de base de datos. Si falla salud, autenticación o guardado, volver a las versiones anteriores del API y frontend desde Owncoding Hub; no eliminar tablas ni registros nuevos. Los cambios ajenos de WEEM/Dadoo quedan fuera de los commits de esta entrega.
 
-## Pendientes que no se deben presentar como terminados
+## Pendientes actuales
 
 - Conexión oficial de WhatsApp/Instagram, bandeja omnicanal, webhooks y automatizaciones tipo Manychat: requiere permisos y activos de Meta. No hay envíos automáticos habilitados.
-- Copias externas y prueba de restauración: definir y verificar almacenamiento/retención en la infraestructura.
-- Conciliación bancaria automática, cambios de moneda en transferencias y reversión de cobros: no están implementados en esta entrega.
-- Aprobación de videos por un cliente externo: los pasos de producción son internos; la aprobación pública disponible corresponde a presupuestos.
+- Copias externas: falta un destino de almacenamiento autorizado y verificar su retención. La prueba de restauración ya pasó (ver ampliación).
+- Conexión bancaria directa: la conciliación disponible parte de un CSV importado, no de una API bancaria.
 - Revisión visual completa de Chrome: la herramienta rechazó acceso por política administrativa. No se ha eludido esa restricción.
-- La guía de cinco pasos no obliga a completar datos. El diseño del PDF usa una plantilla fija; no es un constructor libre de secciones.
-- El historial amplía la auditoría, pero algunos movimientos del código anterior carecen de actor; no inventar su autoría.
+- La guía de cinco pasos no obliga a completar datos. Los presupuestos permiten secciones de texto reordenables y visibilidad; no un editor de maquetación libre tipo Canva.
+- Algunos movimientos históricos no capturaron autor. Se recuperaron únicamente atribuciones sustentadas por los registros originales; no inventar las restantes.
 
-## Segunda ampliación — en verificación
+## Segunda ampliación — publicada y verificada por API
 
 - Reversión de cobros como contramovimiento inmutable, con motivo, responsable y saldo suficiente. Cobros y transferencias aceptan identificador de reintento para evitar duplicados.
 - Transferencias PYG/USD con importe de salida, importe recibido y cotización registrada. No ejecuta órdenes bancarias reales.
@@ -42,8 +41,12 @@ Cambios aditivos de base de datos. Si falla salud, autenticación o guardado, vo
 - Aprobación externa de piezas por enlace revocable de siete días: comentarios, solicitud de cambios y bloqueo de publicación cuando falta la aprobación de la versión actual.
 - Presupuestos con secciones de texto reordenables/ocultables. Detalle de ítems y totales siempre visibles.
 - Auditoría de nuevas altas y operaciones financieras. Atribución histórica solo cuando el registro original contiene autor.
-- Script manual de verificación de restauración en base temporal independiente; pendiente ejecutar en Hub.
+- Restauración verificada a las 04:52 UTC del 08-09-2026: 35 tablas y 174 registros, con igualdad de conteos y huellas de contenido. Base temporal y archivo de ensayo eliminados, sin sobrescribir producción. Tarea manual del Hub `tdgmqvwadkzbicnba3heqx5o`, con ejecución periódica deshabilitada.
 
-Pruebas: `test-daily-controls.mjs`, `test-suite.mjs`, `test-operations.mjs`, `test-auth.mjs`, build TypeScript y pruebas del parser CSV. Publicar API antes de frontend y verificar PDF público/privado, salud y movimientos demo en empresa separada. Los apartados anteriores describen la primera entrega; actualizar resultados al cerrar esta ampliación.
+Pruebas aprobadas: `test-daily-controls.mjs`, `test-suite.mjs`, `test-operations.mjs`, `test-auth.mjs`, build TypeScript y parser CSV. Migraciones completas verificadas en una sola transacción y repetidas sin cambios de saldos.
+
+Prueba de producción en empresa demo separada (ID 22): cobro de Gs. 750.000, salida de Gs. 750.000 y entrada de USD 100, retorno y reversión del cobro. Saldo final: cero en ambas cuentas. Los reintentos no duplicaron operaciones. Dos filas conciliadas, reimportación sin duplicados. Aprobación pública y bloqueo previo de publicación comprobados. No se ejecutó ninguna transferencia bancaria real.
+
+Frontend `7747420` publicado. PDF con secciones personalizado generado, abierto como A4 de una página y revisado visualmente; enlaces públicos servidos desde `app.scaleparaguay.com`. No confundir estas pruebas HTTP/documentales con QA interactivo de Chrome.
 
 Dependencias externas comprobadas: el Hub devuelve cero almacenamientos S3; no hay configuración de Meta en la aplicación. El acceso de Chrome a Scale volvió a ser rechazado por imposibilidad de verificar la política administrativa. No eludirla.
