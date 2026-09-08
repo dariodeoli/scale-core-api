@@ -14,8 +14,10 @@ const bootstrapEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const bootstrapPassword = process.env.ADMIN_PASSWORD || '';
 const scaleOsOwnerEmail = (process.env.SCALE_OS_OWNER_EMAIL || '').trim().toLowerCase();
 const scaleOsOwnerPassword = process.env.SCALE_OS_OWNER_PASSWORD || '';
+const dadooOwnerEmail = (process.env.DADOO_OWNER_EMAIL || '').trim().toLowerCase();
+const dadooOwnerPassword = process.env.DADOO_OWNER_PASSWORD || '';
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
-const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com']);
+const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com', 'https://dadoocapital.com', 'https://www.dadoocapital.com', 'https://admin.dadoocapital.com']);
 const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer'];
 let databaseReady = false;
 
@@ -26,7 +28,9 @@ const body = async (req) => { let s=''; for await (const c of req) s += c; retur
 const id = () => crypto.randomBytes(32).toString('hex');
 async function init() {
   await db.query(await fs.readFile(path.join(root, 'schema.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_dadoo_hub.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_client_payment_status.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_treasury_ledger.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
@@ -35,6 +39,13 @@ async function init() {
   }
   await provisionOwner(bootstrapEmail, bootstrapPassword);
   await provisionOwner(scaleOsOwnerEmail, scaleOsOwnerPassword);
+  await provisionOwnerForOrganization(dadooOwnerEmail, dadooOwnerPassword, 'dadoo-capital');
+}
+async function provisionOwnerForOrganization(email, password, slug) {
+  if (!email || !password) return;
+  const hash = await bcrypt.hash(password, 12);
+  const user = await db.query('insert into users(email,password_hash) values($1,$2) on conflict(email) do update set password_hash=excluded.password_hash returning id', [email, hash]);
+  await db.query("insert into organization_members(organization_id,user_id,role) select id,$1,'owner' from organizations where slug=$2 on conflict(organization_id,user_id) do update set role='owner'", [user.rows[0].id, slug]);
 }
 async function session(req) {
   const token = parseCookies(req).scale_session;
@@ -91,6 +102,36 @@ const server = http.createServer(async (req,res) => {
       if(!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return send(res,400,{error:'Rango inválido'});
       const r=await db.query("select name,event_date::text as event_date,count(*)::int as count from events where organization_id=$1 and event_date between $2 and $3 group by name,event_date order by event_date desc,name",[user.organization_id,from,to]);
       return send(res,200,{events:r.rows});
+    }
+    if (url.pathname === '/api/hub/organizations' && req.method === 'GET') {
+      const user=await session(req); if(!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      const r=await db.query('select o.slug,o.name,o.active,m.role from organizations o join organization_members m on m.organization_id=o.id where m.user_id=$1 order by o.name',[user.id]);
+      return send(res,200,{organizations:r.rows});
+    }
+    if (url.pathname === '/api/hub/overview' && req.method === 'GET') {
+      const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
+      const r=await db.query(`select o.slug,o.name,
+        coalesce(sum(case when v.metric_key='revenue' then v.value else 0 end),0)::numeric as revenue,
+        coalesce(sum(case when v.metric_key='collected' then v.value else 0 end),0)::numeric as collected,
+        coalesce(sum(case when v.metric_key='leads' then v.value else 0 end),0)::numeric as leads,
+        coalesce(sum(case when v.metric_key='sales' then v.value else 0 end),0)::numeric as sales
+        from organizations o join organization_members m on m.organization_id=o.id
+        left join hub_metric_values v on v.organization_id=o.id and v.period_end >= current_date - interval '30 days'
+        where m.user_id=$1 and o.active=true group by o.id order by o.name`,[user.id]);
+      return send(res,200,{organizations:r.rows});
+    }
+    if (url.pathname === '/api/hub/metrics' && req.method === 'POST') {
+      const integrationKey = process.env.HUB_INGEST_KEY;
+      if (!integrationKey || req.headers['x-hub-integration-key'] !== integrationKey) return send(res,401,{error:'Clave de integración inválida'});
+      const {organizationSlug, integrationSlug=null, metrics=[]}=await body(req);
+      if(typeof organizationSlug !== 'string' || !Array.isArray(metrics) || !metrics.length || metrics.length > 100) return send(res,400,{error:'Payload de métricas inválido'});
+      const org=await db.query('select id from organizations where slug=$1 and active=true',[organizationSlug]);
+      if(!org.rows[0]) return send(res,404,{error:'Organización no encontrada'});
+      const integration=integrationSlug ? await db.query('select id from hub_integrations where organization_id=$1 and slug=$2 and active=true',[org.rows[0].id,integrationSlug]) : {rows:[]};
+      const client=await db.connect();
+      try { await client.query('begin'); for(const metric of metrics) { if(typeof metric?.key !== 'string' || !Number.isFinite(Number(metric.value))) throw new Error('Métrica inválida'); await client.query('insert into hub_metric_values(organization_id,integration_id,metric_key,value,currency,period_start,period_end,metadata) values($1,$2,$3,$4,$5,$6,$7,$8)',[org.rows[0].id,integration.rows[0]?.id || null,metric.key,Number(metric.value),metric.currency || null,metric.periodStart || null,metric.periodEnd || null,metric.metadata || {}]); } await client.query('commit'); return send(res,202,{ok:true,accepted:metrics.length}); }
+      catch(error) { await client.query('rollback'); return send(res,400,{error:error instanceof Error ? error.message : 'No se pudieron guardar las métricas'}); }
+      finally { client.release(); }
     }
     if (url.pathname === '/api/agency/client-payment-status' && req.method === 'GET') {
       const user=await session(req); if(!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
@@ -193,15 +234,22 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/accounts' && req.method === 'GET') {
       const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
-      const r=await db.query('select * from bank_accounts where organization_id=$1 order by active desc,name',[user.organization_id]);
+      const r=await db.query('select a.*,u.email as custodian_email from bank_accounts a left join users u on u.id=a.custodian_user_id where a.organization_id=$1 order by a.active desc,a.name',[user.organization_id]);
       return send(res,200,{accounts:r.rows});
     }
     if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {
       const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
-      const {name='',accountType='bank',currency='PYG'}=await body(req);
+      const {name='',accountType='bank',currency='PYG',institution=null,accountNumber=null,holderName=null,custodianUserId=null}=await body(req);
       if(typeof name !== 'string' || name.trim().length<2 || !['bank','cash','digital','investment'].includes(accountType) || !['PYG','USD'].includes(currency)) return send(res,400,{error:'Cuenta inválida'});
-      const r=await db.query('insert into bank_accounts(organization_id,name,account_type,currency) values($1,$2,$3,$4) returning *',[user.organization_id,name.trim(),accountType,currency]);
+      const custodianId=custodianUserId === null || custodianUserId === '' ? null : Number(custodianUserId);
+      if(custodianId !== null && (!Number.isInteger(custodianId) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,custodianId])).rows[0])) return send(res,400,{error:'Custodio inválido'});
+      const r=await db.query('insert into bank_accounts(organization_id,name,account_type,currency,institution,account_number,holder_name,custodian_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,name.trim(),accountType,currency,typeof institution === 'string' ? institution.trim() || null : null,typeof accountNumber === 'string' ? accountNumber.trim() || null : null,typeof holderName === 'string' ? holderName.trim() || null : null,custodianId]);
       return send(res,201,{account:r.rows[0]});
+    }
+    if (url.pathname === '/api/agency/custodians' && req.method === 'GET') {
+      const user=await session(req); if(!can(user,['owner','admin','management','finance'])) return send(res,403,{error:'Sin permiso'});
+      const r=await db.query('select u.id,u.email,m.role from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 order by u.email',[user.organization_id]);
+      return send(res,200,{members:r.rows});
     }
     if (url.pathname === '/api/agency/invoices' && req.method === 'GET') {
       const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
@@ -218,14 +266,38 @@ const server = http.createServer(async (req,res) => {
       const r=await db.query('update agency_invoices set number=$1 where id=$2 returning *',[number,draft.rows[0].id]);
       return send(res,201,{invoice:r.rows[0]});
     }
+    if (url.pathname === '/api/agency/payments' && req.method === 'GET') {
+      const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
+      const r=await db.query('select p.*,i.number as invoice_number,c.name as client_name,a.name as account_name,a.account_type,a.currency,u.email as received_by_email from agency_payments p join agency_invoices i on i.id=p.invoice_id join agency_clients c on c.id=i.client_id join bank_accounts a on a.id=p.account_id left join users u on u.id=p.received_by_user_id where p.organization_id=$1 order by p.received_on desc,p.id desc',[user.organization_id]);
+      return send(res,200,{payments:r.rows});
+    }
     if (url.pathname === '/api/agency/payments' && req.method === 'POST') {
       const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
-      const {invoiceId,accountId,amount,receivedOn=null,reference=null}=await body(req); const paid=Number(amount);
+      const {invoiceId,accountId,amount,receivedOn=null,reference=null,receivedByUserId=null}=await body(req); const paid=Number(amount);
       if(!Number.isInteger(Number(invoiceId)) || !Number.isInteger(Number(accountId)) || !Number.isFinite(paid) || paid<=0) return send(res,400,{error:'Pago inválido'});
-      const valid=await db.query('select i.currency from agency_invoices i join bank_accounts a on a.id=$2 and a.organization_id=i.organization_id and a.currency=i.currency where i.id=$1 and i.organization_id=$3',[Number(invoiceId),Number(accountId),user.organization_id]);
+      const valid=await db.query('select i.currency,i.total,i.paid_amount from agency_invoices i join bank_accounts a on a.id=$2 and a.organization_id=i.organization_id and a.currency=i.currency where i.id=$1 and i.organization_id=$3',[Number(invoiceId),Number(accountId),user.organization_id]);
       if(!valid.rows[0]) return send(res,404,{error:'Factura o cuenta no encontrada, o monedas distintas'});
-      const r=await db.query('insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference) values($1,$2,$3,$4,$5,$6) returning *',[user.organization_id,Number(invoiceId),Number(accountId),paid,receivedOn || new Date().toISOString().slice(0,10),reference || null]);
+      if(paid > Number(valid.rows[0].total) - Number(valid.rows[0].paid_amount)) return send(res,400,{error:'El cobro supera el saldo pendiente'});
+      const receiver=receivedByUserId === null || receivedByUserId === '' ? Number(user.id) : Number(receivedByUserId);
+      if(!Number.isInteger(receiver) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,receiver])).rows[0]) return send(res,400,{error:'Persona que recibió el pago inválida'});
+      const r=await db.query('insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference,received_by_user_id) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(invoiceId),Number(accountId),paid,receivedOn || new Date().toISOString().slice(0,10),reference || null,receiver]);
       return send(res,201,{payment:r.rows[0]});
+    }
+    if (url.pathname === '/api/agency/transfers' && req.method === 'GET') {
+      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const r=await db.query('select t.*,f.name as from_account_name,d.name as to_account_name,u.email as created_by_email from account_transfers t join bank_accounts f on f.id=t.from_account_id join bank_accounts d on d.id=t.to_account_id left join users u on u.id=t.created_by_user_id where t.organization_id=$1 order by t.transferred_on desc,t.id desc',[user.organization_id]);
+      return send(res,200,{transfers:r.rows});
+    }
+    if (url.pathname === '/api/agency/transfers' && req.method === 'POST') {
+      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const {fromAccountId,toAccountId,amount,transferredOn=null,reference=null,notes=null}=await body(req); const transferAmount=Number(amount);
+      if(!Number.isInteger(Number(fromAccountId)) || !Number.isInteger(Number(toAccountId)) || Number(fromAccountId)===Number(toAccountId) || !Number.isFinite(transferAmount) || transferAmount<=0) return send(res,400,{error:'Transferencia inválida'});
+      const accounts=await db.query('select id,currency,balance from bank_accounts where organization_id=$1 and id=any($2::bigint[])',[user.organization_id,[Number(fromAccountId),Number(toAccountId)]]);
+      if(accounts.rows.length!==2 || accounts.rows[0].currency!==accounts.rows[1].currency) return send(res,400,{error:'Las cuentas deben existir y usar la misma moneda'});
+      const source=accounts.rows.find(account=>Number(account.id)===Number(fromAccountId));
+      if(Number(source.balance)<transferAmount) return send(res,400,{error:'Saldo insuficiente en la cuenta de origen'});
+      const r=await db.query('insert into account_transfers(organization_id,from_account_id,to_account_id,amount,transferred_on,reference,notes,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,Number(fromAccountId),Number(toAccountId),transferAmount,transferredOn || new Date().toISOString().slice(0,10),typeof reference === 'string' ? reference.trim() || null : null,typeof notes === 'string' ? notes.trim() || null : null,user.id]);
+      return send(res,201,{transfer:r.rows[0]});
     }
     const orderMatch = url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)$/);
     if (orderMatch && req.method === 'PATCH') {
