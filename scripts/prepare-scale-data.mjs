@@ -70,7 +70,7 @@ export async function seedDemo(c){
    const p=(await c.query("insert into agency_collaborators(organization_id,user_id,full_name,email,job_title,compensation_amount,currency,payment_day,started_on,notes) values(22,$1,$2,$3,$4,$5,'PYG',5,current_date-180,'Persona ficticia; sin correo real ni invitación enviada.') returning id",[user.id,'Demo · '+name,email,job,salary])).rows[0];people.push({user:user.id,person:p.id});
   }
   const account=[];
-  for(const [name,type,currency,owner]of [['Demo · Caja Lucía','cash','PYG',people[0].user],['Demo · Banco ficticio PYG','bank','PYG',people[2].user],['Demo · Cuenta USD','bank','USD',people[2].user]])account.push((await c.query('insert into bank_accounts(organization_id,name,account_type,currency,balance,custodian_user_id,holder_name) values(22,$1,$2,$3,0,$4,$5) returning id',[name,type,currency,owner,'Empresa ficticia de demostración'])).rows[0].id);
+  for(const [name,type,currency,owner]of [['Demo · Caja Lucía','cash','PYG',people[0].user],['Demo · Banco ficticio PYG','bank','PYG',people[2].user],['Demo · Tesorería USD (catálogo)','bank','USD',people[2].user]])account.push((await c.query('insert into bank_accounts(organization_id,name,account_type,currency,balance,custodian_user_id,holder_name) values(22,$1,$2,$3,0,$4,$5) returning id',[name,type,currency,owner,'Empresa ficticia de demostración'])).rows[0].id);
   const names=['Aurora Café','Bosque Hogar','Órbita Fitness','Nube Software','Luna Moda'];
   for(let i=0;i<names.length;i++){
    const currency=i===3?'USD':'PYG',total=i===3?1200:(i+3)*1000000;

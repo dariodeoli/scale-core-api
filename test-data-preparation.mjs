@@ -14,11 +14,13 @@ const a=(await c.query("insert into bank_accounts(organization_id,name,account_t
 await c.query('insert into agency_payments(organization_id,invoice_id,account_id,amount) values(1,$1,$2,1000)',[inv,a[0].id]);
 await c.query('insert into account_transfers(organization_id,from_account_id,to_account_id,amount) values(1,$1,$2,800)',[a[0].id,a[1].id]);
 const before=await capture(c,1),members=(await c.query('select * from organization_members order by 1,2')).rows;
+await c.query("insert into bank_accounts(organization_id,name,account_type,currency) values(22,'Demo · Cuenta USD','bank','USD')");
 assert.equal((await seedDemo(c)).orders,20);assert((await seedDemo(c)).alreadySeeded);
 const demo=await capture(c,22);assert.equal(demo.agency_clients.length,5);assert.equal(demo.agency_work_orders.length,20);
 assert.equal(Number(demo.bank_accounts.find(a=>a.name==='Demo · Banco ficticio PYG').balance),500000);
 assert.equal(Number(demo.bank_accounts.find(a=>a.name==='Demo · Caja Lucía').balance),8000000);
-assert.equal(Number(demo.bank_accounts.find(a=>a.name==='Demo · Cuenta USD').balance),600);
+assert.equal(Number(demo.bank_accounts.find(a=>a.name==='Demo · Tesorería USD (catálogo)').balance),600);
+assert.equal(Number(demo.bank_accounts.find(a=>a.name==='Demo · Cuenta USD').balance),0);
 const allMembers=(await c.query('select * from organization_members order by 1,2')).rows;
 const cleared=await cleanScale(c);assert.equal(cleared.counts.agency_payments,1);
 assert(Object.values(await capture(c,1)).every(r=>r.length===0));assert.deepEqual(await capture(c,22),demo);
