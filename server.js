@@ -84,6 +84,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/metrics' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
+      if(!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
       const from=url.searchParams.get('from') || new Date(Date.now()-366*86400000).toISOString().slice(0,10);
       const to=url.searchParams.get('to') || new Date().toISOString().slice(0,10);
       if(!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return send(res,400,{error:'Rango inválido'});
