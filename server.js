@@ -8,6 +8,9 @@ import pg from 'pg';
 import { operations } from './operations.js';
 import { suite } from './agency-suite.js';
 import { passwordAccess, throttle } from './password-access.js';
+import { financeControls } from './finance-controls.js';
+import { contentReview } from './content-review.js';
+import { budgetSections } from './budget-sections.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -61,6 +64,7 @@ async function init() {
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_referral_discounts.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_collaborator_profiles.sql'), 'utf8'));
   await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_agency_suite.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_daily_controls.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
@@ -84,6 +88,8 @@ async function session(req) {
   return r.rows[0] || null;
 }
 function can(user, roles) { return Boolean(user && roles.includes(user.role)); }
+async function auditContext(client,user,req){await client.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);}
+async function auditedQuery(user,req,sql,params){const c=await db.connect();try{await c.query('begin');await auditContext(c,user,req);const r=await c.query(sql,params);await c.query('commit');return r;}catch(e){await c.query('rollback');throw e;}finally{c.release();}}
 function security(res, extra={}) { res.setHeader('X-Content-Type-Options','nosniff'); res.setHeader('X-Frame-Options','DENY'); res.setHeader('Referrer-Policy','no-referrer'); res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline' data:; img-src 'self' data:; script-src 'self' 'unsafe-inline' data:; connect-src 'self' https://scaleparaguay.com https://www.scaleparaguay.com https://app.scaleparaguay.com"); Object.entries(extra).forEach(([k,v])=>res.setHeader(k,v)); }
 function cors(req, res) {
   const origin = req.headers.origin;
@@ -103,6 +109,8 @@ const server = http.createServer(async (req,res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
+    if(await financeControls({req,res,url,db,session,body,send}))return;
+    if(await contentReview({req,res,url,db,session,body,send}))return;
     if(await suite({req,res,url,db,session,body,send,sendInvitation}))return;
     if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {
@@ -237,7 +245,7 @@ const server = http.createServer(async (req,res) => {
       const user = await session(req); if (!can(user,['owner','admin','management','sales'])) return send(res,403,{error:'Sin permiso'});
       const {name='',email=null,phone=null,notes=null}=await body(req);
       if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 120) return send(res,400,{error:'Nombre inválido'});
-      const r=await db.query('insert into agency_clients(name,email,phone,notes,organization_id) values($1,$2,$3,$4,$5) returning *',[name.trim(),email||null,phone||null,notes||null,user.organization_id]);
+      const r=await auditedQuery(user,req,'insert into agency_clients(name,email,phone,notes,organization_id) values($1,$2,$3,$4,$5) returning *',[name.trim(),email||null,phone||null,notes||null,user.organization_id]);
       return send(res,201,{client:r.rows[0]});
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'GET') {
@@ -251,7 +259,7 @@ const server = http.createServer(async (req,res) => {
       if (typeof name !== 'string' || name.trim().length < 2 || !Number.isInteger(Number(clientId))) return send(res,400,{error:'Proyecto inválido'});
       const client=await db.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]);
       if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
-      const r=await db.query('insert into agency_projects(name,client_id,drive_url,organization_id) values($1,$2,$3,$4) returning *',[name.trim(),Number(clientId),driveUrl||null,user.organization_id]);
+      const r=await auditedQuery(user,req,'insert into agency_projects(name,client_id,drive_url,organization_id) values($1,$2,$3,$4) returning *',[name.trim(),Number(clientId),driveUrl||null,user.organization_id]);
       return send(res,201,{project:r.rows[0]});
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'GET') {
@@ -266,7 +274,7 @@ const server = http.createServer(async (req,res) => {
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(projectId)) || !allowedStatuses.includes(status)) return send(res,400,{error:'Orden inválida'});
       const project=await db.query('select id from agency_projects where id=$1 and organization_id=$2',[Number(projectId),user.organization_id]);
       if(!project.rows[0]) return send(res,404,{error:'Proyecto no encontrado'});
-      const r=await db.query('insert into agency_work_orders(title,project_id,status,description,drive_url,organization_id) values($1,$2,$3,$4,$5,$6) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null,user.organization_id]);
+      const r=await auditedQuery(user,req,'insert into agency_work_orders(title,project_id,status,description,drive_url,organization_id) values($1,$2,$3,$4,$5,$6) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null,user.organization_id]);
       return send(res,201,{workOrder:r.rows[0]});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'GET') {
@@ -281,6 +289,7 @@ const server = http.createServer(async (req,res) => {
       const client = await db.connect();
       try {
         await client.query('begin');
+        await auditContext(client,user,req);
         let account = await client.query('select id from users where email=$1',[normalizedEmail]);
         if (!account.rows[0]) {
           const hash = await bcrypt.hash(password || id(),12);
@@ -302,7 +311,8 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
-      const {title='',clientId,currency='PYG',items=[],notes=null,validUntil=null,tax_rate=.1} = await body(req);
+      const {title='',clientId,currency='PYG',items=[],notes=null,validUntil=null,tax_rate=.1,sections=null} = await body(req);
+      const normalizedSections=budgetSections(sections);
       if(![0,.05,.1].includes(Number(tax_rate)))return send(res,400,{error:'IVA inválido'});
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(clientId)) || !['PYG','USD'].includes(currency) || !Array.isArray(items) || !items.length || items.length > 100) return send(res,400,{error:'Presupuesto inválido'});
       const normalizedItems = items.map((item) => ({ description: typeof item?.description === 'string' ? item.description.trim() : '', quantity: Number(item?.quantity), unitPrice: Number(item?.unitPrice) }));
@@ -311,12 +321,13 @@ const server = http.createServer(async (req,res) => {
       try {
         await client.query('begin');
         const belongs = await client.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]);
+        await auditContext(client,user,req);
         if (!belongs.rows[0]) { await client.query('rollback'); return send(res,404,{error:'Cliente no encontrado'}); }
         const subtotal = normalizedItems.reduce((sum,item) => sum + item.quantity * item.unitPrice, 0);
         const total = Math.round(subtotal * (1+Number(tax_rate))*100)/100;
         const draft = await client.query('insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,notes,valid_until,public_token) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *',[user.organization_id,Number(clientId),'PENDIENTE',title.trim(),currency,subtotal,total,notes || null,validUntil || null,crypto.randomBytes(18).toString('base64url')]);
         const number = `P-${new Date().getFullYear()}-${String(draft.rows[0].id).padStart(4,'0')}`;
-        await client.query('update agency_budgets set tax_rate=$1 where id=$2',[Number(tax_rate),draft.rows[0].id]);
+        await client.query('update agency_budgets set tax_rate=$1,sections=$3 where id=$2',[Number(tax_rate),draft.rows[0].id,JSON.stringify(normalizedSections)]);
         const budget = await client.query('update agency_budgets set number=$1 where id=$2 returning *',[number,draft.rows[0].id]);
         for (const [position,item] of normalizedItems.entries()) await client.query('insert into agency_budget_items(budget_id,position,description,quantity,unit_price,total) values($1,$2,$3,$4,$5,$6)',[budget.rows[0].id,position + 1,item.description,item.quantity,item.unitPrice,item.quantity * item.unitPrice]);
         await client.query('commit');
@@ -334,12 +345,12 @@ const server = http.createServer(async (req,res) => {
       if(typeof name !== 'string' || name.trim().length<2 || !['bank','cash','digital','investment'].includes(accountType) || !['PYG','USD'].includes(currency)) return send(res,400,{error:'Cuenta inválida'});
       const custodianId=custodianUserId === null || custodianUserId === '' ? null : Number(custodianUserId);
       if(custodianId !== null && (!Number.isInteger(custodianId) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,custodianId])).rows[0])) return send(res,400,{error:'Custodio inválido'});
-      const r=await db.query('insert into bank_accounts(organization_id,name,account_type,currency,institution,account_number,holder_name,custodian_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,name.trim(),accountType,currency,typeof institution === 'string' ? institution.trim() || null : null,typeof accountNumber === 'string' ? accountNumber.trim() || null : null,typeof holderName === 'string' ? holderName.trim() || null : null,custodianId]);
+      const r=await auditedQuery(user,req,'insert into bank_accounts(organization_id,name,account_type,currency,institution,account_number,holder_name,custodian_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,name.trim(),accountType,currency,typeof institution === 'string' ? institution.trim() || null : null,typeof accountNumber === 'string' ? accountNumber.trim() || null : null,typeof holderName === 'string' ? holderName.trim() || null : null,custodianId]);
       return send(res,201,{account:r.rows[0]});
     }
     if (url.pathname === '/api/agency/custodians' && req.method === 'GET') {
-      const user=await session(req); if(!can(user,['owner','admin','management','finance'])) return send(res,403,{error:'Sin permiso'});
-      const r=await db.query('select u.id,u.email,m.role from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 order by u.email',[user.organization_id]);
+      const user=await session(req); if(!can(user,['owner','admin','management','finance','production','editor','sales'])) return send(res,403,{error:'Sin permiso'});
+      const r=await db.query('select u.id,u.email,m.role from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 and m.active=true order by u.email',[user.organization_id]);
       return send(res,200,{members:r.rows});
     }
     if (url.pathname === '/api/agency/invoices' && req.method === 'GET') {
@@ -352,9 +363,8 @@ const server = http.createServer(async (req,res) => {
       const {clientId,total,currency='PYG',dueOn=null,notes=null}=await body(req); const amount=Number(total);
       if(!Number.isInteger(Number(clientId)) || !Number.isFinite(amount) || amount<0 || !['PYG','USD'].includes(currency)) return send(res,400,{error:'Factura inválida'});
       const client=await db.query('select id from agency_clients where id=$1 and organization_id=$2',[Number(clientId),user.organization_id]); if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
-      const draft=await db.query('insert into agency_invoices(organization_id,client_id,number,total,currency,due_on,notes) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(clientId),'PENDIENTE',amount,currency,dueOn || null,notes || null]);
-      const number=`F-${new Date().getFullYear()}-${String(draft.rows[0].id).padStart(4,'0')}`;
-      const r=await db.query('update agency_invoices set number=$1 where id=$2 returning *',[number,draft.rows[0].id]);
+      const number=`F-${new Date().getFullYear()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+      const r=await auditedQuery(user,req,'insert into agency_invoices(organization_id,client_id,number,total,currency,due_on,notes) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(clientId),number,amount,currency,dueOn || null,notes || null]);
       return send(res,201,{invoice:r.rows[0]});
     }
     if (url.pathname === '/api/agency/payments' && req.method === 'GET') {
@@ -407,7 +417,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); return res.end(await fs.readFile(path.join(root,'public/index.html'))); }
     send(res,404,{error:'No encontrado'});
-  } catch (e) { console.error(e); send(res,500,{error:'Error interno'}); }
+  } catch (e) { console.error(JSON.stringify({event:'request_error',status:e.status||500,code:e.code})); send(res,e.status||500,{error:e.status?e.message:'Error interno'}); }
 });
 server.listen(port, () => {
   console.log(`Scale Core API listening on ${port}`);

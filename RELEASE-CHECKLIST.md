@@ -33,3 +33,17 @@ Cambios aditivos de base de datos. Si falla salud, autenticación o guardado, vo
 - Revisión visual completa de Chrome: la herramienta rechazó acceso por política administrativa. No se ha eludido esa restricción.
 - La guía de cinco pasos no obliga a completar datos. El diseño del PDF usa una plantilla fija; no es un constructor libre de secciones.
 - El historial amplía la auditoría, pero algunos movimientos del código anterior carecen de actor; no inventar su autoría.
+
+## Segunda ampliación — en verificación
+
+- Reversión de cobros como contramovimiento inmutable, con motivo, responsable y saldo suficiente. Cobros y transferencias aceptan identificador de reintento para evitar duplicados.
+- Transferencias PYG/USD con importe de salida, importe recibido y cotización registrada. No ejecuta órdenes bancarias reales.
+- Conciliación mediante extracto CSV: deduplicación, cruce automático exclusivamente exacto/no ambiguo y vinculación manual. Importar/conciliar no modifica saldos. No hay conexión bancaria directa.
+- Aprobación externa de piezas por enlace revocable de siete días: comentarios, solicitud de cambios y bloqueo de publicación cuando falta la aprobación de la versión actual.
+- Presupuestos con secciones de texto reordenables/ocultables. Detalle de ítems y totales siempre visibles.
+- Auditoría de nuevas altas y operaciones financieras. Atribución histórica solo cuando el registro original contiene autor.
+- Script manual de verificación de restauración en base temporal independiente; pendiente ejecutar en Hub.
+
+Pruebas: `test-daily-controls.mjs`, `test-suite.mjs`, `test-operations.mjs`, `test-auth.mjs`, build TypeScript y pruebas del parser CSV. Publicar API antes de frontend y verificar PDF público/privado, salud y movimientos demo en empresa separada. Los apartados anteriores describen la primera entrega; actualizar resultados al cerrar esta ampliación.
+
+Dependencias externas comprobadas: el Hub devuelve cero almacenamientos S3; no hay configuración de Meta en la aplicación. El acceso de Chrome a Scale volvió a ser rechazado por imposibilidad de verificar la política administrativa. No eludirla.
