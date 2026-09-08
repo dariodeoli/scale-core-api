@@ -26,6 +26,7 @@ const body = async (req) => { let s=''; for await (const c of req) s += c; retur
 const id = () => crypto.randomBytes(32).toString('hex');
 async function init() {
   await db.query(await fs.readFile(path.join(root, 'schema.sql'), 'utf8'));
+  await db.query(await fs.readFile(path.join(root, 'migrations', '20260908_client_payment_status.sql'), 'utf8'));
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
@@ -90,6 +91,14 @@ const server = http.createServer(async (req,res) => {
       if(!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return send(res,400,{error:'Rango inválido'});
       const r=await db.query("select name,event_date::text as event_date,count(*)::int as count from events where organization_id=$1 and event_date between $2 and $3 group by name,event_date order by event_date desc,name",[user.organization_id,from,to]);
       return send(res,200,{events:r.rows});
+    }
+    if (url.pathname === '/api/agency/client-payment-status' && req.method === 'GET') {
+      const user=await session(req); if(!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
+      const status=url.searchParams.get('status');
+      const statuses=['up_to_date','due_soon','late','severe'];
+      if(status && !statuses.includes(status)) return send(res,400,{error:'Estado de cobro inválido'});
+      const r=await db.query(`select * from client_payment_status where organization_id=$1 ${status ? 'and payment_status=$2' : ''} order by days_overdue desc, next_due_on nulls last, client_name`,status?[user.organization_id,status]:[user.organization_id]);
+      return send(res,200,{clients:r.rows});
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
