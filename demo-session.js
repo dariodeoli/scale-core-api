@@ -1,8 +1,17 @@
 import crypto from 'node:crypto';
 const templateSlug='scale-demo-controles-20260908';
+// A real agency owner can open a personal fixture without membership in the shared template.
+export async function privateDemoEntry(c,userId){
+ return (await c.query(`select d.id,d.slug,d.name,'owner' as role from organizations d
+  where d.slug=$2 and d.active=true
+  and exists(select 1 from organization_members m join organizations o on o.id=m.organization_id
+   where m.user_id=$1 and m.role='owner' and m.active=true and m.removed_at is null and o.active=true and o.demo_owner_user_id is null and o.slug<>$2)
+  and not exists(select 1 from organization_members m where m.user_id=$1 and m.organization_id=d.id and (m.active=false or m.removed_at is not null))`,[userId,templateSlug])).rows[0]||null;
+}
 // Called within the switch transaction. Source membership is checked here too.
 export async function demoOrganization(c,{userId,sourceId,demoKey}){
- const source=(await c.query('select o.id,o.slug,m.role from organizations o join organization_members m on m.organization_id=o.id where o.id=$1 and m.user_id=$2 and m.active=true and m.removed_at is null and o.active=true',[sourceId,userId])).rows[0];
+ let source=(await c.query('select o.id,o.slug,m.role from organizations o join organization_members m on m.organization_id=o.id where o.id=$1 and m.user_id=$2 and m.active=true and m.removed_at is null and o.active=true',[sourceId,userId])).rows[0];
+ if(!source){const demo=await privateDemoEntry(c,userId);if(demo&&String(demo.id)===String(sourceId))source=demo;}
  if(!source)throw Object.assign(Error('No pertenecés a esa empresa'),{status:403});
  if(source.slug!==templateSlug)return sourceId;
  await c.query("select pg_advisory_xact_lock(hashtextextended($1,0))",['demo:'+demoKey+':'+userId]);

@@ -18,7 +18,7 @@ import { invitationEmail } from './invitation-email.js';
 import { productivity } from './productivity.js';
 import {rucLookup} from './ruc-lookup.js';
 import {presence} from './presence.js';
-import {demoOrganization} from './demo-session.js';
+import {demoOrganization,privateDemoEntry} from './demo-session.js';
 import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
 
@@ -200,6 +200,8 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
       const r=await db.query('select o.id,o.slug,o.name,m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name',[user.id]);
+      const demo=await privateDemoEntry(db,user.id);
+      if(demo&&!r.rows.some(o=>String(o.id)===String(demo.id)))r.rows.push(demo);
       return send(res,200,{organizations:r.rows,currentOrganizationId:user.demo_source_id||user.organization_id});
     }
     if(url.pathname==='/api/auth/organizations'&&req.method==='POST'){

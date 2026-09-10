@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {demoOrganization} from './demo-session.js';
+import {demoOrganization,privateDemoEntry} from './demo-session.js';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_demo_sessions.sql','utf8'));
@@ -24,4 +24,15 @@ assert.equal((await c.query('select count(*)::int as n from organization_members
 const accounts=(await c.query("select balance from bank_accounts where organization_id=$1 and currency='PYG' order by id",[first])).rows;
 assert.equal(Number(accounts[0].balance),8000000);assert.equal(Number(accounts[1].balance),1000000);
 await assert.rejects(()=>demoOrganization(c,{userId:users[1],sourceId:first,demoKey:'other'}),{status:403});
+const fresh=(await c.query("insert into users(email,password_hash) values('fresh-owner@example.invalid','none') returning id")).rows[0].id;
+await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'viewer')",[real,fresh]);
+assert.equal(await privateDemoEntry(c,fresh),null);
+await assert.rejects(()=>open(fresh,'fresh-login'),{status:403});
+await c.query("update organization_members set role='owner' where organization_id=$1 and user_id=$2",[real,fresh]);
+assert.equal(String((await privateDemoEntry(c,fresh)).id),String(source));
+const personal=await open(fresh,'fresh-login');assert.notEqual(personal,source);
+assert.equal((await c.query('select count(*)::int as n from organization_members where organization_id=$1 and user_id=$2',[source,fresh])).rows[0].n,0);
+assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[personal])).rows[0].n,5);
+await assert.rejects(()=>demoOrganization(c,{userId:fresh,sourceId:first,demoKey:'fresh-login'}),{status:403});
+await c.query("insert into organization_members(organization_id,user_id,role,active) values($1,$2,'owner',false)",[source,fresh]);assert.equal(await privateDemoEntry(c,fresh),null);
 console.log('PASS: private demo per login, reusable inside session, no cross-user or real-data reset, sample finance balances and unauthorized access');
