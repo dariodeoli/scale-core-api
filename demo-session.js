@@ -55,7 +55,7 @@ export async function seedPrivateDemo(c,org,userId){
   await c.query('update agency_budgets set status=$1 where id=$2',[['draft','sent','accepted','rejected'][i%4],budget]);
   await c.query('insert into agency_leads(organization_id,name,stage,amount,currency,probability,notes,created_at) values($1,$2,$3,$4,$5,$6,$7,now()-$8::int*interval \'1 day\')',[org,'Prospecto '+names[i],['lead','contacted','proposal','negotiation','won'][i%5],total,currency,10+(i%5)*20,'Seguimiento de propuesta de gestión mensual de contenidos.',i%14]);
  }
- await c.query("insert into account_transfers(organization_id,from_account_id,to_account_id,amount,reference,created_by_user_id) values($1,$2,$3,1000000,'Depósito de caja en cuenta corriente',$4)",[org,account[0],account[1],userId]);
+ await c.query("insert into account_transfers(organization_id,from_account_id,to_account_id,amount,reference,created_by_user_id) values($1,$2,$3,1000000,'Depósito de caja en caja de ahorro',$4)",[org,account[0],account[1],userId]);
  await c.query("insert into agency_commissions(organization_id,collaborator_id,kind,beneficiary_name,amount,status,due_on) values($1,$2,'sales','Nicolás Duarte',150000,'approved',current_date+5)",[org,staff[3]]);
  for(const person of staff){
   await c.query("insert into agency_payouts(organization_id,collaborator_id,account_id,amount,paid_on,reference,created_by_user_id) values($1,$2,$3,250000,current_date-1,'Adelanto de honorarios del mes',$4)",[org,person,account[0],userId]);
