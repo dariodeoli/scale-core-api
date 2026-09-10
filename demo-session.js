@@ -30,8 +30,8 @@ export async function seedPrivateDemo(c,org,userId){
  await c.query("insert into agency_settings(organization_id,legal_name,tax_id,address,phone,onboarding_completed) values($1,'Agencia Horizonte E.A.S.','80000000-0','Av. Mariscal López 120 · Asunción','+595 000 000000',true) on conflict do nothing",[org]);
  await c.query('insert into agency_exchange_rates(organization_id,rate_date,usd_to_pyg) values($1,current_date,7500),($1,current_date-1,7480)',[org]);
  const account=[];
- for(const [name,type,currency,institution,number] of [['Caja de oficina','cash','PYG','',''],['Banco Continental · cuenta 39282','bank','PYG','Banco Continental','39282'],['Cuenta en dólares · 39283','bank','USD','Banco Continental','39283']]){
-  account.push((await c.query('insert into bank_accounts(organization_id,name,account_type,currency,balance,custodian_user_id,holder_name,institution,account_number) values($1,$2,$3,$4,0,$5,$6,$7,$8) returning id',[org,name,type,currency,userId,'Agencia Horizonte E.A.S.',institution,number])).rows[0].id);
+ for(const [name,type,currency,institution,number,holder] of [['Caja de oficina','cash','PYG','','','Agencia Horizonte E.A.S.'],['Banco Continental · Caja de ahorro en guaraníes','bank','PYG','Banco Continental','310056630007','SCALE STRATEGY GROUP E.A.S.'],['Caja de ahorro en dólares','bank','USD','Banco Continental','010010000123','Agencia Horizonte E.A.S.']]){
+  account.push((await c.query('insert into bank_accounts(organization_id,name,account_type,currency,balance,custodian_user_id,holder_name,institution,account_number) values($1,$2,$3,$4,0,$5,$6,$7,$8) returning id',[org,name,type,currency,userId,holder,institution,number])).rows[0].id);
  }
  const staff=[];
  let personIndex=0;
