@@ -1,6 +1,7 @@
 import {fail,optId,owned} from './suite-validation.js';
+import {visibleRecord} from './record-lifecycle.js';
 export async function presence({req,res,url,db,session,sessionKey,body,send}){
- const match=url.pathname.match(/^\/api\/agency\/presence\/(heartbeat|project|usage)$/);if(!match)return false;
+ const match=url.pathname.match(/^\/api\/agency\/presence\/(heartbeat|project|projects|usage)$/);if(!match)return false;
  let c,tx=false;
  try{
   const user=await session(req);if(!user)fail('No autenticado',401);const kind=match[1],org=user.organization_id;
@@ -21,7 +22,17 @@ export async function presence({req,res,url,db,session,sessionKey,body,send}){
    }
   }else if(kind==='project'&&req.method==='GET'){
    const project=optId(url.searchParams.get('projectId'));if(!project)fail('Proyecto requerido');await owned(c,'agency_projects',project,org);
-   result={people:(await c.query(`select distinct p.user_id as id,coalesce(up.full_name,u.email) as name from agency_presence_tabs p join users u on u.id=p.user_id join organization_members m on m.user_id=p.user_id and m.organization_id=p.organization_id left join agency_user_profiles up on up.user_id=p.user_id and up.organization_id=p.organization_id where p.organization_id=$1 and p.project_id=$2 and p.last_seen_at>now()-interval '75 seconds' and m.active and m.removed_at is null order by name limit 20`,[org,project])).rows};
+   result={people:(await c.query(`select p.user_id as id,coalesce(up.full_name,u.email) as name,up.photo_url,bool_or(p.is_active) as active from agency_presence_tabs p join users u on u.id=p.user_id join organization_members m on m.user_id=p.user_id and m.organization_id=p.organization_id left join agency_user_profiles up on up.user_id=p.user_id and up.organization_id=p.organization_id where p.organization_id=$1 and p.project_id=$2 and p.last_seen_at>now()-interval '75 seconds' and m.active and m.removed_at is null group by p.user_id,up.full_name,u.email,up.photo_url order by name limit 20`,[org,project])).rows};
+  }else if(kind==='projects'&&req.method==='GET'){
+   const raw=(url.searchParams.get('ids')||'').split(',');if(!raw.length||raw.length>100)fail('Elegí entre 1 y 100 proyectos');
+   const ids=[...new Set(raw.map(value=>{if(!/^[0-9]{1,19}$/.test(value)||BigInt(value)<1n||BigInt(value)>9223372036854775807n)fail('Proyecto inválido');return String(BigInt(value));}))];
+   result={people:(await c.query(`select p.project_id,p.user_id as id,coalesce(up.full_name,u.email) as name,up.photo_url,bool_or(p.is_active) as active
+    from agency_presence_tabs p join agency_projects pr on pr.id=p.project_id and pr.organization_id=p.organization_id
+    join agency_clients cl on cl.id=pr.client_id and cl.organization_id=pr.organization_id
+    join users u on u.id=p.user_id join organization_members m on m.user_id=p.user_id and m.organization_id=p.organization_id
+    left join agency_user_profiles up on up.user_id=p.user_id and up.organization_id=p.organization_id
+    where p.organization_id=$1 and p.project_id=any($2::bigint[]) and ${visibleRecord('pr','projects')} and ${visibleRecord('cl','clients')} and m.active and m.removed_at is null and p.last_seen_at>now()-interval '75 seconds'
+    group by p.project_id,p.user_id,up.full_name,u.email,up.photo_url order by p.project_id,name limit 2000`,[org,ids])).rows};
   }else if(kind==='usage'&&req.method==='GET'){
    const person=optId(url.searchParams.get('userId'));
    if(person){result={records:(await c.query(`select first_seen_at,last_seen_at,active_seconds from agency_usage_sessions where organization_id=$1 and user_id=$2 order by first_seen_at desc limit 10`,[org,person])).rows};}

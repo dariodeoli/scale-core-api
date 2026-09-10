@@ -5,6 +5,7 @@ import {demoOrganization,privateDemoEntry} from './demo-session.js';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_demo_sessions.sql','utf8'));
+for(const file of ['20260908_google_oauth.sql','20260910_invite_links.sql','20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const c={query:(s,v)=>pg.query(s,v)};
 const source=(await c.query("insert into organizations(slug,name) values('scale-demo-controles-20260908','Demo') returning id")).rows[0].id;
 const real=(await c.query("select id from organizations where slug='scale'")).rows[0].id;

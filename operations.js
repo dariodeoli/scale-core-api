@@ -1,4 +1,5 @@
 import {currencies} from './currencies.js';
+import {companyCurrency} from './forecast.js';
 import { collaboratorAccess } from './collaborator-access.js';
 import { profilePhoto } from './media-policy.js';
 import {visibleRecord,assertRecordAvailable} from './record-lifecycle.js';
@@ -65,7 +66,8 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
    if(req.method==='GET') result={collaborators:(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows};
    else if(req.method==='POST'||(req.method==='PATCH'&&collaboratorMatch[1])) {
     let previous={};if(collaboratorMatch[1]){previous=(await c.query('select * from agency_collaborators where id=$1 and organization_id=$2 for update',[collaboratorMatch[1],org])).rows[0];if(!previous)fail('Registro no encontrado',404);await assertRecordAvailable(c,'agency_collaborators',previous);}
-    const incoming=await body(req), b={compensation_type:'fixed',compensation_amount:0,currency:'PYG',active:true,...previous,...incoming};
+    const incoming=await body(req), b={compensation_type:'fixed',compensation_amount:0,active:true,...previous,...incoming};
+    if(!collaboratorMatch[1]&&b.currency===undefined)b.currency=await companyCurrency(c,org);
     const name=text(b.full_name,120);if(name.length<2) fail('Ingresá el nombre');
     for(const key of ['started_on','ended_on'])if(b[key] instanceof Date)b[key]=b[key].toISOString().slice(0,10);
     const contact=email(b.email);let uid=optionalId(b.user_id);
@@ -93,7 +95,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
    else if(req.method==='POST') {
     const b=await body(req), invoice=optionalId(b.invoice_id),collaborator=optionalId(b.collaborator_id),basis=option(b.basis,['fixed','invoiced','collected']);
     await belongs(c,'agency_collaborators',collaborator,org);await belongs(c,'agency_invoices',invoice,org);
-    let base=null,percent=null,amount=money(b.amount,true),currency=option(b.currency,currencies);
+    let base=null,percent=null,amount=money(b.amount,true),currency=invoice?null:option(b.currency===undefined?await companyCurrency(c,org):b.currency,currencies);
     if(invoice) {const i=(await c.query('select * from agency_invoices where id=$1 and organization_id=$2 for update',[invoice,org])).rows[0];currency=i.currency;base=Number(basis==='collected'?i.paid_amount:i.total);if(i.status==='cancelled') fail('Factura cancelada');}
     if(basis!=='fixed') {if(!invoice) fail('Elegí una factura para calcular el porcentaje');percent=money(b.percentage);if(percent>100) fail('Porcentaje máximo: 100');amount=Math.round(base*percent)/100;}
     if(amount<=0) fail('La comisión debe ser mayor a cero');

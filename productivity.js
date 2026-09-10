@@ -21,20 +21,21 @@ export async function productivity({req,res,url,db,session,body,send}){
   if(kind==='templates'&&!managers.includes(user.role))fail('Sin permiso para plantillas',403);
   if(kind==='source-events'&&req.method!=='GET'&&!['owner','admin'].includes(user.role))fail('Solo administración puede importar actividad',403);
   c=await db.connect();await c.query('begin');tx=true;
-  await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
+  await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true),set_config('app.current_organization',$3,true)",[String(user.id),req.socket.remoteAddress||'',String(org)]);
   let result,status=200;
   if(kind==='history'&&req.method==='GET'){
    const page=historyPage(url.searchParams);
    const person=optId(url.searchParams.get('userId'));
    if(person&&person!==String(user.id)&&!managers.includes(user.role))fail('Sin permiso para historial de otra persona',403);
    const actor=person||(!managers.includes(user.role)?String(user.id):null);
-   result=historyResult((await c.query(`select a.id,a.table_name,a.action,coalesce(up.full_name,u.email,a.actor) as actor_name,a.created_at,
+   result=historyResult((await c.query(`select a.id,a.table_name,a.action,coalesce(nullif(trim(i.full_name),''),i.email,nullif(a.actor,''),'Sistema') as actor_name,
+    i.user_id as actor_user_id,i.photo_url as actor_photo_url,(i.user_id is not null) as actor_verified,a.created_at,
     coalesce(a.after_state->>'title',a.before_state->>'title',a.after_state->>'name',a.before_state->>'name','Comentario') as title,
     a.before_state->>'status' as previous_status,a.after_state->>'status' as next_status
-    from agency_operation_audit a left join users u on u.id::text=a.actor left join agency_user_profiles up on up.user_id=u.id and up.organization_id=a.organization_id
+    from agency_operation_audit a left join organization_person_identity i on i.user_id::text=a.actor and i.organization_id=a.organization_id
     where a.organization_id=$1 and ($2::text is null or a.actor=$2) and a.table_name in ('agency_work_orders','agency_projects','agency_order_comments','agency_project_comments','agency_internal_tasks') order by a.id desc limit $3 offset $4`,[org,actor,page.limit+1,page.offset])).rows,page);
   }else if(kind==='source-events'){
-   if(req.method==='GET'){const page=historyPage(url.searchParams);result=historyResult((await c.query('select id,source_url,source_author,body,occurred_at from agency_source_events where organization_id=$1 order by occurred_at desc,id desc limit $2 offset $3',[org,page.limit+1,page.offset])).rows,page);}
+   if(req.method==='GET'){const page=historyPage(url.searchParams);result=historyResult((await c.query('select id,source_url,source_author,body,occurred_at,null::text as actor_photo_url,null::bigint as actor_user_id,false as actor_verified from agency_source_events where organization_id=$1 order by occurred_at desc,id desc limit $2 offset $3',[org,page.limit+1,page.offset])).rows,page);}
    else if(req.method==='POST'){
     const b=await body(req);if(!Array.isArray(b.events)||b.events.length>100)fail('Máximo 100 eventos por importación');let created=0;
     for(const e of b.events){const at=new Date(e.occurred_at);if(!Number.isFinite(at.getTime()))fail('Fecha de origen inválida');created+=(await c.query('insert into agency_source_events(organization_id,source_key,source_url,source_author,body,occurred_at,imported_by) values($1,$2,$3,$4,$5,$6,$7) on conflict do nothing returning id',[org,text(e.source_key,160),link(e.source_url),text(e.source_author,120),text(e.body,4000),at.toISOString(),user.id])).rows.length;}result={created};
@@ -45,23 +46,33 @@ export async function productivity({req,res,url,db,session,body,send}){
    else if(req.method==='PATCH'&&key){const old=await owned(c,'agency_internal_tasks',key,org),b={...old,...await body(req)},person=await assignee(c,optId(b.assigned_user_id),org);result={record:(await c.query('update agency_internal_tasks set title=$1,description=$2,status=$3,due_date=$4,assigned_user_id=$5,updated_at=now() where id=$6 returning *',[text(b.title,160),text(b.description,4000),option(b.status,['pending','in_progress','done']),date(b.due_date),person,key])).rows[0]};}
    else fail('Método no permitido',405);
   }else if(kind==='profile'&&!key&&!action){
-   const current=(await c.query('select full_name,photo_url from agency_user_profiles where user_id=$1 and organization_id=$2',[user.id,org])).rows[0]||{full_name:'',photo_url:null};
-   if(req.method==='GET')result={profile:{...current,email:user.email,role:user.role}};
+   // Serialize partial self edits across organizations, including the first insert.
+   if(req.method==='PATCH')await c.query('select u.id from users u join organization_person_identity i on i.user_id=u.id where u.id=$1 and i.organization_id=$2 for update of u',[user.id,org]);
+   const current=(await c.query('select full_name,photo_url,is_demo from organization_person_identity where user_id=$1 and organization_id=$2',[user.id,org])).rows[0];
+   if(!current)fail('Sin acceso activo a esta empresa',403);
+   const context={email:user.email,role:user.role,identity_scope:current.is_demo?'demo':'personal'};
+   if(req.method==='GET')result={profile:{...current,...context}};
    else if(req.method==='PATCH'){
     const incoming=await body(req);if(Object.keys(incoming).some(k=>!['full_name','photo_url'].includes(k)))fail('Solo podés modificar tu nombre y foto');
     const b={...current,...incoming},name=text(b.full_name,120);if(name.length<2)fail('Ingresá tu nombre completo');
-    if(incoming.photo_url && !String(incoming.photo_url).startsWith('data:image/'))fail('Subí una foto JPG, PNG o WebP');
     const photo=Object.hasOwn(incoming,'photo_url')?await profilePhoto(incoming.photo_url):current.photo_url;
-    result={profile:(await c.query('insert into agency_user_profiles(user_id,organization_id,full_name,photo_url) values($1,$2,$3,$4) on conflict(user_id,organization_id) do update set full_name=excluded.full_name,photo_url=excluded.photo_url,updated_at=now() returning full_name,photo_url',[user.id,org,name,photo])).rows[0]};
+    const saved=current.is_demo
+     ?(await c.query('insert into agency_user_profiles(user_id,organization_id,full_name,photo_url) values($1,$2,$3,$4) on conflict(user_id,organization_id) do update set full_name=excluded.full_name,photo_url=excluded.photo_url,updated_at=now() returning full_name,photo_url',[user.id,org,name,photo])).rows[0]
+     :(await c.query(`insert into user_personal_identities(user_id,full_name,photo_url)
+       select user_id,$3,$4 from organization_person_identity where user_id=$1 and organization_id=$2 and not is_demo
+       on conflict(user_id) do update set full_name=excluded.full_name,photo_url=excluded.photo_url,updated_at=now()
+       returning full_name,photo_url`,[user.id,org,name,photo])).rows[0];
+    if(!saved)fail('Sin acceso activo a esta empresa',403);
+    result={profile:{...saved,...context}};
    }else fail('Método no permitido',405);
   }else if(kind==='people'&&req.method==='GET'){
-   result={people:(await c.query('select u.id,u.email,p.full_name,p.photo_url from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=u.id and p.organization_id=m.organization_id where m.organization_id=$1 and m.active=true and m.removed_at is null order by coalesce(p.full_name,u.email)',[org])).rows};
+   result={people:(await c.query("select user_id as id,email,full_name,photo_url from organization_person_identity where organization_id=$1 order by coalesce(nullif(trim(full_name),''),email)",[org])).rows};
   }else if(kind==='orders'&&key){
    const order=await owned(c,'agency_work_orders',key,org);
    if(req.method==='GET'&&!action){
     const identity=(await c.query('select c.name as client_name,c.logo_url as client_logo_url,c.color_key as client_color_key from agency_projects p join agency_clients c on c.id=p.client_id where p.id=$1 and p.organization_id=$2',[order.project_id,org])).rows[0]||{};
-    const history=(await c.query("select a.id,a.action,a.created_at,coalesce(u.email,a.actor) as actor_name,a.before_state->>'status' as previous_status,a.after_state->>'status' as next_status from agency_operation_audit a left join users u on u.id::text=a.actor where a.organization_id=$1 and a.table_name='agency_work_orders' and coalesce(a.after_state->>'id',a.before_state->>'id')=$2 order by a.id desc limit 100",[org,String(key)])).rows;
-    result={order:{...order,...identity},history,comments:(await c.query('select c.id,c.body,c.created_at,u.email as author_email from agency_order_comments c left join users u on u.id=c.author_user_id where c.organization_id=$1 and c.work_order_id=$2 order by c.id desc limit 100',[org,key])).rows};
+    const history=(await c.query("select a.id,a.action,a.created_at,coalesce(nullif(trim(i.full_name),''),i.email,nullif(a.actor,''),'Sistema') as actor_name,i.user_id as actor_user_id,i.photo_url as actor_photo_url,(i.user_id is not null) as actor_verified,a.before_state->>'status' as previous_status,a.after_state->>'status' as next_status from agency_operation_audit a left join organization_person_identity i on i.user_id::text=a.actor and i.organization_id=a.organization_id where a.organization_id=$1 and a.table_name='agency_work_orders' and coalesce(a.after_state->>'id',a.before_state->>'id')=$2 order by a.id desc limit 100",[org,String(key)])).rows;
+    result={order:{...order,...identity},history,comments:(await c.query("select c.id,c.body,c.created_at,i.email as author_email,coalesce(nullif(trim(i.full_name),''),i.email,'Usuario') as actor_name,i.user_id as actor_user_id,i.photo_url as actor_photo_url,(i.user_id is not null) as actor_verified from agency_order_comments c left join organization_person_identity i on i.user_id=c.author_user_id and i.organization_id=c.organization_id where c.organization_id=$1 and c.work_order_id=$2 order by c.id desc limit 100",[org,key])).rows};
    }
    else if(req.method==='POST'&&action==='comments'){
     const b=await body(req),content=text(b.body,2000);if(!content)fail('Escribí un comentario');

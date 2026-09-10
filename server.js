@@ -15,7 +15,14 @@ import { budgetSections } from './budget-sections.js';
 import { externalLink } from './media-policy.js';
 import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
-import { invitationEmail } from './invitation-email.js';
+import { invitationEmail,resetEmail } from './invitation-email.js';
+import {financialForecast} from './forecast.js';
+import {projectAssignees} from './project-assignees.js';
+import {startMaintenance} from './maintenance.js';
+import {inventoryReservations} from './inventory-reservations.js';
+import {workChecklists} from './work-checklists.js';
+import {ensurePersonalIdentity} from './identity-session.js';
+import {liveVisitors,startLiveVisitorCleanup} from './live-visitors.js';
 import { productivity } from './productivity.js';
 import {rucLookup} from './ruc-lookup.js';
 import {presence} from './presence.js';
@@ -57,7 +64,7 @@ async function sendInvitation(email, organizationName, role) {
   const response = await fetch('https://api.resend.com/emails', { method:'POST', signal:AbortSignal.timeout(10000), headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({from:invitationFrom,to:[email],...invitationEmail({email,organizationName,role,appUrl})}) });
   return response.ok;
 }
-async function sendReset(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'},body:JSON.stringify({from:invitationFrom,to:[email],subject:'Establecé tu contraseña de Scale OS',html:`<main style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:32px"><h1>Tu contraseña</h1><p>Este enlace es de un solo uso y vence en una hora. Si no lo solicitaste, ignorá este correo.</p><a href="${appUrl}/?resetToken=${token}">Establecer contraseña</a></main>`})});return response.ok;}
+async function sendReset(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json','Idempotency-Key':'reset-'+crypto.createHash('sha256').update(token).digest('hex')},body:JSON.stringify({from:invitationFrom,to:[email],...resetEmail({token,appUrl})})});return response.ok;}
 async function runOptionalMigration(filename,client=db) {
   try {
     await client.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
@@ -84,6 +91,12 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_presence.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_invite_links.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_currencies.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_company_currency.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_live_visitors.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_global_identity.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_project_assignees.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_inventory_reservations.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_work_checklists.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -105,8 +118,15 @@ async function provisionOwnerForOrganization(email, password, slug) {
 async function session(req) {
   const token = parseCookies(req).scale_session;
   if (!token) return null;
-  const r = await db.query('select u.id,u.email,up.full_name,up.photo_url,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name,o.demo_owner_user_id,o.demo_source_id from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id left join agency_user_profiles up on up.user_id=u.id and up.organization_id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true and m.removed_at is null and (o.demo_owner_user_id is null or (o.demo_owner_user_id=u.id and o.demo_expires_at>now()))', [token]);
+  const r = await db.query("select u.id,u.email,exists(select 1 from user_personal_identities pi where pi.user_id=u.id) as has_personal_identity,up.full_name,up.photo_url,coalesce(settings.default_currency,'PYG') as default_currency,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name,o.demo_owner_user_id,o.demo_source_id from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id left join organization_person_identity up on up.user_id=u.id and up.organization_id=m.organization_id left join agency_settings settings on settings.organization_id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true and m.removed_at is null and (o.demo_owner_user_id is null or (o.demo_owner_user_id=u.id and o.demo_expires_at>now()))", [token]);
   const user=r.rows[0]||null;
+  if(user&&!user.has_personal_identity&&!user.demo_owner_user_id&&!user.demo_source_id&&user.organization_slug!=='scale-demo-controles-20260908'){
+    await ensurePersonalIdentity(db,user.id,user.organization_id);
+    const identity=(await db.query('select full_name,photo_url from organization_person_identity where user_id=$1 and organization_id=$2',[user.id,user.organization_id])).rows[0];
+    if(!identity)return null;
+    Object.assign(user,identity);
+  }
+  if(user)delete user.has_personal_identity;
   if(user?.demo_owner_user_id){const preview=(await db.query('select demo_role from sessions where id=$1',[token])).rows[0];if(preview?.demo_role)user.role=preview.demo_role;}
   if(user?.organization_slug==='scale-demo-controles-20260908'){
     const c=await db.connect();try{
@@ -147,6 +167,11 @@ const server = http.createServer(async (req,res) => {
       if(!r)return send(res,401,{error:'Ingresá con Google para ver tu solicitud'});
       const approved=await session(req);return send(res,200,{...r,status:approved?'approved':r.status==='approved'?'unavailable':r.status,role:approved?.role||r.role});
     }
+    if(await liveVisitors({req,res,url,db,session,send}))return;
+    if(await financialForecast({req,res,url,db,session,send}))return;
+    if(await projectAssignees({req,res,url,db,session,body,send}))return;
+    if(await inventoryReservations({req,res,url,db,session,body,send}))return;
+    if(await workChecklists({req,res,url,db,session,body,send}))return;
     if(await publicExperience({req,res,url,db,session,body,send,cookie,parseCookies}))return;
     if(await inviteLinks({req,res,url,db,session,body,send,appUrl}))return;
     if(req.method!=='GET'){
@@ -338,7 +363,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query(`select o.*,p.name as project_name,c.name as client_name,u.email as assignee_email from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id left join users u on u.id=o.assigned_user_id where o.organization_id=$1 and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} order by o.updated_at desc`,[user.organization_id]);
+      const r=await db.query(`select o.*,p.name as project_name,c.name as client_name,u.email as assignee_email,array(select a.user_id::text from agency_record_assignees a where a.organization_id=o.organization_id and a.kind='work-orders' and a.record_id=o.id order by a.is_primary desc,a.user_id) as assigned_user_ids,(select count(*)::int from agency_work_checklist_items ci where ci.organization_id=o.organization_id and ci.work_order_id=o.id) as checklist_total,(select count(*)::int from agency_work_checklist_items ci where ci.organization_id=o.organization_id and ci.work_order_id=o.id and ci.completed) as checklist_completed from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id left join users u on u.id=o.assigned_user_id where o.organization_id=$1 and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} order by o.updated_at desc`,[user.organization_id]);
       return send(res,200,{workOrders:r.rows});
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {
@@ -498,6 +523,6 @@ const server = http.createServer(async (req,res) => {
 server.listen(port, () => {
   console.log(`Scale Core API listening on ${port}`);
   init()
-    .then(() => { databaseReady = true; startAutomation(db,{apiKey:resendApiKey,from:invitationFrom,appUrl}); console.log('Scale database ready'); })
+    .then(() => { databaseReady = true; startAutomation(db,{apiKey:resendApiKey,from:invitationFrom,appUrl}); server.once('close',startLiveVisitorCleanup(db));server.once('close',startMaintenance(db));console.log('Scale database ready'); })
     .catch((error) => { console.error('Database initialization failed', error); });
 });

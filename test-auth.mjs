@@ -8,6 +8,7 @@ const db=new PGlite();
 await db.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
 for(const f of ['20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_agency_suite.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 for(const f of ['20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_notifications.sql','20260910_client_links.sql','20260910_invite_links.sql','20260910_currencies.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
+for(const f of ['20260910_company_currency.sql','20260910_global_identity.sql','20260910_project_assignees.sql','20260910_work_checklists.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const query=(s,v)=>db.query(s,v);
 const org=(await query("insert into organizations(slug,name) values('other','Another agency') returning id")).rows[0].id;
 const scale=(await query("select id from organizations where slug='scale'")).rows[0].id;
@@ -35,12 +36,20 @@ r=await callback();assert.equal(r.status,302);assert.ok(r.headers.Location.start
 const complete=new URL(r.headers.Location);r=await request(complete.pathname.replace('/core-api','')+complete.search);assert.equal(r.status,302);const cookie=r.headers['Set-Cookie'].split(';')[0];
 assert.equal((await request(complete.pathname.replace('/core-api','')+complete.search)).headers['Set-Cookie'],undefined);
 r=await request('/api/auth/me',{cookie});assert.equal(r.status,200);assert.equal(JSON.parse(r.body).user.organization_slug,'other');
+assert.equal(JSON.parse(r.body).user.default_currency,'PYG');
+assert.equal(JSON.parse(r.body).user.full_name,'member@example.invalid','First authenticated request initializes the own-email fallback');
+assert.equal(Object.hasOwn(JSON.parse(r.body).user,'has_personal_identity'),false);
+assert.equal((await query('select full_name from user_personal_identities where user_id=$1',[uid])).rows[0].full_name,'member@example.invalid');
+r=await request('/api/agency/productivity/profile',{cookie,method:'PATCH',payload:{full_name:'Mi identidad global',photo_url:'https://example.invalid/personal.png'}});assert.equal(r.status,200);
+r=await request('/api/auth/me',{cookie});assert.equal(JSON.parse(r.body).user.full_name,'Mi identidad global');assert.equal(JSON.parse(r.body).user.photo_url,'https://example.invalid/personal.png');
 r=await request('/api/auth/organizations',{cookie});assert.equal(JSON.parse(r.body).organizations.length,1);
 r=await request('/api/auth/switch-organization',{cookie,method:'POST',payload:{organizationId:scale}});assert.equal(r.status,403);
 await query("insert into organization_members values($1,$2,'viewer',now())",[scale,uid]);
+await query("insert into agency_settings(organization_id,default_currency) values($1,'USD') on conflict(organization_id) do update set default_currency='USD'",[scale]);
 r=await request('/api/auth/organizations',{cookie});assert.equal(JSON.parse(r.body).organizations.length,2);
 r=await request('/api/auth/switch-organization',{cookie,method:'POST',payload:{organizationId:scale}});assert.equal(r.status,200);const switched=r.headers['Set-Cookie'].split(';')[0];
 r=await request('/api/auth/me',{cookie:switched});assert.equal(JSON.parse(r.body).user.role,'viewer');assert.equal(JSON.parse(r.body).user.organization_slug,'scale');
+assert.equal(JSON.parse(r.body).user.full_name,'Mi identidad global');assert.equal(JSON.parse(r.body).user.photo_url,'https://example.invalid/personal.png');assert.equal(JSON.parse(r.body).user.default_currency,'USD');
 profile={email:'uninvited@example.invalid',email_verified:true};r=await callback();assert.ok(r.headers.Location.includes('authError'));assert.equal(r.headers['Set-Cookie'],undefined);
 await query('update organization_members set active=false where user_id=$1',[uid]);profile={email:'member@example.invalid',email_verified:true};r=await callback();assert.ok(r.headers.Location.includes('authError'));assert.equal((await request('/api/auth/me',{cookie:switched})).status,401);
 const owner=(await query("insert into users(email,password_hash) values('reinvitations-owner@example.invalid','unused') returning id")).rows[0].id;
@@ -54,7 +63,11 @@ const reinstated=(await query('select active,removed_at,role from organization_m
 r=await request('/api/agency/members',{cookie:ownerCookie,method:'POST',payload:{email:'member@example.invalid',role:'owner'}});assert.equal(r.status,409);
 const client=(await query("insert into agency_clients(organization_id,name) values($1,'Archive Integration') returning id",[scale])).rows[0].id;
 const project=(await query("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Child Project') returning id",[scale,client])).rows[0].id;
-await query("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Child Order')",[scale,project]);
+const order=(await query("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Child Order') returning id",[scale,project])).rows[0].id;
+// Exercise the integrated endpoint and orders view through the real HTTP handler.
+r=await request(`/api/agency/work-orders/${order}/assignees`,{cookie:ownerCookie,method:'PATCH',payload:{assigned_user_ids:[String(owner)],assigned_user_id:String(owner),expected_version:'0'}});assert.equal(r.status,200);assert.deepEqual(JSON.parse(r.body).assigned_user_ids,[String(owner)]);
+r=await request('/api/agency/work-orders',{cookie:ownerCookie});assert.equal(r.status,200);assert.deepEqual(JSON.parse(r.body).workOrders.find(row=>row.id===order).assigned_user_ids,[String(owner)]);
+assert.equal((await request(`/api/agency/work-orders/${order}/assignees`)).status,401);
 r=await request('/api/agency/clients',{cookie:ownerCookie});assert.equal(JSON.parse(r.body).clients.length,1);
 assert.equal((await request(`/api/agency/clients/${client}`,{cookie:ownerCookie,method:'DELETE'})).status,200);
 for(const [path,key] of [['clients','clients'],['projects','projects'],['work-orders','workOrders']]){r=await request('/api/agency/'+path,{cookie:ownerCookie});assert.equal(r.status,200);assert.equal(JSON.parse(r.body)[key].length,0);}
@@ -75,6 +88,8 @@ const pendingRows=JSON.parse((await request('/api/agency/access-requests',{cooki
 assert.equal((await request('/api/agency/access-requests/'+pendingRows[0].id,{cookie:ownerCookie,method:'PATCH',payload:{action:'approve'}})).status,200);
 assert.equal(JSON.parse((await request('/api/invitations/status',{cookie:pendingCookie})).body).status,'approved');
 assert.equal(JSON.parse((await request('/api/auth/me',{cookie:pendingCookie})).body).user.role,'editor');
+const approvedIdentity=JSON.parse((await request('/api/auth/me',{cookie:pendingCookie})).body).user;
+assert.equal(approvedIdentity.full_name,'Pending Test');assert.equal(Object.hasOwn(approvedIdentity,'has_personal_identity'),false);
 assert.equal((await request('/api/agency/clients',{cookie:pendingCookie})).status,200);
 assert.equal((await request('/api/agency/accounts',{cookie:pendingCookie})).status,403);
 await db.close();console.log('PASS: Google state/membership, single-use handoff, multiagency roles, revocation, explicit reinvitation, no outbound emails, operational archive lists/summary/restore');

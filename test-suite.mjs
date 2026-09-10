@@ -10,6 +10,7 @@ for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_c
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 await pg.exec(await fs.readFile('migrations/20260910_productivity.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_client_links.sql','utf8'));
+for(const file of ['20260908_google_oauth.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_invite_links.sql','20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('suite-other','Other') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('suite-owner@example.invalid','unused') returning id")).rows[0].id;
@@ -49,7 +50,12 @@ assert.equal((await call('/api/agency/plans','POST',{name:'Plan',items:[{descrip
 assert.equal((await call('/api/agency/plans','POST',{name:'Invalid',items:[]})).status,400);
 assert.equal((await call('/api/agency/exchange-rates','POST',{rate_date:'2026-09-08',usd_to_pyg:7500})).status,200);
 assert.equal((await call('/api/agency/dashboard')).inventory[0].total,'2000.00');
-assert.ok((await call('/api/agency/activity')).records.length>=5);
+await query("insert into agency_user_profiles(organization_id,user_id,full_name,photo_url) values($1,$2,'Autor local','https://example.invalid/actor.png')",[org,uid]);
+const activity=await call('/api/agency/activity');assert.equal(activity.status,200);assert.ok(activity.records.length>=5);
+const authored=activity.records.find(row=>row.actor===String(uid));assert.equal(authored.actor_name,'Autor local');assert.equal(authored.actor_photo_url,'https://example.invalid/actor.png');assert.equal(authored.actor_verified,true);
+assert.equal((await call('/api/agency/activity','GET',{}, {...user,role:'viewer'})).status,403);
+assert.equal((await call('/api/agency/activity','GET',{},null)).status,401);
+assert.equal((await call('/api/agency/activity','GET',{}, {...user,organization_id:other})).records.length,0);
 const token='a'.repeat(32);const budget=(await query("insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,public_token) values($1,$2,'Q-TEST','Quote','USD',200,220,$3) returning id",[org,client,token])).rows[0].id;
 await query("insert into agency_budget_items(budget_id,position,description,quantity,unit_price,total) values($1,1,'Video',2,100,200)",[budget]);
 assert.equal((await call('/p/'+token)).status,404);
