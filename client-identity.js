@@ -5,6 +5,6 @@ export function clientColor(value='violet'){
  return value;
 }
 export async function clientLogo(value){
- if(value && (typeof value!=='string'||!value.startsWith('data:image/')))throw Object.assign(new Error('Subí una imagen JPG, PNG o WebP para el logo'),{status:400});
+ // Optional external HTTPS image links are stored, never fetched by the API.
  return profilePhoto(value,{fit:'contain'});
 }

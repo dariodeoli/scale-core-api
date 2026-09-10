@@ -5,6 +5,7 @@ import {ensureClientApproval} from './content-review.js';
 import {budgetSections} from './budget-sections.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {clientColor,clientLogo} from './client-identity.js';
+import {clientLinks} from './client-links.js';
 const admin=['owner','admin'], commercial=[...admin,'management','finance','sales'], production=[...admin,'management','production'];
 const roles=[...admin,'management','finance','sales','production','editor','viewer'];
 const stages=['lead','contacted','proposal','negotiation','won','lost'];
@@ -66,7 +67,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
     if(action==='approve'){if(old.status!=='review')fail('La pieza debe estar en revisión');const step=old.approval_step+1;await c.query("update agency_work_orders set approval_step=$1,status=$2,updated_at=now() where id=$3",[step,step>=project.approval_levels?'approved':'review',key]);}
     else if(action==='publish'){if(old.status!=='approved')fail('Primero aprobá la pieza');await ensureClientApproval(c,old);await c.query("update agency_work_orders set status='published',updated_at=now() where id=$1",[key]);}else fail('Acción inválida');result={ok:true};
    }else if(req.method==='PATCH'&&!action){const b={...old,...await body(req)};
-    if(kind==='clients'){const name=text(b.name,120);if(name.length<2)fail('Ingresá el nombre');const logo=b.logo_url===old.logo_url?old.logo_url:await clientLogo(b.logo_url),color=clientColor(b.color_key??'violet');result={record:(await c.query('update agency_clients set name=$1,email=$2,phone=$3,notes=$4,legal_name=$5,tax_id=$6,active=$7,logo_url=$8,color_key=$9,updated_at=now() where id=$10 returning *',[name,email(b.email),text(b.phone||'',50),text(b.notes||''),text(b.legal_name||'',160),text(b.tax_id||'',60),b.active!==false,logo,color,key])).rows[0]};}
+    if(kind==='clients'){const name=text(b.name,120);if(name.length<2)fail('Ingresá el nombre');const logo=b.logo_url===old.logo_url?old.logo_url:await clientLogo(b.logo_url),color=clientColor(b.color_key??'violet');result={record:(await c.query('update agency_clients set name=$1,email=$2,phone=$3,notes=$4,legal_name=$5,tax_id=$6,active=$7,logo_url=$8,color_key=$9,social_links=$11,updated_at=now() where id=$10 returning *',[name,email(b.email),text(b.phone||'',50),text(b.notes||''),text(b.legal_name||'',160),text(b.tax_id||'',60),b.active!==false,logo,color,key,JSON.stringify(clientLinks(b.social_links))])).rows[0]};}
     if(kind==='projects'){const name=text(b.name,160),levels=Number(b.approval_levels);if(name.length<2||![1,2,3].includes(levels))fail('Proyecto inválido');result={record:(await c.query('update agency_projects set name=$1,drive_url=$2,status=$3,start_date=$4,due_date=$5,approval_levels=$6,updated_at=now() where id=$7 returning *',[name,link(b.drive_url),option(b.status,['active','paused','completed','cancelled']),date(b.start_date),date(b.due_date),levels,key])).rows[0]};}
     if(kind==='work-orders'){
      const state=option(b.status,['blocked','to_record','recorded','editing','review','approved','published']);let step=old.approval_step;

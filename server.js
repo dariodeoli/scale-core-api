@@ -16,6 +16,9 @@ import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
 import { invitationEmail } from './invitation-email.js';
 import { productivity } from './productivity.js';
+import {demoOrganization} from './demo-session.js';
+import {notifications} from './notifications.js';
+import {automationApi,startAutomation} from './automation.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -67,6 +70,9 @@ async function init() {
     for(const filename of ['20260908_client_payment_status.sql','20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await migration.query(await fs.readFile(path.join(root,'migrations',filename),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_productivity.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_profile_identity.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_demo_sessions.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_notifications.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_client_links.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -88,8 +94,19 @@ async function provisionOwnerForOrganization(email, password, slug) {
 async function session(req) {
   const token = parseCookies(req).scale_session;
   if (!token) return null;
-  const r = await db.query('select u.id,u.email,up.full_name,up.photo_url,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id left join agency_user_profiles up on up.user_id=u.id and up.organization_id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true', [token]);
-  return r.rows[0] || null;
+  const r = await db.query('select u.id,u.email,up.full_name,up.photo_url,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name,o.demo_owner_user_id,o.demo_source_id from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id left join agency_user_profiles up on up.user_id=u.id and up.organization_id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true and m.removed_at is null and (o.demo_owner_user_id is null or (o.demo_owner_user_id=u.id and o.demo_expires_at>now()))', [token]);
+  const user=r.rows[0]||null;
+  if(user?.organization_slug==='scale-demo-controles-20260908'){
+    const c=await db.connect();try{
+      await c.query('begin');
+      const current=(await c.query('select demo_key from sessions where id=$1 for update',[token])).rows[0];
+      if(!current){await c.query('rollback');return null;}
+      const org=await demoOrganization(c,{userId:user.id,sourceId:user.organization_id,demoKey:current.demo_key});
+      await c.query('update sessions set organization_id=$1 where id=$2',[org,token]);await c.query('commit');
+    }catch(e){await c.query('rollback');throw e;}finally{c.release();}
+    return session(req);
+  }
+  return user;
 }
 function can(user, roles) { return Boolean(user && roles.includes(user.role)); }
 async function auditContext(client,user,req){await client.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);}
@@ -112,11 +129,14 @@ const server = http.createServer(async (req,res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if(url.pathname.startsWith('/api/agency/members')&&req.method!=='GET'){const actor=await session(req);if(actor?.demo_owner_user_id)return send(res,403,{error:'El Demo no envía invitaciones ni cambia accesos reales. Usá Equipo en tu agencia.'});}
     if(await recordLifecycle({req,res,url,db,session,send}))return;
     if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
     if(await financeControls({req,res,url,db,session,body,send}))return;
     if(await contentReview({req,res,url,db,session,body,send}))return;
     if(await productivity({req,res,url,db,session,body,send}))return;
+    if(await notifications({req,res,url,db,session,body,send}))return;
+    if(await automationApi({req,res,url,db,session,body,send}))return;
     if(await suite({req,res,url,db,session,body,send,sendInvitation}))return;
     if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {
@@ -127,7 +147,7 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
       const { email='', password='' } = await body(req); const e=email.trim().toLowerCase();
       if(!await throttle(db,'login:'+e,30))return send(res,429,{error:'Demasiados intentos. Esperá 15 minutos.'});
-      const r=await db.query('select u.id,u.password_hash,(select organization_id from organization_members where user_id=u.id and active=true order by organization_id limit 1) as organization_id from users u where u.email=$1',[e]);
+      const r=await db.query('select u.id,u.password_hash,(select m.organization_id from organization_members m join organizations o on o.id=m.organization_id where m.user_id=u.id and m.active=true and m.removed_at is null and o.active=true and o.demo_owner_user_id is null order by m.organization_id limit 1) as organization_id from users u where u.email=$1',[e]);
       if (!r.rows[0] || !(await bcrypt.compare(password,r.rows[0].password_hash))) return send(res,401,{error:'Credenciales inválidas'});
       if (!r.rows[0].organization_id) return send(res,403,{error:'Usuario sin organización asignada'});
       const token=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,r.rows[0].id,r.rows[0].organization_id]);
@@ -156,7 +176,7 @@ const server = http.createServer(async (req,res) => {
       if (!profileResponse.ok) return send(res,401,{error:'No se pudo obtener el perfil de Google'});
       const profile = await profileResponse.json(); const email = String(profile.email || '').trim().toLowerCase();
       if (!email || profile.email_verified !== true) return send(res,403,{error:'La cuenta de Google no está verificada'});
-      const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.active=true and m.active=true order by o.name',[email]);
+      const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name',[email]);
       if (!member.rows[0]) { res.writeHead(302,{Location:`${appUrl}/?authError=${encodeURIComponent('Tu correo de Google todavía no fue invitado a esta empresa. Pedí una invitación al administrador.')}`}); return res.end(); }
       const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
       res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)}); return res.end();
@@ -172,8 +192,8 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:u}) : send(res,401,{error:'No autenticado'}); }
     if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query('select o.id,o.slug,o.name,m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true order by o.name',[user.id]);
-      return send(res,200,{organizations:r.rows,currentOrganizationId:user.organization_id});
+      const r=await db.query('select o.id,o.slug,o.name,m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name',[user.id]);
+      return send(res,200,{organizations:r.rows,currentOrganizationId:user.demo_source_id||user.organization_id});
     }
     if(url.pathname==='/api/auth/organizations'&&req.method==='POST'){
       const user=await session(req);if(!can(user,['owner','admin']))return send(res,403,{error:'Solo administración puede crear una empresa'});
@@ -183,10 +203,16 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/auth/switch-organization' && req.method === 'POST') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'}); const {organizationId}=await body(req);
-      const membership=await db.query('select 1 from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and m.organization_id=$2 and o.active=true and m.active=true',[user.id,Number(organizationId)]);
-      if(!membership.rows[0]) return send(res,403,{error:'No pertenecés a esa empresa'});
-      const token=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,user.id,Number(organizationId)]);
-      return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session',token,604800)});
+      const c=await db.connect();
+      try{
+        await c.query('begin');
+        const prior=(await c.query('select demo_key from sessions where id=$1 and user_id=$2 and expires_at>now() for update',[parseCookies(req).scale_session,user.id])).rows[0];
+        if(!prior)throw Object.assign(Error('Sesión vencida'),{status:401});
+        const org=await demoOrganization(c,{userId:user.id,sourceId:Number(organizationId),demoKey:prior.demo_key});
+        const token=id();await c.query("insert into sessions(id,user_id,organization_id,demo_key,expires_at) values($1,$2,$3,$4,now()+interval '7 days')",[token,user.id,org,prior.demo_key]);
+        await c.query('commit');
+        return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session',token,604800)});
+      }catch(e){await c.query('rollback');return send(res,e.status||500,{error:e.status?e.message:'No se pudo abrir la empresa'});}finally{c.release();}
     }
     if (url.pathname === '/api/events' && req.method === 'POST') {
       const {name,metadata={}}=await body(req);
@@ -432,6 +458,6 @@ const server = http.createServer(async (req,res) => {
 server.listen(port, () => {
   console.log(`Scale Core API listening on ${port}`);
   init()
-    .then(() => { databaseReady = true; console.log('Scale database ready'); })
+    .then(() => { databaseReady = true; startAutomation(db,{apiKey:resendApiKey,from:invitationFrom,appUrl}); console.log('Scale database ready'); })
     .catch((error) => { console.error('Database initialization failed', error); });
 });

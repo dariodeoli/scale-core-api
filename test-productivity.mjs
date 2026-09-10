@@ -11,6 +11,7 @@ await pg.exec(await fs.readFile('migrations/20260910_productivity.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_profile_identity.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_profile_identity.sql','utf8'));
 const query=(s,v)=>pg.query(s,v),db={query,connect:async()=>({query,release(){}})};
+await pg.exec(await fs.readFile('migrations/20260910_client_links.sql','utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('productivity-other','Other') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('productivity@example.invalid','unused') returning id")).rows[0].id;
@@ -45,7 +46,8 @@ assert.equal((await call(base+'/profile')).profile.full_name,'Editado en Equipo'
 const png=await sharp({create:{width:400,height:120,channels:3,background:{r:120,g:60,b:90}}}).png().toBuffer();
 const logo=await clientLogo('data:image/png;base64,'+png.toString('base64'));
 assert.equal((await sharp(Buffer.from(logo.split(',')[1],'base64')).metadata()).width,256);
-await assert.rejects(()=>clientLogo('https://example.com/tracking.png'),{status:400});
+assert.equal(await clientLogo('https://example.com/logo.png'),'https://example.com/logo.png');
+await assert.rejects(()=>clientLogo('javascript:alert(1)'),{status:400});
 await assert.rejects(()=>clientLogo('data:image/svg+xml;base64,PHN2Zy8+'),{status:400});
 let r=await call(`/api/agency/clients/${client}`,'PATCH',{color_key:'teal',logo_url:logo});assert.equal(r.status,200);assert.equal(r.record.color_key,'teal');
 assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{color_key:'evil'})).status,400);

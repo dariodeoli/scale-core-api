@@ -9,6 +9,7 @@ const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 await pg.exec(await fs.readFile('migrations/20260910_productivity.sql','utf8'));
+await pg.exec(await fs.readFile('migrations/20260910_client_links.sql','utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('suite-other','Other') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('suite-owner@example.invalid','unused') returning id")).rows[0].id;
@@ -25,6 +26,10 @@ const client=(await query("insert into agency_clients(organization_id,name) valu
 const project=(await query("insert into agency_projects(organization_id,client_id,name,approval_levels) values($1,$2,'Project',2) returning id",[org,client])).rows[0].id;
 const order=(await query("insert into agency_work_orders(organization_id,project_id,title,status) values($1,$2,'Video','review') returning id",[org,project])).rows[0].id;
 assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{name:'Changed'})).record.name,'Changed');
+assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{social_links:{website:'https://example.com',instagram:'https://www.instagram.com/example/',whatsapp:'https://wa.me/595981000000',other:[{label:'Catálogo',url:'https://example.com/catalogo'}]}})).status,200);
+assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{name:'Renamed'})).record.social_links.website,'https://example.com');
+assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{social_links:{website:'javascript:alert(1)'}})).status,400);
+assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{social_links:{}},{...user,role:'editor'})).status,403);
 assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{name:'Cross tenant'},{...user,organization_id:other})).status,404);
 assert.equal((await call(`/api/agency/work-orders/${order}`,'PATCH',{status:'approved'})).status,400);
 assert.equal((await call(`/api/agency/work-orders/${order}/approve`,'POST',{}, {...user,role:'editor'})).status,403);

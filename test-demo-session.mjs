@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {PGlite} from '@electric-sql/pglite';
+import {demoOrganization} from './demo-session.js';
+const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
+for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
+await pg.exec(await fs.readFile('migrations/20260910_demo_sessions.sql','utf8'));
+const c={query:(s,v)=>pg.query(s,v)};
+const source=(await c.query("insert into organizations(slug,name) values('scale-demo-controles-20260908','Demo') returning id")).rows[0].id;
+const real=(await c.query("select id from organizations where slug='scale'")).rows[0].id;
+const users=[];
+for(let i=0;i<2;i++){const u=(await c.query("insert into users(email,password_hash) values($1,'none') returning id",['test'+i+'@example.invalid'])).rows[0].id;users.push(u);await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[source,u]);}
+async function open(userId,demoKey){await pg.exec('begin');try{const id=await demoOrganization(c,{userId,sourceId:source,demoKey});await pg.exec('commit');return id;}catch(e){await pg.exec('rollback');throw e;}}
+const first=await open(users[0],'login-1');assert.notEqual(first,source);
+assert.equal(await open(users[0],'login-1'),first);
+assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[first])).rows[0].n,5);
+assert.equal((await c.query('select count(*)::int as n from agency_work_orders where organization_id=$1',[first])).rows[0].n,20);
+const second=await open(users[1],'login-1'),nextLogin=await open(users[0],'login-2');assert.notEqual(first,second);assert.notEqual(first,nextLogin);
+await c.query("update agency_clients set name='Edited' where organization_id=$1",[first]);
+assert.equal((await c.query("select count(*)::int as n from agency_clients where organization_id=$1 and name='Edited'",[second])).rows[0].n,0);
+assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[real])).rows[0].n,0);
+assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[source])).rows[0].n,0);
+assert.equal((await c.query('select count(*)::int as n from organization_members where organization_id=$1',[first])).rows[0].n,1);
+const accounts=(await c.query("select balance from bank_accounts where organization_id=$1 and currency='PYG' order by id",[first])).rows;
+assert.equal(Number(accounts[0].balance),8000000);assert.equal(Number(accounts[1].balance),1000000);
+await assert.rejects(()=>demoOrganization(c,{userId:users[1],sourceId:first,demoKey:'other'}),{status:403});
+console.log('PASS: private demo per login, reusable inside session, no cross-user or real-data reset, sample finance balances and unauthorized access');
