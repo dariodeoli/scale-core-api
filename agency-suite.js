@@ -4,6 +4,7 @@ import {budgetDocument,renderBudgetPdf} from './budget-document.js';
 import {ensureClientApproval} from './content-review.js';
 import {budgetSections} from './budget-sections.js';
 import {visibleRecord} from './record-lifecycle.js';
+import {clientColor,clientLogo} from './client-identity.js';
 const admin=['owner','admin'], commercial=[...admin,'management','finance','sales'], production=[...admin,'management','production'];
 const roles=[...admin,'management','finance','sales','production','editor','viewer'];
 const stages=['lead','contacted','proposal','negotiation','won','lost'];
@@ -54,13 +55,18 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
    await c.query('update organization_members set role=$1,active=$2 where user_id=$3 and organization_id=$4',[role,active,key,org]);await c.query('delete from sessions where user_id=$1 and organization_id=$2',[key,org]);result={ok:true};
   }else if(kind==='clients'||kind==='projects'||kind==='work-orders'){
    const table={clients:'agency_clients',projects:'agency_projects','work-orders':'agency_work_orders'}[kind],old=await owned(c,table,key,org);
-   if(req.method==='GET'){result={record:old};}
+   if(req.method==='GET'){
+    let identity={};
+    if(kind==='projects')identity=(await c.query('select name as client_name,logo_url as client_logo_url,color_key as client_color_key from agency_clients where id=$1 and organization_id=$2',[old.client_id,org])).rows[0]||{};
+    if(kind==='work-orders')identity=(await c.query('select c.name as client_name,c.logo_url as client_logo_url,c.color_key as client_color_key from agency_projects p join agency_clients c on c.id=p.client_id where p.id=$1 and p.organization_id=$2',[old.project_id,org])).rows[0]||{};
+    result={record:{...old,...identity}};
+   }
    else if(action&&kind==='work-orders'&&req.method==='POST'){
     const project=await owned(c,'agency_projects',old.project_id,org);
     if(action==='approve'){if(old.status!=='review')fail('La pieza debe estar en revisión');const step=old.approval_step+1;await c.query("update agency_work_orders set approval_step=$1,status=$2,updated_at=now() where id=$3",[step,step>=project.approval_levels?'approved':'review',key]);}
     else if(action==='publish'){if(old.status!=='approved')fail('Primero aprobá la pieza');await ensureClientApproval(c,old);await c.query("update agency_work_orders set status='published',updated_at=now() where id=$1",[key]);}else fail('Acción inválida');result={ok:true};
    }else if(req.method==='PATCH'&&!action){const b={...old,...await body(req)};
-    if(kind==='clients'){const name=text(b.name,120);if(name.length<2)fail('Ingresá el nombre');result={record:(await c.query('update agency_clients set name=$1,email=$2,phone=$3,notes=$4,legal_name=$5,tax_id=$6,active=$7,updated_at=now() where id=$8 returning *',[name,email(b.email),text(b.phone||'',50),text(b.notes||''),text(b.legal_name||'',160),text(b.tax_id||'',60),b.active!==false,key])).rows[0]};}
+    if(kind==='clients'){const name=text(b.name,120);if(name.length<2)fail('Ingresá el nombre');const logo=b.logo_url===old.logo_url?old.logo_url:await clientLogo(b.logo_url),color=clientColor(b.color_key??'violet');result={record:(await c.query('update agency_clients set name=$1,email=$2,phone=$3,notes=$4,legal_name=$5,tax_id=$6,active=$7,logo_url=$8,color_key=$9,updated_at=now() where id=$10 returning *',[name,email(b.email),text(b.phone||'',50),text(b.notes||''),text(b.legal_name||'',160),text(b.tax_id||'',60),b.active!==false,logo,color,key])).rows[0]};}
     if(kind==='projects'){const name=text(b.name,160),levels=Number(b.approval_levels);if(name.length<2||![1,2,3].includes(levels))fail('Proyecto inválido');result={record:(await c.query('update agency_projects set name=$1,drive_url=$2,status=$3,start_date=$4,due_date=$5,approval_levels=$6,updated_at=now() where id=$7 returning *',[name,link(b.drive_url),option(b.status,['active','paused','completed','cancelled']),date(b.start_date),date(b.due_date),levels,key])).rows[0]};}
     if(kind==='work-orders'){
      const state=option(b.status,['blocked','to_record','recorded','editing','review','approved','published']);let step=old.approval_step;

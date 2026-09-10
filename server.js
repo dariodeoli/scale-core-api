@@ -12,8 +12,10 @@ import { financeControls } from './finance-controls.js';
 import { contentReview } from './content-review.js';
 import { budgetSections } from './budget-sections.js';
 import { externalLink } from './media-policy.js';
+import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
 import { invitationEmail } from './invitation-email.js';
+import { productivity } from './productivity.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -63,6 +65,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'schema.sql'),'utf8'));
     await runOptionalMigration('20260908_dadoo_hub.sql',migration);
     for(const filename of ['20260908_client_payment_status.sql','20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await migration.query(await fs.readFile(path.join(root,'migrations',filename),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_productivity.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -84,7 +87,7 @@ async function provisionOwnerForOrganization(email, password, slug) {
 async function session(req) {
   const token = parseCookies(req).scale_session;
   if (!token) return null;
-  const r = await db.query('select u.id,u.email,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true', [token]);
+  const r = await db.query('select u.id,u.email,up.full_name,up.photo_url,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id left join agency_user_profiles up on up.user_id=u.id and up.organization_id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true', [token]);
   return r.rows[0] || null;
 }
 function can(user, roles) { return Boolean(user && roles.includes(user.role)); }
@@ -112,6 +115,7 @@ const server = http.createServer(async (req,res) => {
     if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
     if(await financeControls({req,res,url,db,session,body,send}))return;
     if(await contentReview({req,res,url,db,session,body,send}))return;
+    if(await productivity({req,res,url,db,session,body,send}))return;
     if(await suite({req,res,url,db,session,body,send,sendInvitation}))return;
     if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {
@@ -244,9 +248,10 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','sales'])) return send(res,403,{error:'Sin permiso'});
-      const {name='',email=null,phone=null,notes=null}=await body(req);
+      const {name='',email=null,phone=null,notes=null,logo_url=null,color_key='violet'}=await body(req);
       if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 120) return send(res,400,{error:'Nombre inválido'});
-      const r=await auditedQuery(user,req,'insert into agency_clients(name,email,phone,notes,organization_id) values($1,$2,$3,$4,$5) returning *',[name.trim(),email||null,phone||null,notes||null,user.organization_id]);
+      const logo=await clientLogo(logo_url),color=clientColor(color_key);
+      const r=await auditedQuery(user,req,'insert into agency_clients(name,email,phone,notes,organization_id,logo_url,color_key) values($1,$2,$3,$4,$5,$6,$7) returning *',[name.trim(),email||null,phone||null,notes||null,user.organization_id,logo,color]);
       return send(res,201,{client:r.rows[0]});
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'GET') {

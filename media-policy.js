@@ -15,7 +15,7 @@ export function externalLink(value) {
 }
 
 // Only small, decoded raster profile pictures may be stored locally.
-export async function profilePhoto(value) {
+export async function profilePhoto(value, {fit='cover'}={}) {
   if (!value || (typeof value === 'string' && !value.startsWith('data:'))) return externalLink(value);
   if (typeof value !== 'string' || value.length > 700000) invalid('La foto comprimida supera el límite permitido');
   const match = value.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/);
@@ -31,7 +31,7 @@ export async function profilePhoto(value) {
     const image = sharp(bytes, {limitInputPixels:16000000, failOn:'warning'});
     const meta = await image.metadata();
     if ((meta.pages || 1) !== 1) invalid('Usá una foto sin animación');
-    const output = await image.rotate().resize(256,256,{fit:'cover',withoutEnlargement:true}).webp({quality:80}).toBuffer();
+    const output = await image.rotate().resize(256,256,{fit,background:{r:255,g:255,b:255,alpha:0},withoutEnlargement:true}).webp({quality:80}).toBuffer();
     if (output.length > 90 * 1024) invalid('La foto es demasiado compleja; elegí otra imagen');
     return `data:image/webp;base64,${output.toString('base64')}`;
   } catch (error) {
