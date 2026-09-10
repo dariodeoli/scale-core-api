@@ -13,16 +13,21 @@ for(let i=0;i<2;i++){const u=(await c.query("insert into users(email,password_ha
 async function open(userId,demoKey){await pg.exec('begin');try{const id=await demoOrganization(c,{userId,sourceId:source,demoKey});await pg.exec('commit');return id;}catch(e){await pg.exec('rollback');throw e;}}
 const first=await open(users[0],'login-1');assert.notEqual(first,source);
 assert.equal(await open(users[0],'login-1'),first);
-assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[first])).rows[0].n,5);
-assert.equal((await c.query('select count(*)::int as n from agency_work_orders where organization_id=$1',[first])).rows[0].n,20);
+assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[first])).rows[0].n,20);
+assert.equal((await c.query('select count(*)::int as n from agency_work_orders where organization_id=$1',[first])).rows[0].n,80);
 const second=await open(users[1],'login-1'),nextLogin=await open(users[0],'login-2');assert.notEqual(first,second);assert.notEqual(first,nextLogin);
 await c.query("update agency_clients set name='Edited' where organization_id=$1",[first]);
 assert.equal((await c.query("select count(*)::int as n from agency_clients where organization_id=$1 and name='Edited'",[second])).rows[0].n,0);
 assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[real])).rows[0].n,0);
 assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[source])).rows[0].n,0);
-assert.equal((await c.query('select count(*)::int as n from organization_members where organization_id=$1',[first])).rows[0].n,1);
+assert.equal((await c.query('select count(*)::int as n from organization_members where organization_id=$1',[first])).rows[0].n,6);
 const accounts=(await c.query("select balance from bank_accounts where organization_id=$1 and currency='PYG' order by id",[first])).rows;
-assert.equal(Number(accounts[0].balance),8000000);assert.equal(Number(accounts[1].balance),1000000);
+assert.equal(Number(accounts[0].balance),35250000);assert.equal(Number(accounts[1].balance),1000000);
+const continental=(await c.query("select name,institution,account_number,holder_name from bank_accounts where organization_id=$1 and account_number='39282'",[first])).rows[0];
+assert.equal(continental.name,'Banco Continental · cuenta 39282');
+assert.equal(continental.institution,'Banco Continental');
+assert.equal(continental.holder_name,'Agencia Horizonte E.A.S.');
+assert.equal((await c.query('select name from organizations where id=$1',[first])).rows[0].name,'Agencia Horizonte');
 await assert.rejects(()=>demoOrganization(c,{userId:users[1],sourceId:first,demoKey:'other'}),{status:403});
 const fresh=(await c.query("insert into users(email,password_hash) values('fresh-owner@example.invalid','none') returning id")).rows[0].id;
 await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'viewer')",[real,fresh]);
@@ -32,7 +37,7 @@ await c.query("update organization_members set role='owner' where organization_i
 assert.equal(String((await privateDemoEntry(c,fresh)).id),String(source));
 const personal=await open(fresh,'fresh-login');assert.notEqual(personal,source);
 assert.equal((await c.query('select count(*)::int as n from organization_members where organization_id=$1 and user_id=$2',[source,fresh])).rows[0].n,0);
-assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[personal])).rows[0].n,5);
+assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[personal])).rows[0].n,20);
 await assert.rejects(()=>demoOrganization(c,{userId:fresh,sourceId:first,demoKey:'fresh-login'}),{status:403});
 await c.query("insert into organization_members(organization_id,user_id,role,active) values($1,$2,'owner',false)",[source,fresh]);assert.equal(await privateDemoEntry(c,fresh),null);
 console.log('PASS: private demo per login, reusable inside session, no cross-user or real-data reset, sample finance balances and unauthorized access');

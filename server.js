@@ -1,3 +1,4 @@
+import {currencies} from './currencies.js';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -19,6 +20,8 @@ import { productivity } from './productivity.js';
 import {rucLookup} from './ruc-lookup.js';
 import {presence} from './presence.js';
 import {demoOrganization,privateDemoEntry} from './demo-session.js';
+import {inviteLinks,resolveInvite,claimInvite} from './invite-links.js';
+import {publicExperience} from './public-experience.js';
 import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
 
@@ -41,6 +44,7 @@ const invitationFrom = process.env.EMAIL_FROM || 'Scale OS <invitaciones@owncodi
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
 const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com', 'https://dadoocapital.com', 'https://www.dadoocapital.com', 'https://admin.dadoocapital.com']);
 const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer'];
+allowedOrigins.add('https://sistema.scaleparaguay.com');
 let databaseReady = false;
 
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
@@ -78,6 +82,8 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_client_lifecycle.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_ruc_lookup.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_presence.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_invite_links.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_currencies.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -101,6 +107,7 @@ async function session(req) {
   if (!token) return null;
   const r = await db.query('select u.id,u.email,up.full_name,up.photo_url,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name,o.demo_owner_user_id,o.demo_source_id from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id left join agency_user_profiles up on up.user_id=u.id and up.organization_id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true and m.removed_at is null and (o.demo_owner_user_id is null or (o.demo_owner_user_id=u.id and o.demo_expires_at>now()))', [token]);
   const user=r.rows[0]||null;
+  if(user?.demo_owner_user_id){const preview=(await db.query('select demo_role from sessions where id=$1',[token])).rows[0];if(preview?.demo_role)user.role=preview.demo_role;}
   if(user?.organization_slug==='scale-demo-controles-20260908'){
     const c=await db.connect();try{
       await c.query('begin');
@@ -134,6 +141,18 @@ const server = http.createServer(async (req,res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if(url.pathname.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
+    if(url.pathname==='/api/invitations/status'&&req.method==='GET'){
+      const r=(await db.query(`select o.name as organization_name,u.email,l.role,r.status from sessions s join users u on u.id=s.user_id join organizations o on o.id=s.organization_id join agency_invite_links l on l.organization_id=o.id join agency_access_requests r on r.link_id=l.id and r.user_id=u.id where s.id=$1 and s.expires_at>now() order by r.created_at desc limit 1`,[parseCookies(req).scale_session||''])).rows[0];
+      if(!r)return send(res,401,{error:'Ingresá con Google para ver tu solicitud'});
+      const approved=await session(req);return send(res,200,{...r,status:approved?'approved':r.status==='approved'?'unavailable':r.status,role:approved?.role||r.role});
+    }
+    if(await publicExperience({req,res,url,db,session,body,send,cookie,parseCookies}))return;
+    if(await inviteLinks({req,res,url,db,session,body,send,appUrl}))return;
+    if(req.method!=='GET'){
+      const actor=await session(req);
+      if(actor?.demo_owner_user_id&&(url.pathname==='/api/auth/organizations'||url.pathname==='/api/events'||/\/(share|client-review)$/.test(url.pathname)||/\/budgets\/\d+\/publish$/.test(url.pathname)))return send(res,403,{error:'El Demo no comparte datos públicamente ni crea empresas o eventos externos.'});
+    }
     if(url.pathname.startsWith('/api/agency/members')&&req.method!=='GET'){const actor=await session(req);if(actor?.demo_owner_user_id)return send(res,403,{error:'El Demo no envía invitaciones ni cambia accesos reales. Usá Equipo en tu agencia.'});}
     if(await recordLifecycle({req,res,url,db,session,send}))return;
     if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
@@ -166,15 +185,18 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/google/start' && req.method === 'GET') {
       if (!googleClientId || !googleClientSecret) return send(res,503,{error:'Google OAuth aún no está configurado'});
       const organizationSlug = '';
+      const inviteToken=url.searchParams.get('invite');
+      const invite=inviteToken?await resolveInvite(db,inviteToken):null;
       const state = id();
       await db.query('insert into oauth_states(state,organization_slug,redirect_uri,expires_at) values($1,$2,$3,now()+interval \'10 minutes\')',[state,organizationSlug,googleRedirectUri]);
+      if(invite)await db.query('update oauth_states set invite_link_id=$1 where state=$2',[invite.id,state]);
       const params = new URLSearchParams({ client_id: googleClientId, redirect_uri: googleRedirectUri, response_type: 'code', scope: 'openid email profile', state, prompt: 'select_account' });
       res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)}); return res.end();
     }
     if (url.pathname === '/api/auth/google/callback' && req.method === 'GET') {
       const state = url.searchParams.get('state') || ''; const code = url.searchParams.get('code') || '';
       if (!state || parseCookies(req).scale_oauth_state !== state) {res.writeHead(302,{Location:`${appUrl}/?authError=La%20sesión%20de%20Google%20venció.%20Intentá%20nuevamente.`});return res.end();}
-      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri',[state]);
+      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri,invite_link_id',[state]);
       if (!saved.rows[0] || !code) return send(res,400,{error:'Sesión de Google inválida o vencida'});
       const tokenResponse = await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({code,client_id:googleClientId,client_secret:googleClientSecret,redirect_uri:saved.rows[0].redirect_uri,grant_type:'authorization_code'})});
       if (!tokenResponse.ok) return send(res,401,{error:'No se pudo validar Google'});
@@ -183,7 +205,15 @@ const server = http.createServer(async (req,res) => {
       if (!profileResponse.ok) return send(res,401,{error:'No se pudo obtener el perfil de Google'});
       const profile = await profileResponse.json(); const email = String(profile.email || '').trim().toLowerCase();
       if (!email || profile.email_verified !== true) return send(res,403,{error:'La cuenta de Google no está verificada'});
+      if(saved.rows[0].invite_link_id){
+        const c=await db.connect();let claim;
+        try{await c.query('begin');await c.query("select set_config('app.current_user','google-invitation',true)");claim=await claimInvite(c,saved.rows[0].invite_link_id,profile);await c.query('commit');}
+        catch(e){await c.query('rollback');res.writeHead(302,{Location:`${appUrl}/invitacion?error=${encodeURIComponent(e.status?e.message:'No se pudo aceptar el enlace')}`});return res.end();}finally{c.release();}
+        const ticket=id();await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),claim.userId,claim.organizationId]);
+        res.writeHead(302,{Location:`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+      }
       const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name',[email]);
+      if(!member.rows.length){const pending=await db.query("select u.id,l.organization_id from users u join agency_access_requests r on r.user_id=u.id join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id where u.email=$1 and r.status='pending' and o.active=true order by r.created_at desc limit 1",[email]);member.rows=pending.rows;}
       if (!member.rows[0]) { res.writeHead(302,{Location:`${appUrl}/?authError=${encodeURIComponent('Tu correo de Google todavía no fue invitado a esta empresa. Pedí una invitación al administrador.')}`}); return res.end(); }
       const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
       res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)}); return res.end();
@@ -193,7 +223,8 @@ const server = http.createServer(async (req,res) => {
       const saved=await db.query('delete from oauth_handoffs where token_hash=$1 and expires_at>now() returning user_id,organization_id',[crypto.createHash('sha256').update(ticket).digest('hex')]);
       if(!saved.rows[0]) {res.writeHead(302,{Location:`${appUrl}/?authError=El%20acceso%20venció.%20Intentá%20nuevamente.`});return res.end();}
       const token=id();await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,saved.rows[0].user_id,saved.rows[0].organization_id]);
-      res.writeHead(302,{Location:`${appUrl}/?chooseCompany=1`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
+      const member=await db.query('select 1 from organization_members where user_id=$1 and organization_id=$2 and active=true and removed_at is null',[saved.rows[0].user_id,saved.rows[0].organization_id]);
+      res.writeHead(302,{Location:member.rows.length?`${appUrl}/?chooseCompany=1`:`${appUrl}/acceso-pendiente`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:u}) : send(res,401,{error:'No autenticado'}); }
@@ -359,7 +390,7 @@ const server = http.createServer(async (req,res) => {
       const {title='',clientId,currency='PYG',items=[],notes=null,validUntil=null,tax_rate=.1,sections=null} = await body(req);
       const normalizedSections=budgetSections(sections);
       if(![0,.05,.1].includes(Number(tax_rate)))return send(res,400,{error:'IVA inválido'});
-      if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(clientId)) || !['PYG','USD'].includes(currency) || !Array.isArray(items) || !items.length || items.length > 100) return send(res,400,{error:'Presupuesto inválido'});
+      if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(clientId)) || !currencies.includes(currency) || !Array.isArray(items) || !items.length || items.length > 100) return send(res,400,{error:'Presupuesto inválido'});
       const normalizedItems = items.map((item) => ({ description: typeof item?.description === 'string' ? item.description.trim() : '', quantity: Number(item?.quantity), unitPrice: Number(item?.unitPrice) }));
       if (normalizedItems.some(item => item.description.length < 2 || !Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.unitPrice) || item.unitPrice < 0)) return send(res,400,{error:'Ítems de presupuesto inválidos'});
       const client = await db.connect();
@@ -387,7 +418,7 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {
       const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
       const {name='',accountType='bank',currency='PYG',institution=null,accountNumber=null,holderName=null,custodianUserId=null}=await body(req);
-      if(typeof name !== 'string' || name.trim().length<2 || !['bank','cash','digital','investment'].includes(accountType) || !['PYG','USD'].includes(currency)) return send(res,400,{error:'Cuenta inválida'});
+      if(typeof name !== 'string' || name.trim().length<2 || !['bank','cash','digital','investment'].includes(accountType) || !currencies.includes(currency)) return send(res,400,{error:'Cuenta inválida'});
       const custodianId=custodianUserId === null || custodianUserId === '' ? null : Number(custodianUserId);
       if(custodianId !== null && (!Number.isInteger(custodianId) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,custodianId])).rows[0])) return send(res,400,{error:'Custodio inválido'});
       const r=await auditedQuery(user,req,'insert into bank_accounts(organization_id,name,account_type,currency,institution,account_number,holder_name,custodian_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,name.trim(),accountType,currency,typeof institution === 'string' ? institution.trim() || null : null,typeof accountNumber === 'string' ? accountNumber.trim() || null : null,typeof holderName === 'string' ? holderName.trim() || null : null,custodianId]);
@@ -406,7 +437,7 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {
       const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
       const {clientId,total,currency='PYG',dueOn=null,notes=null}=await body(req); const amount=Number(total);
-      if(!Number.isInteger(Number(clientId)) || !Number.isFinite(amount) || amount<0 || !['PYG','USD'].includes(currency)) return send(res,400,{error:'Factura inválida'});
+      if(!Number.isInteger(Number(clientId)) || !Number.isFinite(amount) || amount<0 || !currencies.includes(currency)) return send(res,400,{error:'Factura inválida'});
       const client=await db.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[Number(clientId),user.organization_id]); if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
       const number=`F-${new Date().getFullYear()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
       const r=await auditedQuery(user,req,'insert into agency_invoices(organization_id,client_id,number,total,currency,due_on,notes) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(clientId),number,amount,currency,dueOn || null,notes || null]);

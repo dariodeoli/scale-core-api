@@ -13,7 +13,7 @@ export async function passwordAccess({req,res,url,db,body,send,sendReset}){
   if(url.pathname.endsWith('/request')){
    const email=typeof b.email==='string'?b.email.trim().toLowerCase():'';
    const limited=await throttle(db,'reset:'+email,3);
-   if(limited&&/^\S+@\S+\.\S+$/.test(email)){
+   if(limited&&!email.endsWith('@demo.example.invalid')&&/^\S+@\S+\.\S+$/.test(email)){
     const account=(await db.query('select id from users where email=$1 and exists(select 1 from organization_members m where m.user_id=users.id and m.active=true)',[email])).rows[0];
     if(account){const token=crypto.randomBytes(32).toString('hex');await db.query("insert into password_resets(token_hash,user_id,expires_at) values($1,$2,now()+interval '1 hour')",[hash(token),account.id]);await sendReset(email,token).catch(()=>false);}
    }

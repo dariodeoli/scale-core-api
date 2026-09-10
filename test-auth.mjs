@@ -7,7 +7,7 @@ import {PGlite} from '@electric-sql/pglite';
 const db=new PGlite();
 await db.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
 for(const f of ['20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_agency_suite.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
-for(const f of ['20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_notifications.sql','20260910_client_links.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
+for(const f of ['20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_notifications.sql','20260910_client_links.sql','20260910_invite_links.sql','20260910_currencies.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const query=(s,v)=>db.query(s,v);
 const org=(await query("insert into organizations(slug,name) values('other','Another agency') returning id")).rows[0].id;
 const scale=(await query("select id from organizations where slug='scale'")).rows[0].id;
@@ -29,7 +29,7 @@ async function request(path,{method='GET',cookie='',payload}={}){
  const result={status:0,headers:{},body:''};const req={url:path,method,headers:{host:'admin.scaleparaguay.com',cookie},socket:{remoteAddress:'127.0.0.1'},async *[Symbol.asyncIterator](){if(payload)yield JSON.stringify(payload);}};
  await handler(req,{setHeader(k,v){result.headers[k]=v;},writeHead(s,h){result.status=s;Object.assign(result.headers,h);},end(b){result.body=b||'';}});return result;
 }
-async function callback(){const start=await request('/api/auth/google/start');assert.equal(start.status,302);const state=new URL(start.headers.Location).searchParams.get('state');const cookie=start.headers['Set-Cookie'].split(';')[0];return request(`/api/auth/google/callback?state=${state}&code=mock`,{cookie});}
+async function callback(invite=''){const start=await request('/api/auth/google/start'+(invite?'?invite='+invite:''));assert.equal(start.status,302);const state=new URL(start.headers.Location).searchParams.get('state');const cookie=start.headers['Set-Cookie'].split(';')[0];return request(`/api/auth/google/callback?state=${state}&code=mock`,{cookie});}
 let r=await request('/api/auth/google/callback?state=forged&code=mock');assert.equal(r.status,302);assert.ok(r.headers.Location.includes('authError'));
 r=await callback();assert.equal(r.status,302);assert.ok(r.headers.Location.startsWith('https://app.scaleparaguay.com/core-api/api/auth/google/complete?ticket='));
 const complete=new URL(r.headers.Location);r=await request(complete.pathname.replace('/core-api','')+complete.search);assert.equal(r.status,302);const cookie=r.headers['Set-Cookie'].split(';')[0];
@@ -61,4 +61,20 @@ for(const [path,key] of [['clients','clients'],['projects','projects'],['work-or
 r=await request('/api/agency/summary',{cookie:ownerCookie});assert.deepEqual(JSON.parse(r.body).summary,{active_clients:0,active_projects:0,open_orders:0});
 assert.equal((await request(`/api/agency/clients/${client}/restore`,{cookie:ownerCookie,method:'POST'})).status,200);
 r=await request('/api/agency/projects',{cookie:ownerCookie});assert.equal(JSON.parse(r.body).projects[0].work_order_count,1);
+// Pending applicants can see only the waiting screen, never agency data.
+r=await request('/api/agency/invite-links',{cookie:ownerCookie,method:'POST',payload:{role:'editor',mode:'approval'}});assert.equal(r.status,200);
+const inviteToken=new URL(JSON.parse(r.body).url).searchParams.get('token');
+profile={email:'pending@example.invalid',name:'Pending Test',email_verified:true};r=await callback(inviteToken);assert.equal(r.status,302);
+const pendingComplete=new URL(r.headers.Location);r=await request(pendingComplete.pathname.replace('/core-api','')+pendingComplete.search);assert(r.headers.Location.endsWith('/acceso-pendiente'));
+const pendingCookie=r.headers['Set-Cookie'].split(';')[0];
+assert.equal((await request('/api/auth/me',{cookie:pendingCookie})).status,401);
+assert.equal((await request('/api/agency/clients',{cookie:pendingCookie})).status,401);
+assert.equal((await request('/api/agency/work-orders',{cookie:pendingCookie})).status,401);
+assert.equal(JSON.parse((await request('/api/invitations/status',{cookie:pendingCookie})).body).status,'pending');
+const pendingRows=JSON.parse((await request('/api/agency/access-requests',{cookie:ownerCookie})).body).requests;
+assert.equal((await request('/api/agency/access-requests/'+pendingRows[0].id,{cookie:ownerCookie,method:'PATCH',payload:{action:'approve'}})).status,200);
+assert.equal(JSON.parse((await request('/api/invitations/status',{cookie:pendingCookie})).body).status,'approved');
+assert.equal(JSON.parse((await request('/api/auth/me',{cookie:pendingCookie})).body).user.role,'editor');
+assert.equal((await request('/api/agency/clients',{cookie:pendingCookie})).status,200);
+assert.equal((await request('/api/agency/accounts',{cookie:pendingCookie})).status,403);
 await db.close();console.log('PASS: Google state/membership, single-use handoff, multiagency roles, revocation, explicit reinvitation, no outbound emails, operational archive lists/summary/restore');

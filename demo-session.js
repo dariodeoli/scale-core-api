@@ -17,7 +17,7 @@ export async function demoOrganization(c,{userId,sourceId,demoKey}){
  await c.query("select pg_advisory_xact_lock(hashtextextended($1,0))",['demo:'+demoKey+':'+userId]);
  const existing=(await c.query('select organization_id from agency_demo_sessions where demo_key=$1 and user_id=$2',[demoKey,userId])).rows[0];
  if(existing)return existing.organization_id;
- const org=(await c.query("insert into organizations(slug,name,demo_owner_user_id,demo_source_id,demo_expires_at) values($1,'Demo · Tu sesión privada (sin dinero real)',$2,$3,now()+interval '7 days') returning id",['demo-session-'+crypto.randomUUID(),userId,sourceId])).rows[0].id;
+ const org=(await c.query("insert into organizations(slug,name,demo_owner_user_id,demo_source_id,demo_expires_at) values($1,'Agencia Horizonte',$2,$3,now()+interval '7 days') returning id",['demo-session-'+crypto.randomUUID(),userId,sourceId])).rows[0].id;
  await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,userId,source.role]);
  await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip','demo-fixture',true)",[String(userId)]);
  await seedPrivateDemo(c,org,userId);
@@ -25,30 +25,50 @@ export async function demoOrganization(c,{userId,sourceId,demoKey}){
  return org;
 }
 export async function seedPrivateDemo(c,org,userId){
+ const palette=['#560766','#355fb0','#15857b','#b47a12','#b04170'];
+ const portrait=(label,index,person=false)=>'data:image/svg+xml;base64,'+Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="${palette[index%5]}"/>${person?'<circle cx="128" cy="93" r="43" fill="#f6d4bd"/><path d="M43 256v-36a85 85 0 0 1 170 0v36" fill="#fff"/><path d="M86 91a44 44 0 0 1 84-15l-39-21-44 38" fill="#292130"/>':`<text x="128" y="154" text-anchor="middle" font-family="Arial,sans-serif" font-size="74" font-weight="700" fill="white">${label}</text>`}</svg>`).toString('base64');
+ await c.query("insert into agency_settings(organization_id,legal_name,tax_id,address,phone,onboarding_completed) values($1,'Agencia Horizonte E.A.S.','80000000-0','Av. Mariscal López 120 · Asunción','+595 000 000000',true) on conflict do nothing",[org]);
+ await c.query('insert into agency_exchange_rates(organization_id,rate_date,usd_to_pyg) values($1,current_date,7500),($1,current_date-1,7480)',[org]);
  const account=[];
- for(const [name,type,currency] of [['Caja Lucía','cash','PYG'],['Banco de ejemplo','bank','PYG'],['Cuenta USD','bank','USD']]){
-  account.push((await c.query('insert into bank_accounts(organization_id,name,account_type,currency,balance,custodian_user_id,holder_name) values($1,$2,$3,$4,0,$5,$6) returning id',[org,'Demo · '+name,type,currency,userId,'Titular ficticio'])).rows[0].id);
+ for(const [name,type,currency,institution,number] of [['Caja de oficina','cash','PYG','',''],['Banco Continental · cuenta 39282','bank','PYG','Banco Continental','39282'],['Cuenta en dólares · 39283','bank','USD','Banco Continental','39283']]){
+  account.push((await c.query('insert into bank_accounts(organization_id,name,account_type,currency,balance,custodian_user_id,holder_name,institution,account_number) values($1,$2,$3,$4,0,$5,$6,$7,$8) returning id',[org,name,type,currency,userId,'Agencia Horizonte E.A.S.',institution,number])).rows[0].id);
  }
  const staff=[];
- for(const [name,job,salary] of [['Lucía Acosta','Dirección',6000000],['Mateo Ríos','Editor audiovisual',3500000],['Camila Vera','Administración',4000000],['Nicolás Duarte','Comercial',2500000],['Valentina Sol','Producción',3800000]]){
-  staff.push((await c.query("insert into agency_collaborators(organization_id,full_name,job_title,compensation_amount,payment_day,started_on,notes) values($1,$2,$3,$4,5,current_date-180,'Persona ficticia. Sin correo ni acceso real.') returning id",[org,name,job,salary])).rows[0].id);
+ let personIndex=0;
+ for(const [name,job,salary,role] of [['Lucía Acosta','Dirección',6000000,'admin'],['Mateo Ríos','Editor audiovisual',3500000,'editor'],['Camila Vera','Administración',4000000,'finance'],['Nicolás Duarte','Comercial',2500000,'sales'],['Valentina Sol','Producción',3800000,'production']]){
+  const email=`persona-${org}-${personIndex}@demo.example.invalid`;
+  const person=(await c.query("insert into users(email,password_hash) values($1,'!fictional-demo-no-login') returning id",[email])).rows[0].id;
+  await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,person,role]);
+  staff.push((await c.query("insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_amount,payment_day,started_on,notes) values($1,$2,$3,$4,$5,$6,$7,5,current_date-90,'Honorarios mensuales. Coordinación de entregas en la reunión semanal.') returning id",[org,person,name,email,portrait('',personIndex++,true),job,salary])).rows[0].id);
  }
- const names=['Aurora Café','Bosque Hogar','Órbita Fitness','Nube Software','Luna Moda'];
+ const names=['Aurora Café','Bosque Hogar','Órbita Fitness','Nube Software','Luna Moda','Brisa Viajes','Prisma Diseño','Raíz Orgánica','Faro Inmuebles','Menta Salud','Sur Automotores','Pixel Academy','Alma Cocina','Ruta Outdoor','Nova Energía','Marea Cosmética','Roble Muebles','Cumbre Seguros','Punto Libros','Sol Pet'];
  for(let i=0;i<names.length;i++){
-  const currency=i===3?'USD':'PYG',total=i===3?1200:(i+3)*1000000;
-  const client=(await c.query("insert into agency_clients(organization_id,name,email,notes,color_key) values($1,$2,$3,'Cliente ficticio; no contactar.',$4) returning id",[org,names[i],`cliente${i}@demo.example.invalid`,['violet','blue','teal','gold','rose'][i]])).rows[0].id;
+  const currency=i%5===3?'USD':'PYG',total=i%5===3?1200:((i%5)+3)*1000000;
+  const client=(await c.query("insert into agency_clients(organization_id,name,email,notes,color_key,logo_url) values($1,$2,$3,'Enviar calendario de contenidos antes del inicio de cada mes.',$4,$5) returning id",[org,names[i],`cliente${i}@demo.example.invalid`,['violet','blue','teal','gold','rose'][i%5],portrait(names[i].split(' ').map(w=>w[0]).join(''),i)])).rows[0].id;
   const project=(await c.query('insert into agency_projects(organization_id,client_id,name,approval_levels,start_date,due_date) values($1,$2,$3,$4,current_date-7,current_date+21) returning id',[org,client,'Campaña · '+names[i],i%3+1])).rows[0].id;
-  for(let j=0;j<4;j++)await c.query('insert into agency_work_orders(organization_id,project_id,title,description,status,due_date,assigned_user_id,estimated_hours) values($1,$2,$3,$4,$5,current_date+$6::int,$7,$8)',[org,project,['Reel de lanzamiento','Historias de campaña','Carrusel de producto','Video de testimonio'][j],'Ejemplo editable. Agregá un enlace de Drive para practicar.',['blocked','to_record','recorded','editing','review','approved','published'][(i*4+j)%7],j-1,userId,2+j]);
-  await c.query("insert into agency_project_comments(organization_id,project_id,author_user_id,body) values($1,$2,$3,'Brief ficticio validado. Revisar guion y compartir enlace antes de entregar.')",[org,project,userId]);
-  const invoice=(await c.query("insert into agency_invoices(organization_id,client_id,number,total,currency,due_on,notes) values($1,$2,$3,$4,$5,current_date+$6::int,'Ejemplo sin validez fiscal.') returning id",[org,client,'DEMO-'+(i+1),total,currency,i===2?-10:10])).rows[0].id;
-  if(i!==2)await c.query("insert into agency_payments(organization_id,invoice_id,account_id,amount,received_by_user_id,reference) values($1,$2,$3,$4,$5,'Cobro ficticio')",[org,invoice,currency==='USD'?account[2]:account[0],i===1?total:total/2,userId]);
-  const budget=(await c.query("insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,status,valid_until,notes) values($1,$2,$3,$4,$5,$6,$7,'draft',current_date+15,'Propuesta ficticia, no publicada.') returning id",[org,client,'DEMO-PROP-'+(i+1),'Plan mensual '+names[i],currency,total/1.1,total])).rows[0].id;
+  for(let j=0;j<4;j++)await c.query('insert into agency_work_orders(organization_id,project_id,title,description,status,due_date,assigned_user_id,estimated_hours) values($1,$2,$3,$4,$5,current_date+$6::int,$7,$8)',[org,project,['Reel de lanzamiento','Historias de campaña','Carrusel de producto','Video de testimonio'][j],'Revisar el brief, preparar la pieza y adjuntar el enlace de Drive para aprobación.',['blocked','to_record','recorded','editing','review','approved','published'][(i*4+j)%7],j-1,userId,2+j]);
+  await c.query("insert into agency_project_comments(organization_id,project_id,author_user_id,body) values($1,$2,$3,'Brief validado. Revisar guion y compartir enlace antes de entregar.')",[org,project,userId]);
+  const invoice=(await c.query("insert into agency_invoices(organization_id,client_id,number,total,currency,due_on,notes) values($1,$2,$3,$4,$5,current_date+$6::int,'Servicio mensual de estrategia y producción de contenidos.') returning id",[org,client,'FC-'+new Date().getFullYear()+'-'+String(i+1).padStart(4,'0'),total,currency,i===2?-10:10])).rows[0].id;
+  if(i!==2)await c.query("insert into agency_payments(organization_id,invoice_id,account_id,amount,received_by_user_id,reference) values($1,$2,$3,$4,$5,'Cobro del servicio mensual')",[org,invoice,currency==='USD'?account[2]:account[0],i===1?total:total/2,userId]);
+  const budget=(await c.query("insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,status,valid_until,notes) values($1,$2,$3,$4,$5,$6,$7,'draft',current_date+15,'Incluye planificación, producción y revisión. Vigencia de 15 días.') returning id",[org,client,'PRES-'+new Date().getFullYear()+'-'+String(i+1).padStart(4,'0'),'Plan mensual '+names[i],currency,total/1.1,total])).rows[0].id;
   await c.query('insert into agency_budget_items(budget_id,position,description,quantity,unit_price,total) values($1,0,$2,1,$3,$3)',[budget,'Producción de contenidos mensual',total/1.1]);
-  await c.query('insert into agency_leads(organization_id,name,stage,amount,currency,probability,notes) values($1,$2,$3,$4,$5,$6,$7)',[org,'Prospecto '+names[i],['lead','contacted','proposal','negotiation','won'][i],total,currency,10+i*20,'Oportunidad ficticia']);
+  await c.query('update agency_budgets set status=$1 where id=$2',[['draft','sent','accepted','rejected'][i%4],budget]);
+  await c.query('insert into agency_leads(organization_id,name,stage,amount,currency,probability,notes,created_at) values($1,$2,$3,$4,$5,$6,$7,now()-$8::int*interval \'1 day\')',[org,'Prospecto '+names[i],['lead','contacted','proposal','negotiation','won'][i%5],total,currency,10+(i%5)*20,'Seguimiento de propuesta de gestión mensual de contenidos.',i%14]);
  }
- await c.query("insert into account_transfers(organization_id,from_account_id,to_account_id,amount,reference,created_by_user_id) values($1,$2,$3,1000000,'Depósito ficticio',$4)",[org,account[0],account[1],userId]);
+ await c.query("insert into account_transfers(organization_id,from_account_id,to_account_id,amount,reference,created_by_user_id) values($1,$2,$3,1000000,'Depósito de caja en cuenta corriente',$4)",[org,account[0],account[1],userId]);
  await c.query("insert into agency_commissions(organization_id,collaborator_id,kind,beneficiary_name,amount,status,due_on) values($1,$2,'sales','Nicolás Duarte',150000,'approved',current_date+5)",[org,staff[3]]);
- for(const [name,price]of [['Inicio',3000000],['Crecimiento',5000000],['Integral',8000000]])await c.query('insert into agency_plans(organization_id,name,items,notes) values($1,$2,$3,$4)',[org,name,JSON.stringify([{description:'Producción mensual',quantity:1,unitPrice:price}]),'Ejemplo, no pricing oficial.']);
- for(const [name,value]of [['Cámara',7000000],['Luces',2500000],['Micrófono',1200000]])await c.query("insert into agency_inventory(organization_id,name,category,value,status,notes) values($1,$2,'Producción',$3,'available','Equipo ficticio')",[org,name,value]);
- await c.query("insert into agency_internal_tasks(organization_id,title,description) values($1,'Preparar reunión de equipo','Tarea interna de demostración')",[org]);
+ for(const person of staff){
+  await c.query("insert into agency_payouts(organization_id,collaborator_id,account_id,amount,paid_on,reference,created_by_user_id) values($1,$2,$3,250000,current_date-1,'Adelanto de honorarios del mes',$4)",[org,person,account[0],userId]);
+  await c.query('update bank_accounts set balance=balance-250000 where id=$1 and organization_id=$2',[account[0],org]);
+ }
+ for(const [name,price]of [['Inicio',3000000],['Crecimiento',5000000],['Integral',8000000]])await c.query('insert into agency_plans(organization_id,name,items,notes) values($1,$2,$3,$4)',[org,name,JSON.stringify([{description:'Producción mensual',quantity:1,unitPrice:price}]),'Plan mensual de contenidos con revisión y seguimiento.']);
+ await c.query("insert into agency_plans(organization_id,name,currency,items,notes) values($1,'Internacional','USD',$2,'Servicio internacional. Facturación en dólares.')",[org,JSON.stringify([{description:'Estrategia y producción de contenidos',quantity:1,unitPrice:1200}])]);
+ for(const [name,value]of [['Cámara',7000000],['Luces',2500000],['Micrófono',1200000]])await c.query("insert into agency_inventory(organization_id,name,category,value,status,notes) values($1,$2,'Producción',$3,'available','Disponible para las producciones del equipo.')",[org,name,value]);
+ await c.query("insert into agency_internal_tasks(organization_id,title,description) values($1,'Preparar reunión de equipo','Revisar entregas de la semana, bloqueos y agenda de grabación.')",[org]);
+ const archived=(await c.query("insert into agency_inventory(organization_id,name,category,value,notes) values($1,'Trípode de estudio','Producción',150000,'Retirado del inventario activo; pendiente de revisión técnica.') returning id",[org])).rows[0].id;
+ await c.query("insert into agency_archived_records(organization_id,kind,record_id,removed_by) values($1,'inventory',$2,$3)",[org,archived,userId]);
+ // Rolling history includes the current and previous month, never fixed calendar dates.
+ for(let day=0;day<60;day++)for(const [name,count]of [['page_view',day<30?18+(day%8):9+(day%5)],['mobile_view',day<30?10:5],['whatsapp_click',day%3+1]]){
+  await c.query('insert into events(organization_id,name,metadata,event_date) select $1,$2,\'{"demo":true}\'::jsonb,current_date-$3::int from generate_series(1,$4::int)',[org,name,day,count]);
+ }
 }
