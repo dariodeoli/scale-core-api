@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {PGlite} from '@electric-sql/pglite';
+import {rucLookup,normalizeRuc,rucRecord} from './ruc-lookup.js';
+assert.equal(normalizeRuc('80.168.807 - 8'),'80168807-8');assert.equal(normalizeRuc('1234567'),'1234567');assert.throws(()=>normalizeRuc('https://evil.example'));
+const record={name:'Empresa de prueba',ruc:'80168807',dv:'8',fullRuc:'80168807-8',state:'ACTIVO'};
+assert.equal(rucRecord(record,'80168807').tax_id,'80168807-8');assert.throws(()=>rucRecord(record,'1234567'));
+const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));await pg.exec(await fs.readFile('migrations/20260910_ruc_lookup.sql','utf8'));
+const query=(s,v)=>pg.query(s,v),db={connect:async()=>({query,release(){}})};
+const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
+await query("update scale_ruc_usage set used=0 where month=date_trunc('month',current_date)::date");
+let calls=0,result;const user={id:1,organization_id:org,role:'owner'};
+const fetcher=async url=>{calls++;assert.equal(url,'https://ruc.sun.com.py/api/ruc/80168807-8');return new Response(JSON.stringify(record));};
+async function call(path,b={ruc:'80168807-8'},as=user){await rucLookup({req:{method:'POST',socket:{}},res:{},url:new URL('https://test/api/agency/'+path),db,session:async()=>as,body:async()=>b,send:(_,status,data)=>{result={status,...data};},fetcher});return result;}
+assert.equal((await call('ruc-lookup',undefined,null)).status,401);
+assert.equal((await call('ruc-lookup',undefined,{...user,role:'editor'})).status,403);assert.equal(calls,0);
+assert.equal((await call('ruc-lookup',undefined,{...user,demo_owner_user_id:1})).status,403);
+assert.equal((await call('ruc-lookup')).record.tax_id,'80168807-8');assert.equal(calls,1);
+await query("update scale_ruc_usage set used=100 where month=date_trunc('month',current_date)::date");
+assert.equal((await call('ruc-lookup')).status,429);assert.equal(calls,1);
+const payload={ruc:'80168807-8',name:'Cliente de prueba',legal_name:'Empresa de prueba'};
+assert.equal((await call('clients/from-ruc',payload)).status,201);
+assert.equal((await call('clients/from-ruc',payload)).status,409);
+assert.equal((await call('clients/from-ruc',{...payload,ruc:'80168807'})).status,400);
+assert.equal((await query('select count(*)::int as n from agency_clients where organization_id=$1',[org])).rows[0].n,1);
+await pg.close();console.log('PASS: RUC normalization, exact identity, role/demo boundary, free quota, confirmation and duplicate protection (provider mocked)');
