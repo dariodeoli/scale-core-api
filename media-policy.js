@@ -31,8 +31,9 @@ export async function profilePhoto(value, {fit='cover'}={}) {
     const image = sharp(bytes, {limitInputPixels:16000000, failOn:'warning'});
     const meta = await image.metadata();
     if ((meta.pages || 1) !== 1) invalid('Usá una foto sin animación');
-    const output = await image.rotate().resize(256,256,{fit,background:{r:255,g:255,b:255,alpha:0},withoutEnlargement:true}).webp({quality:80}).toBuffer();
-    if (output.length > 90 * 1024) invalid('La foto es demasiado compleja; elegí otra imagen');
+    const size=fit==='contain'?256:Math.min(512,meta.width,meta.height);
+    const output = await image.rotate().resize(size,size,{fit,background:{r:255,g:255,b:255,alpha:0},withoutEnlargement:true}).webp({quality:90}).toBuffer();
+    if (output.length > 180 * 1024) invalid('La foto es demasiado compleja; elegí otra imagen');
     return `data:image/webp;base64,${output.toString('base64')}`;
   } catch (error) {
     if (error.status) throw error;

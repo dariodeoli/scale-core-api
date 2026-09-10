@@ -53,7 +53,7 @@ export async function productivity({req,res,url,db,session,body,send}){
     result={profile:(await c.query('insert into agency_user_profiles(user_id,organization_id,full_name,photo_url) values($1,$2,$3,$4) on conflict(user_id,organization_id) do update set full_name=excluded.full_name,photo_url=excluded.photo_url,updated_at=now() returning full_name,photo_url',[user.id,org,name,photo])).rows[0]};
    }else fail('Método no permitido',405);
   }else if(kind==='people'&&req.method==='GET'){
-   result={people:(await c.query('select u.id,u.email from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 and m.active=true and m.removed_at is null order by u.email',[org])).rows};
+   result={people:(await c.query('select u.id,u.email,p.full_name,p.photo_url from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=u.id and p.organization_id=m.organization_id where m.organization_id=$1 and m.active=true and m.removed_at is null order by coalesce(p.full_name,u.email)',[org])).rows};
   }else if(kind==='orders'&&key){
    const order=await owned(c,'agency_work_orders',key,org);
    if(req.method==='GET'&&!action){

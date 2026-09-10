@@ -33,7 +33,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
   if(teamRoute){
    if(req.method!=='GET')fail('Método no permitido',405);
    const collaborators=(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows;
-   const members=(await c.query('select u.id,u.email,m.role,m.active,m.removed_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 order by u.email',[org])).rows;
+   const members=(await c.query('select u.id,u.email,m.role,m.active,m.removed_at,p.full_name,p.photo_url from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=u.id and p.organization_id=m.organization_id where m.organization_id=$1 order by u.email',[org])).rows;
    const archivedProfiles=(await c.query("select c.id,c.user_id,c.email from agency_collaborators c join agency_archived_records a on a.organization_id=c.organization_id and a.record_id=c.id and a.kind='collaborators' where c.organization_id=$1",[org])).rows;
    result={collaborators,members,archivedProfiles};
   }else if(jobMatch) {

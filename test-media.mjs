@@ -10,7 +10,7 @@ const data='data:image/png;base64,'+png.toString('base64');
 const photo=await profilePhoto(data);
 assert.ok(photo.startsWith('data:image/webp;base64,'));
 const metadata=await sharp(Buffer.from(photo.split(',')[1],'base64')).metadata();
-assert.equal(metadata.width,256);assert.equal(metadata.height,256);assert.equal(metadata.exif,undefined);
+assert.equal(metadata.width,400);assert.equal(metadata.height,400);assert.equal(metadata.exif,undefined);
 assert.equal(await profilePhoto(null),null);
 assert.equal(await profilePhoto('https://example.com/profile.jpg'),'https://example.com/profile.jpg');
 for(const bad of ['data:image/svg+xml;base64,PHN2Zy8+','data:image/png;base64,PHN2Zy8+','data:application/pdf;base64,JVBERg==','data:image/jpeg;base64,'+png.toString('base64'),'data:image/png;base64,'+'a'.repeat(700000)])await assert.rejects(()=>profilePhoto(bad),{status:400});
