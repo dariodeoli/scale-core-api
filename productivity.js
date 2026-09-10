@@ -1,6 +1,7 @@
 import {fail,text,id,optId,date,option,owned,link} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {profilePhoto} from './media-policy.js';
+import {historyPage,historyResult} from './history-page.js';
 const makers=['owner','admin','management','production','editor'];
 const managers=['owner','admin','management','production'];
 const finance=['owner','admin','finance'];
@@ -23,16 +24,17 @@ export async function productivity({req,res,url,db,session,body,send}){
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   let result,status=200;
   if(kind==='history'&&req.method==='GET'){
+   const page=historyPage(url.searchParams);
    const person=optId(url.searchParams.get('userId'));
    if(person&&person!==String(user.id)&&!managers.includes(user.role))fail('Sin permiso para historial de otra persona',403);
    const actor=person||(!managers.includes(user.role)?String(user.id):null);
-   result={records:(await c.query(`select a.id,a.table_name,a.action,coalesce(up.full_name,u.email,a.actor) as actor_name,a.created_at,
+   result=historyResult((await c.query(`select a.id,a.table_name,a.action,coalesce(up.full_name,u.email,a.actor) as actor_name,a.created_at,
     coalesce(a.after_state->>'title',a.before_state->>'title',a.after_state->>'name',a.before_state->>'name','Comentario') as title,
     a.before_state->>'status' as previous_status,a.after_state->>'status' as next_status
     from agency_operation_audit a left join users u on u.id::text=a.actor left join agency_user_profiles up on up.user_id=u.id and up.organization_id=a.organization_id
-    where a.organization_id=$1 and ($2::text is null or a.actor=$2) and a.table_name in ('agency_work_orders','agency_projects','agency_order_comments','agency_project_comments','agency_internal_tasks') order by a.id desc limit 100`,[org,actor])).rows};
+    where a.organization_id=$1 and ($2::text is null or a.actor=$2) and a.table_name in ('agency_work_orders','agency_projects','agency_order_comments','agency_project_comments','agency_internal_tasks') order by a.id desc limit $3 offset $4`,[org,actor,page.limit+1,page.offset])).rows,page);
   }else if(kind==='source-events'){
-   if(req.method==='GET')result={records:(await c.query('select id,source_url,source_author,body,occurred_at from agency_source_events where organization_id=$1 order by occurred_at desc,id desc limit 200',[org])).rows};
+   if(req.method==='GET'){const page=historyPage(url.searchParams);result=historyResult((await c.query('select id,source_url,source_author,body,occurred_at from agency_source_events where organization_id=$1 order by occurred_at desc,id desc limit $2 offset $3',[org,page.limit+1,page.offset])).rows,page);}
    else if(req.method==='POST'){
     const b=await body(req);if(!Array.isArray(b.events)||b.events.length>100)fail('Máximo 100 eventos por importación');let created=0;
     for(const e of b.events){const at=new Date(e.occurred_at);if(!Number.isFinite(at.getTime()))fail('Fecha de origen inválida');created+=(await c.query('insert into agency_source_events(organization_id,source_key,source_url,source_author,body,occurred_at,imported_by) values($1,$2,$3,$4,$5,$6,$7) on conflict do nothing returning id',[org,text(e.source_key,160),link(e.source_url),text(e.source_author,120),text(e.body,4000),at.toISOString(),user.id])).rows.length;}result={created};

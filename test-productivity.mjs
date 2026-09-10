@@ -12,6 +12,8 @@ await pg.exec(await fs.readFile('migrations/20260910_profile_identity.sql','utf8
 await pg.exec(await fs.readFile('migrations/20260910_profile_identity.sql','utf8'));
 const query=(s,v)=>pg.query(s,v),db={query,connect:async()=>({query,release(){}})};
 await pg.exec(await fs.readFile('migrations/20260910_client_links.sql','utf8'));
+await pg.exec(await fs.readFile('migrations/20260910_client_lifecycle.sql','utf8'));
+await pg.exec(await fs.readFile('migrations/20260910_client_lifecycle.sql','utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('productivity-other','Other') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('productivity@example.invalid','unused') returning id")).rows[0].id;
@@ -79,6 +81,15 @@ assert.equal((await call(base+'/source-events','POST',{events:[event]})).created
 assert.equal((await call(base+'/source-events','POST',{events:[event]},{...user,role:'editor'})).status,403);
 assert.equal((await call(base+'/source-events','GET',{}, {...user,organization_id:other})).records.length,0);
 assert.ok((await call(base+'/history')).records.length>0);
+for(let i=0;i<25;i++)await call(base+'/internal-tasks','POST',{title:'History pagination '+i,source_key:'pagination:'+i});
+const firstPage=await call(base+'/history');assert.equal(firstPage.records.length,10);assert.equal(firstPage.page.hasMore,true);
+const nextPage=await call(base+'/history?limit=10&offset=10');assert.equal(nextPage.records.length,10);assert(!nextPage.records.some(r=>firstPage.records.some(p=>p.id===r.id)));
+assert((await call(base+'/history?limit=50')).records.length>10);
+for(const query of ['limit=1000','limit=-1','offset=-1','offset=1.5','limit=NaN'])assert.equal((await call(base+'/history?'+query)).status,400);
+assert.equal((await call(base+'/source-events?limit=10')).page.limit,10);
+for(const state of ['paused','cancelled','expired','active']){const changed=await call(`/api/agency/clients/${client}`,'PATCH',{lifecycle_status:state});assert.equal(changed.status,200);assert.equal(changed.record.lifecycle_status,state);assert.equal(changed.record.active,state==='active');}
+assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{lifecycle_status:'unknown'})).status,400);
+assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{lifecycle_status:'cancelled'},{...user,role:'editor'})).status,403);
 assert.equal((await call(base+'/history?userId=999','GET',{}, {...user,role:'editor'})).status,403);
 assert.equal((await call(base+'/history','GET',{}, {...user,organization_id:other})).records.length,0);
 assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{logo_url:''})).record.logo_url,null);

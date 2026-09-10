@@ -73,6 +73,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_demo_sessions.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_notifications.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_client_links.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_client_lifecycle.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
