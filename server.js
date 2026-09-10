@@ -17,6 +17,7 @@ import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
 import { invitationEmail } from './invitation-email.js';
 import { productivity } from './productivity.js';
 import {rucLookup} from './ruc-lookup.js';
+import {presence} from './presence.js';
 import {demoOrganization} from './demo-session.js';
 import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
@@ -76,6 +77,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_client_links.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_client_lifecycle.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_ruc_lookup.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260910_presence.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -139,6 +141,7 @@ const server = http.createServer(async (req,res) => {
     if(await contentReview({req,res,url,db,session,body,send}))return;
     if(await productivity({req,res,url,db,session,body,send}))return;
     if(await rucLookup({req,res,url,db,session,body,send}))return;
+    if(await presence({req,res,url,db,session,body,send,sessionKey:req=>crypto.createHash('sha256').update(parseCookies(req).scale_session||'').digest('hex')}))return;
     if(await notifications({req,res,url,db,session,body,send}))return;
     if(await automationApi({req,res,url,db,session,body,send}))return;
     if(await suite({req,res,url,db,session,body,send,sendInvitation}))return;

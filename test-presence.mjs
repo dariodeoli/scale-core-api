@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {PGlite} from '@electric-sql/pglite';
+import {presence} from './presence.js';
+const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));for(const f of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_presence.sql'])await pg.exec(await fs.readFile('migrations/'+f,'utf8'));
+const query=(s,v)=>pg.query(s,v),db={connect:async()=>({query,release(){}})};
+const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
+const uid=(await query("insert into users(email,password_hash) values('presence@example.invalid','unused') returning id")).rows[0].id;
+await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org,uid]);
+const other=(await query("insert into organizations(slug,name) values('presence-other','Other') returning id")).rows[0].id;
+const client=(await query("insert into agency_clients(organization_id,name) values($1,'Test') returning id",[org])).rows[0].id;
+const project=(await query("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Test') returning id",[org,client])).rows[0].id;
+const user={id:uid,organization_id:org,role:'owner'};let result;
+const payload={tab_id:'12345678-1234-1234-1234-123456789abc',active:true,visible:true,project_id:String(project)};
+async function call(path,method='GET',value=payload,as=user){await presence({req:{method},res:{},url:new URL('https://test/api/agency/presence/'+path),db,session:async()=>as,sessionKey:()=> 'session-test',body:async()=>value,send:(_,status,data)=>{result={status,...data};}});return result;}
+assert.equal((await call('usage','GET',null,null)).status,401);assert.equal((await call('usage','GET',null,{...user,role:'admin'})).status,403);
+assert.equal((await call('heartbeat','POST')).status,200);assert.equal((await call('heartbeat','POST')).status,200);
+let usage=(await call('usage')).people[0];assert.equal(usage.sessions,1);assert.equal(usage.active_seconds,0);assert.equal(usage.online,true);
+await query("update agency_usage_sessions set last_seen_at=now()-interval '30 seconds'");await call('heartbeat','POST');usage=(await call('usage')).people[0];assert(usage.active_seconds>=29&&usage.active_seconds<=31);
+assert.equal((await call('project?projectId='+project)).people.length,1);
+assert.equal((await call('project?projectId='+project,'GET',payload,{...user,organization_id:other})).status,404);
+assert.equal((await call('usage','GET',null,{...user,organization_id:other})).people.length,0);
+await call('heartbeat','POST',{...payload,visible:false,active:false});assert.equal((await call('project?projectId='+project)).people.length,0);
+assert.equal((await call('usage?userId='+uid)).records.length,1);
+await query("update agency_usage_sessions set last_seen_at=now()-interval '5 hours'");await call('heartbeat','POST');const after=(await call('usage')).people[0];assert.equal(after.active_seconds,usage.active_seconds);
+await query("update agency_presence_tabs set last_seen_at=now()-interval '2 minutes'");assert.equal((await call('usage')).people[0].online,false);
+await pg.close();console.log('PASS: owner-only usage, tenant isolation, session dedup, estimated active time, no idle-gap inflation, project presence and expiration');
