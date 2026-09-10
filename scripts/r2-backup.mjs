@@ -84,18 +84,32 @@ export async function checkReadiness(env = process.env, run = execute) {
   try { await run(command, ['--version'], {timeout: 5000, maxBuffer: 4096, env: childEnv(env)}); checks.tools[command] = true; }
   catch { checks.tools[command] = false; }
  }
+ // An installed older CLI can still reject --if-none-match. Inspect its local
+ // service model without credentials, metadata discovery or an API request.
+ checks.capabilities = {conditionalPut: false};
+ if (checks.tools.aws) {
+  try {
+   const model = await run('aws', ['s3api', 'put-object', '--generate-cli-skeleton', 'input', '--region', 'auto', '--no-sign-request'],
+    {timeout: 5000, maxBuffer: 65536, env: awsEnv({PATH: env.PATH})});
+   checks.capabilities.conditionalPut = typeof JSON.parse(model.stdout).IfNoneMatch === 'string';
+  } catch { /* A missing capability is not upload readiness. */ }
+ }
  return {event: 'r2_readiness', ...checks, externalBackupVerified: false};
 }
-export async function uploadBackup({env = process.env, run = execute, Client = pg.Client} = {}) {
+export async function uploadBackup({env = process.env, run = execute, Client = pg.Client, now = () => new Date()} = {}) {
  const config = r2Config(env, 'upload');
- const id = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z') + '-' + crypto.randomUUID();
+ // Age the backup from the start, not completion of a potentially lengthy dump.
+ // Otherwise an old snapshot could pass maintenance's fresh-backup safeguard.
+ const startedAt = now().toISOString();
+ const id = startedAt.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z') + '-' + crypto.randomUUID();
  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'scale-r2-upload-'));
  const dump = path.join(dir, 'backup.dump'), manifestPath = path.join(dir, 'manifest.json');
  const client = new Client({connectionString: config.database.url.href, connectionTimeoutMillis: 10000, statement_timeout: 180000});
- let connected = false, tx = false;
+ let connected = false, tx = false, stage = 'source_connect';
  try {
   await fs.chmod(dir, 0o700);
   await client.connect(); connected = true;
+  stage = 'snapshot';
   await client.query('begin isolation level repeatable read read only'); tx = true;
   await client.query("set local timezone='UTC'");
   await client.query("set local datestyle='ISO, YMD'");
@@ -104,21 +118,25 @@ export async function uploadBackup({env = process.env, run = execute, Client = p
   if (!tables.length) throw fail('EMPTY_SOURCE');
   const records = [];
   for (const table of tables) records.push({...table, ...await fingerprint(client, table.schema, table.name)});
+  stage = 'dump';
   await fs.writeFile(dump, '', {mode: 0o600, flag: 'wx'});
-  await run('pg_dump', ['--format=custom', '--no-owner', '--no-acl', '--snapshot=' + snapshot, '--file=' + dump],
+  await run('pg_dump', ['--no-password', '--format=custom', '--no-owner', '--no-acl', '--snapshot=' + snapshot, '--file=' + dump],
    {env: childEnv(env, config.database.env), timeout: 180000, maxBuffer: 1024 * 1024});
   await client.query('commit'); tx = false;
   const content = await digest(dump);
   if (!content.bytes) throw fail('EMPTY_DUMP');
-  const manifest = {version: 1, backupId: id, createdAt: new Date().toISOString(), sourceHostHash: hostIdentity(config.database),
+  const manifest = {version: 1, backupId: id, createdAt: startedAt, sourceHostHash: hostIdentity(config.database),
    sourceDatabaseHash: databaseIdentity(config.database), ...content, tables: records};
   await fs.writeFile(manifestPath, JSON.stringify(manifest), {mode: 0o600, flag: 'wx'});
   const options = {env: awsEnv(env), timeout: 180000, maxBuffer: 65536};
   // Manifest is published last. A partial upload is not a completed backup.
+  stage = 'upload_archive';
   await run('aws', awsArgs(config, 'put-object', config.prefix + '/' + id + '.dump', dump), options);
+  stage = 'upload_manifest';
   await run('aws', awsArgs(config, 'put-object', config.prefix + '/' + id + '.json', manifestPath), options);
   return {event: 'r2_backup_uploaded', backupId: id, bytes: content.bytes, tables: records.length, externalBackupVerified: false};
- } finally {
+ } catch (error) { error.backupStage = stage; throw error; }
+ finally {
   if (tx) await client.query('rollback').catch(() => {});
   if (connected) await client.end().catch(() => {});
   for (const file of [dump, manifestPath]) await fs.unlink(file).catch(e => { if (e.code !== 'ENOENT') throw e; });
@@ -142,7 +160,7 @@ export async function verifyBackup(id, {env = process.env, run = execute, Client
  const dump = path.join(dir, 'backup.dump'), manifestPath = path.join(dir, 'manifest.json');
  const scratchName = 'scale_r2_verify_' + crypto.randomBytes(12).toString('hex');
  const admin = new Client({connectionString: config.database.url.href, connectionTimeoutMillis: 10000, statement_timeout: 180000});
- let connected = false, created = false, restored;
+ let connected = false, created = false, restored, stage = 'download_manifest';
  try {
   await fs.chmod(dir, 0o700);
   const options = {env: awsEnv(env), timeout: 180000, maxBuffer: 65536};
@@ -152,17 +170,23 @@ export async function verifyBackup(id, {env = process.env, run = execute, Client
   // Never restore on the backed-up host, even into a different database.
   if (manifest.sourceHostHash === hostIdentity(config.database)) throw fail('RESTORE_HOST_IS_SOURCE');
   if (env.DATABASE_URL && hostIdentity(databaseConfig(env.DATABASE_URL)) === hostIdentity(config.database)) throw fail('RESTORE_HOST_IS_SOURCE');
+  stage = 'download_archive';
   await run('aws', awsArgs(config, 'get-object', config.prefix + '/' + id + '.dump', dump), options);
+  stage = 'verify_archive';
   const actual = await digest(dump);
   if (actual.bytes !== manifest.bytes || actual.sha256 !== manifest.sha256) throw fail('ARCHIVE_CHECKSUM_MISMATCH');
+  stage = 'scratch_connect';
   await admin.connect(); connected = true;
   const role = (await admin.query('select rolsuper,rolcreatedb from pg_roles where rolname=current_user')).rows[0];
   if (!role || role.rolsuper || !role.rolcreatedb) throw fail('RESTORE_ROLE_REQUIRES_NONSUPERUSER_CREATEDB');
+  stage = 'scratch_create';
   await admin.query(`create database ${quote(scratchName)} template template0`); created = true;
-  await run('pg_restore', ['--single-transaction', '--exit-on-error', '--no-owner', '--no-acl', '--dbname=' + scratchName, dump],
+  stage = 'restore';
+  await run('pg_restore', ['--no-password', '--single-transaction', '--exit-on-error', '--no-owner', '--no-acl', '--dbname=' + scratchName, dump],
    {env: childEnv(env, {...config.database.env, PGDATABASE: scratchName}), timeout: 180000, maxBuffer: 1024 * 1024});
   const scratchUrl = new URL(config.database.url); scratchUrl.pathname = '/' + scratchName;
   restored = new Client({connectionString: scratchUrl.href, connectionTimeoutMillis: 10000, statement_timeout: 180000});
+  stage = 'compare';
   await restored.connect();
   await restored.query("set timezone='UTC'");
   await restored.query("set datestyle='ISO, YMD'");
@@ -179,7 +203,8 @@ export async function verifyBackup(id, {env = process.env, run = execute, Client
   return {event: 'r2_restore_verified', backupId: id, verifiedAt: new Date().toISOString(),
    sourceHostHash: manifest.sourceHostHash, sourceDatabaseHash: manifest.sourceDatabaseHash,
    backupCreatedAt: manifest.createdAt, tables: tables.length, bytes: actual.bytes, externalBackupVerified: true};
- } finally {
+ } catch (error) { error.backupStage = stage; throw error; }
+ finally {
   await restored?.end().catch(() => {});
   // Exact random database created by this invocation only. No FORCE, no production target.
   try { if (created) await admin.query(`drop database ${quote(scratchName)}`); }
@@ -197,10 +222,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (extra.length || (mode !== '--verify' && id) || !['--check', '--upload', '--verify'].includes(mode)) throw fail('USAGE: --check | --upload | --verify BACKUP_ID');
   const result = mode === '--check' ? await checkReadiness() : mode === '--upload' ? await uploadBackup() : await verifyBackup(id);
   console.log(JSON.stringify(result));
-  if (mode === '--check' && (!result.upload.configured || !result.verify.configured || Object.values(result.tools).some(v => !v))) process.exitCode = 1;
+  if (mode === '--check' && (!result.upload.configured || !result.verify.configured || Object.values(result.tools).some(v => !v) || !result.capabilities.conditionalPut)) process.exitCode = 1;
  } catch (error) {
   // Never print child-process errors, stderr, command strings, database URLs or tokens.
   console.error(JSON.stringify({event: 'r2_backup_failed', code: error.backupCode || 'OPERATION_FAILED',
+   ...(error.backupStage ? {stage: error.backupStage} : {}),
    ...(error.missing ? {missing: error.missing} : {}), ...(error.scratchDatabase ? {scratchDatabase: error.scratchDatabase} : {})}));
   process.exitCode = 1;
  }

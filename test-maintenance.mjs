@@ -28,7 +28,9 @@ const db = {connect: async () => ({query, release() {}})};
 const insert = async (s, v) => (await query(s + ' returning id', v)).rows[0].id;
 const count = async (table, org) => (await query(`select count(*)::int as n from ${table}${org ? ' where organization_id=$1' : ''}`, org ? [org] : [])).rows[0].n;
 const owner = await insert("insert into users(email,password_hash) values('maintenance-owner@example.invalid','canonical')");
-const real = (await query("select id from organizations where slug='scale'")).rows[0].id;
+// The seed builds a new organization's catalog. Do not run it over Scale's
+// pre-existing migration catalog; this protected real-company fixture is fresh.
+const real = await insert("insert into organizations(slug,name) values('maintenance-real-fixture','Protected real fixture')");
 const template = await insert("insert into organizations(slug,name) values('scale-demo-controles-20260908','Template')");
 await query("insert into organization_members(organization_id,user_id,role) values($1,$3,'owner'),($2,$3,'owner')", [real, template, owner]);
 await query("insert into organizations(id,slug,name) values(22,'protected-other','Protected 22')");
@@ -50,7 +52,7 @@ await seedPrivateDemo(c, real, owner);
 await query("select set_config('app.current_user',$1,false),set_config('app.current_organization',$2,false)", [String(owner), String(real)]);
 await query("insert into user_personal_identities(user_id,full_name) values($1,'Canonical identity')", [owner]);
 const identitiesBefore = (await query('select * from user_personal_identities order by user_id')).rows;
-const protectedTables = ['organizations','users','organization_members','sessions','bank_accounts','agency_invoices','agency_payments','account_transfers'];
+const protectedTables = ['organizations','users','organization_members','sessions','bank_accounts','agency_invoices','agency_payments','account_transfers','agency_inventory_categories','agency_inventory','agency_inventory_reservations','agency_work_checklists','agency_work_checklist_items'];
 const capture = async () => Object.fromEntries(await Promise.all(protectedTables.filter(t => t !== 'users').map(async t =>
  [t, (await query(`select * from ${t} where ${t === 'organizations' ? 'id' : 'organization_id'} in ($1,$2,22) order by 1`, [real, template])).rows])));
 const baseline = await capture();
@@ -60,11 +62,18 @@ const fixtureOrder = (await query('select id from agency_work_orders where organ
 const fixtureInventory = (await query('select id from agency_inventory where organization_id=$1 order by id limit 1', [full])).rows[0].id;
 await query('insert into agency_project_assignees(organization_id,project_id,user_id) values($1,$2,$3)', [full, fixtureProject, owner]);
 await query('insert into agency_work_order_assignees(organization_id,work_order_id,user_id) values($1,$2,$3)', [full, fixtureOrder, owner]);
-await query('insert into agency_work_checklists(organization_id,work_order_id) values($1,$2)', [full, fixtureOrder]);
+// Reuse the checklist supplied by the demo; add a fixture-specific extra item.
+await query('insert into agency_work_checklists(organization_id,work_order_id) values($1,$2) on conflict do nothing', [full, fixtureOrder]);
 await query("insert into agency_work_checklist_items(organization_id,work_order_id,text,created_by_user_id) values($1,$2,'Demo checklist',$3)", [full, fixtureOrder, owner]);
 const reservation = await insert("insert into agency_inventory_reservations(organization_id,project_id,title,starts_at,ends_at,created_by_user_id,return_user_id) values($1,$2,'Demo reservation',now(),now()+interval '1 hour',$3,$3)", [full, fixtureProject, owner]);
 await query('insert into agency_inventory_reservation_members(organization_id,reservation_id,user_id) values($1,$2,$3)', [full, reservation, owner]);
 await query('insert into agency_inventory_reservation_items(organization_id,reservation_id,inventory_id) values($1,$2,$3)', [full, reservation, fixtureInventory]);
+assert.equal(await count('agency_inventory_categories', full), 7);
+assert.equal(await count('agency_inventory', full), 4);
+assert.equal(await count('agency_inventory_reservations', full), 3);
+assert.equal(await count('agency_inventory_reservation_items', full), 5);
+assert.equal(await count('agency_work_checklists', full), 80);
+assert.equal(await count('agency_work_checklist_items', full), 241);
 const payment = (await query('select id from agency_payments where organization_id=$1 order by id limit 1', [full])).rows[0].id;
 await query("insert into agency_payment_reversals(organization_id,payment_id,reason,created_by_user_id) values($1,$2,'Test reversal',$3)", [full, payment, owner]);
 const auditBefore = await count('agency_operation_audit', full);
@@ -191,6 +200,9 @@ let scheduled = 0, cleared = 0, connects = 0, callback;
 const schedulerDb = {connect: async () => { connects++; throw Error('private connection details'); }};
 const logs = [], timers = {setInterval(fn) { scheduled++; callback = fn; return {unref() {}}; }, clearInterval() { cleared++; }};
 startMaintenance(schedulerDb, {env: {}, timers}); assert.equal(scheduled, 0);
+assert.doesNotThrow(() => startMaintenance(schedulerDb, {env: {MAINTENANCE_ENABLED: 'false', PRESENCE_RETENTION_DAYS: 'bad'}, timers}));
+assert.equal(scheduled, 0); assert.equal(connects, 0, 'disabled maintenance must not validate unused settings or connect');
+assert.throws(() => startMaintenance(schedulerDb, {env: {MAINTENANCE_ENABLED: 'true', PRESENCE_RETENTION_DAYS: 'bad'}, timers}), /INVALID_PRESENCE_DAYS/);
 const options = {env: {MAINTENANCE_ENABLED: 'true'}, timers, log: value => logs.push(value)};
 const stop = startMaintenance(schedulerDb, options);
 assert.equal(startMaintenance(schedulerDb, options), stop); assert.equal(scheduled, 1);

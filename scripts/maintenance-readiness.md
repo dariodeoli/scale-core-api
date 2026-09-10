@@ -2,6 +2,24 @@
 
 Estado del 10 de septiembre de 2026: implementación probada localmente y conectada al arranque de `server.js`, desactivada por defecto. No se ejecutó limpieza contra una base conectada ni se subió/descargó un respaldo real. No se activó mantenimiento ni se cambió la configuración del Hub.
 
+## Cierre de revisión local posterior a publicación
+
+Base publicada de esta revisión: API `9e792650dd3f1e8d31f0d617fb6c1e31e50aff79`, frontend `8cecd7794e2952aaec757476766d8aef93c30be6`. Las correcciones siguientes forman parte de la nueva entrega; su publicación se verifica por el estado del despliegue. No modifican la configuración de R2 ni activan mantenimiento.
+
+Evidencia remota comunicada por el main, no consultada desde esta tarea: `GET /api/v1/s3-storages` respondió 200 con lista vacía; la metadata de entorno de la app no contiene claves R2/S3/BACKUP/RESTORE/MAINTENANCE. No devuelve valores y no permite concluir que falten otras variables, como `DATABASE_URL`. El main solicitó a Dario conectar el bucket/acceso Cloudflare autorizado sin compartir secretos en el chat. R2 queda bloqueado hasta esa conexión; no se crean storages, credenciales ni infraestructura como parte de esta revisión.
+
+Comprobación local: no se encontraron `postgres`, `initdb`, `pg_ctl`, `psql`, `pg_dump`, `pg_restore`, `aws`, Docker ni Podman en PATH o las ubicaciones habituales inspeccionadas. PGlite está instalado y permite las pruebas PostgreSQL aisladas existentes; no sustituye un servidor PostgreSQL nativo ni verifica `pg_dump`/`pg_restore` o contención multiproceso. No se instalaron dependencias de sistema. No se leyeron credenciales ni se usó Hub.
+
+Ruta mínima verificable para el main, una vez conectado el acceso autorizado:
+
+1. Confirmar metadata de las variables requeridas abajo y la disponibilidad de un destino PostgreSQL de pruebas aislado ya autorizado. Para el origen se necesita un rol con lectura completa de los datos a respaldar; para el destino, rol sin superusuario con `CREATEDB`. No usar otro alias del servidor de producción como supuesto destino aislado.
+2. En el entorno donde se ejecutará el script, comprobar `aws --version`, `pg_dump --version`, `pg_restore --version` y `node scripts/r2-backup.mjs --check`. La imagen actual instala `postgresql18-client`, **no AWS CLI ni servidor PostgreSQL**. Si no existe un worker autorizado con esas herramientas y destino de restauración, falta ese requisito: el Dockerfile por sí solo no lo resuelve. `--check` ahora exige `capabilities.conditionalPut:true` usando el modelo local de AWS CLI, sin solicitud API. Su resultado no prueba permisos ni conectividad.
+3. Confirmar versiones de los servidores mediante una consulta de solo lectura `SHOW server_version_num`: el `pg_dump` no debe ser más antiguo que el origen; para esta imagen, validar restauración en PostgreSQL 18 o compatible más nuevo, con las extensiones requeridas disponibles. Comprobar espacio temporal para el archivo completo y capacidad del destino para la base restaurada. Cada subproceso tiene un máximo de 180 segundos; el manifiesto admite hasta 5 MiB y la subida es `PutObject` simple, sin multipart. Verificar que tamaño y duración del respaldo quepan en esos límites.
+4. Solo en una ejecución posterior autorizada: `--upload` y luego `--verify BACKUP_ID` del mismo respaldo. Guardar la salida estructurada, sin URLs de conexión ni stderr del proveedor. Exigir `r2_restore_verified`, comparación de datos/restricciones y eliminación exitosa de la base temporal. No confundir `r2_backup_uploaded` con restauración comprobada. Esta revisión no ejecutó ninguno de esos pasos reales.
+5. Para mantenimiento, el único ensayo remoto inicial es `node scripts/cleanup-expired-demo.mjs --dry-run`, coordinado por el main. No ejecutar aquí `--apply`, `--schedule` ni activar `MAINTENANCE_ENABLED`: esos modos aplican retención. Las demos siguen sin eliminación programada y necesitan evidencia reciente para cualquier futuro borrado explícito. La frecuencia/retención externa sigue pendiente de definición y comprobación; subir un archivo no cierra ese punto.
+
+Correcciones locales comprobadas: detección de AWS CLI antiguo sin `IfNoneMatch`; fecha del respaldo anclada al inicio del snapshot en vez del fin de la subida; `--no-password` en clientes PostgreSQL para no quedarse esperando una entrada interactiva; etapa de fallo segura en reportes; mantenimiento desactivado ya no valida ajustes de retención no utilizados ni puede interrumpir el arranque por ellos. No se cambiaron Dockerfile, servidor, esquema ni migraciones ajenas.
+
 ## Integración para el agente principal
 
 En `server.js` ya se importa `startMaintenance` desde `./maintenance.js` y se llama una sola vez después de que `init()` termina correctamente, junto a `startAutomation(...)`. Su callback detiene el timer al cerrar el servidor. La función evita timers duplicados para el mismo pool y serializa procesos mediante un bloqueo PostgreSQL; también excluye la inicialización de esquema.
@@ -54,11 +72,11 @@ node scripts/r2-backup.mjs --upload
 node scripts/r2-backup.mjs --verify BACKUP_ID
 ```
 
-`--check` solo valida configuración local y versiones de herramientas; no consulta el bucket. `--upload` captura todas las tablas de esquemas de usuario dentro de un snapshot PostgreSQL consistente, crea un dump completo y publica el archivo y luego su manifiesto SHA-256. Usa claves únicas y escritura condicional `If-None-Match: *`; nunca sobreescribe, borra, aplica ACL pública ni configura retención remota. Una subida parcial sin manifiesto no cuenta como respaldo completo. Las credenciales solo pasan por entorno; no se imprimen ni aparecen en argumentos. Archivos temporales privados se eliminan al finalizar.
+`--check` solo valida configuración local, herramientas y soporte de `IfNoneMatch` en el modelo local de AWS CLI; no consulta el bucket. `--upload` captura todas las tablas de esquemas de usuario dentro de un snapshot PostgreSQL consistente, crea un dump completo y publica el archivo y luego su manifiesto SHA-256. La antigüedad del manifiesto se cuenta desde el inicio de la operación. Usa claves únicas y escritura condicional `If-None-Match: *`; nunca sobreescribe, borra, aplica ACL pública ni configura retención remota. Una subida parcial sin manifiesto no cuenta como respaldo completo. Las credenciales solo pasan por entorno; no se imprimen ni aparecen en argumentos. Archivos temporales privados se eliminan al finalizar.
 
 `--verify` descarga ese manifiesto y dump desde R2, verifica SHA-256/tamaño, restaura en una base aleatoria recién creada y compara conjunto de tablas, cantidades y huellas de filas; rechaza restricciones sin validar. La base temporal se elimina al terminar. Exige otro host/puerto PostgreSQL y un rol sin superusuario con `CREATEDB`. Debe apuntar a un servidor de pruebas aislado y confiable; la comparación de host/puerto no puede detectar aliases distintos del mismo servidor. Nunca usa `--clean`, `--create` ni una base existente como destino. Un dump puede contener SQL: no usar un servidor de producción ni artefactos ajenos al bucket controlado. La prueba valida datos de tablas y restricciones, no todos los permisos originales, extensiones ni comportamiento de la aplicación.
 
-Configuración ausente en el entorno local inspeccionado:
+Variables requeridas; sus valores no se inspeccionaron en esta revisión:
 
 - `DATABASE_URL`: conexión de origen para subir (no se necesita al verificar si el manifiesto ya identifica el host de origen).
 - `R2_ENDPOINT_URL`: endpoint S3 HTTPS de la cuenta R2; admite endpoints de jurisdicción `eu`/`fedramp`.
@@ -67,11 +85,13 @@ Configuración ausente en el entorno local inspeccionado:
 - `R2_BACKUP_PREFIX`: prefijo explícito, por ejemplo `scale/postgres`.
 - `R2_RESTORE_ADMIN_URL`: conexión al PostgreSQL aislado de restauración.
 
-También faltan localmente `aws`, `pg_dump` y `pg_restore`. El Dockerfile actual ya instala `postgresql18-client`, pero no AWS CLI; el agente principal debe añadir un AWS CLI compatible con `s3api put-object --if-none-match` a la imagen/worker donde se ejecute. No se modificó el Dockerfile compartido. No se inspeccionó configuración actual del Hub: la ausencia informada es local y no acredita su estado remoto.
+Faltan localmente `aws`, `pg_dump` y `pg_restore`. El Dockerfile actual ya instala `postgresql18-client`, pero no AWS CLI; el entorno de ejecución necesita un AWS CLI compatible con `s3api put-object --if-none-match`. No se modificó el Dockerfile compartido ni se instaló software. La evidencia remota es exclusivamente la comunicada por el main arriba.
 
 No se configuró frecuencia ni retención externa y no se alteró el respaldo local diario existente. No hay evidencia de subida o restauración real desde R2. Solo `r2_restore_verified` tras una ejecución real acredita ese recorrido; `--check` y `r2_backup_uploaded` devuelven `externalBackupVerified:false`.
 
 Referencias de implementación: [AWS CLI con R2](https://developers.cloudflare.com/r2/examples/aws/aws-cli/), [compatibilidad S3 de R2](https://developers.cloudflare.com/r2/api/s3/api/), [restauración transaccional PostgreSQL](https://www.postgresql.org/docs/current/app-pgrestore.html).
+
+Referencias de la revisión: [modelo local sin solicitud API y escritura condicional de AWS CLI](https://docs.aws.amazon.com/cli/latest/reference/s3api/put-object.html), [compatibilidad de versiones y ejecución sin prompt de pg_dump](https://www.postgresql.org/docs/18/app-pgdump.html).
 
 ## Validación
 

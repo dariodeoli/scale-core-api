@@ -1,4 +1,38 @@
-# Scale OS - entrega del 8 de septiembre de 2026
+# Scale OS — seguimiento de entregas
+
+## Revisión del 10 de septiembre de 2026
+
+Esta sección prevalece sobre los pendientes históricos de abajo. Base publicada: API `9e792650`, interfaz `8cecd779`. Esa entrega incorporó identidad personal unificada con demo aislada, fotos de autores, varios responsables, presencia por proyecto, checklist editable, reservas/devoluciones de inventario, moneda de empresa y formularios compactos. Pasaron 30 suites frontend, 23 backend, compilación de 39 rutas y las 25 migraciones registradas aplicadas dos veces. No se incluyeron cambios ajenos WEEM/Dadoo.
+
+### Ajustes adicionales de esta revisión
+
+- Defaults de moneda en los POST de presupuestos, cuentas y facturas: heredan la empresa únicamente cuando se omite la moneda; la selección explícita y los registros existentes se conservan.
+- Asuntos de notificaciones operativas sin saltos de línea ni caracteres de control. No acredita una solución a spam.
+- Demos nuevas con categorías editables, reparto de responsables, checklists y reservas ilustrativas. No se reinician ni alteran empresas reales o demos ya abiertas.
+- Respaldo: detección de AWS CLI compatible, fecha de snapshot conservadora, clientes PostgreSQL sin prompt y errores por etapa sin revelar secretos. Mantenimiento desactivado no procesa ajustes de retención ajenos. No se activa borrado.
+- Web de la agencia: `scaleparaguay` commit `8357f390`, GitHub Pages finalizado el 10-09-2026 a las 23:19:07 UTC. Nueve pruebas del tracker aprobadas. Script servido idéntico al publicado, HTML HTTP 200 y preflight CORS 204 para el origen de la agencia; no se generaron visitas sintéticas en estadísticas reales.
+
+### Plan de verificación y límites
+
+| Área | Verificación exigida | Límite |
+|---|---|---|
+| Monedas | POST integrado: seis preferencias, selección explícita, errores y aislamiento | No convertir saldos históricos |
+| Demo | Alta/reinicio aislados, datos relativos, categorías/checklists/reservas y responsables coherentes | No usar empresas reales como fixture |
+| Identidad e invitaciones | Roles por empresa, perfil global, demo aislada y solicitud sin acceso | QA simultánea con dos personas pendiente |
+| Inventario | Solapes, retiro/devolución, responsable designado, revisión optimista | PGlite no sustituye concurrencia PostgreSQL multiconexión |
+| Publicación | Todas las suites, migraciones dos veces, salud lista y rechazo anónimo | QA visual y monitoreo extendido no se dan por hechos |
+| Respaldo | Subida R2, descarga, checksum, restauración aislada y comparación | Scripts simulados no prueban un respaldo externo |
+
+Verificación local final: las 25 suites backend pasaron sobre una copia limpia de la entrega, incluyendo 68 casos de moneda en POST y las migraciones aplicadas dos veces; sin código ajeno WEEM/Dadoo. La publicación todavía exige confirmar estado y salud del despliegue. Si falla salud, autenticación, creación de demo o guardado tras publicar, regresar al código API `9e792650`; conservar tablas y datos, sin restauración destructiva. La interfaz `8cecd779` permanece compatible. Registrar el resultado efectivo del despliegue en la entrega; no confundir preparación local con publicación.
+
+### Bloqueos externos confirmados
+
+- Hub: `GET /api/v1/s3-storages` devuelve 200 y lista vacía; metadata de la app sin claves R2/S3/BACKUP/RESTORE/MAINTENANCE. La respuesta oculta valores, por lo que no demuestra ausencia de otras variables. Falta conectar el bucket privado autorizado y disponer de destino de restauración aislado. No se activó mantenimiento ni borrado de demos.
+- Navegador: acceso bloqueado por política administrativa. No se intentó otra vía para eludirlo. Faltan la revisión visual final, selector real de foto, prueba de presencia simultánea y comparación de Trello; se solicitó restablecer acceso o aportar JSON.
+- Correo: invitación confirmada en spam con SPF/DKIM/DMARC pass. Remitente propio Scale todavía requiere dominio verificado. No se enviaron mensajes nuevos, pagaron planes ni cambiaron DNS. No se garantiza bandeja principal.
+- No hay PostgreSQL nativo/Docker local para concurrencia real ni herramientas AWS/pg_dump/pg_restore locales para comprobar el recorrido externo. Las pruebas existentes son aisladas y simuladas donde se indica.
+
+## Historial — entrega del 8 de septiembre de 2026
 
 ## Alcance de esta entrega
 

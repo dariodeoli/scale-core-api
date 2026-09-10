@@ -412,7 +412,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
-      const {title='',clientId,currency='PYG',items=[],notes=null,validUntil=null,tax_rate=.1,sections=null} = await body(req);
+      const {title='',clientId,currency=user.default_currency??'PYG',items=[],notes=null,validUntil=null,tax_rate=.1,sections=null} = await body(req);
       const normalizedSections=budgetSections(sections);
       if(![0,.05,.1].includes(Number(tax_rate)))return send(res,400,{error:'IVA inválido'});
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(clientId)) || !currencies.includes(currency) || !Array.isArray(items) || !items.length || items.length > 100) return send(res,400,{error:'Presupuesto inválido'});
@@ -442,7 +442,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {
       const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
-      const {name='',accountType='bank',currency='PYG',institution=null,accountNumber=null,holderName=null,custodianUserId=null}=await body(req);
+      const {name='',accountType='bank',currency=user.default_currency??'PYG',institution=null,accountNumber=null,holderName=null,custodianUserId=null}=await body(req);
       if(typeof name !== 'string' || name.trim().length<2 || !['bank','cash','digital','investment'].includes(accountType) || !currencies.includes(currency)) return send(res,400,{error:'Cuenta inválida'});
       const custodianId=custodianUserId === null || custodianUserId === '' ? null : Number(custodianUserId);
       if(custodianId !== null && (!Number.isInteger(custodianId) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,custodianId])).rows[0])) return send(res,400,{error:'Custodio inválido'});
@@ -461,7 +461,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {
       const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
-      const {clientId,total,currency='PYG',dueOn=null,notes=null}=await body(req); const amount=Number(total);
+      const {clientId,total,currency=user.default_currency??'PYG',dueOn=null,notes=null}=await body(req); const amount=Number(total);
       if(!Number.isInteger(Number(clientId)) || !Number.isFinite(amount) || amount<0 || !currencies.includes(currency)) return send(res,400,{error:'Factura inválida'});
       const client=await db.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[Number(clientId),user.organization_id]); if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
       const number=`F-${new Date().getFullYear()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;

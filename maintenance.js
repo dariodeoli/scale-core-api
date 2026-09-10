@@ -195,9 +195,9 @@ export async function runMaintenance(db, {dryRun = true, demoDryRun = true, veri
 const workers = new WeakMap();
 export function startMaintenance(db, {env = process.env, log = console.log, timers = globalThis} = {}) {
  if (workers.has(db)) return workers.get(db);
- const settings = maintenanceSettings(env);
  if (!['true', 'false', undefined].includes(env.MAINTENANCE_ENABLED)) throw failure('INVALID_ENABLED');
  if (env.MAINTENANCE_ENABLED !== 'true') return () => {};
+ const settings = maintenanceSettings(env);
  let running = false, stopped = false;
  const tick = async () => {
   if (running || stopped) return;

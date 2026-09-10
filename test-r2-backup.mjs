@@ -44,6 +44,7 @@ async function run(command, args, options) {
   assert.ok(!JSON.stringify(args).includes(secret), 'secrets must not be passed in argv');
  assert.equal(options.env.DATABASE_URL, undefined);
  if (command === 'pg_dump') {
+  assert.ok(args.includes('--no-password'), 'scheduled dump must never wait for a password prompt');
   assert.ok(args.includes('--snapshot=test-snapshot')); assert.ok(args.includes('--format=custom'));
   assert.equal(options.env.PGPASSWORD, 'source-placeholder');
   const file = args.find(a => a.startsWith('--file=')).slice(7); tempFiles.add(file);
@@ -67,6 +68,7 @@ async function run(command, args, options) {
    await fs.writeFile(file, objects.get(key));
   }
  } else if (command === 'pg_restore') {
+  assert.ok(args.includes('--no-password'), 'restore must never wait for a password prompt');
   assert.ok(args.includes('--single-transaction')); assert.ok(args.includes('--exit-on-error'));
   assert.ok(!args.includes('--clean')); assert.ok(!args.includes('--create'));
   assert.match(options.env.PGDATABASE, /^scale_r2_verify_[a-f0-9]{24}$/);
@@ -75,13 +77,15 @@ async function run(command, args, options) {
  } else assert.fail('Unexpected external command');
  return {stdout: '', stderr: ''};
 }
-const uploaded = await uploadBackup({env, run, Client});
+const snapshotStartedAt = new Date(Date.now() - 3600000).toISOString();
+const uploaded = await uploadBackup({env, run, Client, now: () => new Date(snapshotStartedAt)});
 assert.equal(uploaded.externalBackupVerified, false);
 assert.equal(objects.size, 2);
 assert.ok(sql.includes('begin isolation level repeatable read read only'));
 assert.ok(sql.includes('commit'));
 const id = uploaded.backupId, manifestKey = env.R2_BACKUP_PREFIX + '/' + id + '.json', dumpKey = env.R2_BACKUP_PREFIX + '/' + id + '.dump';
 const manifest = JSON.parse(objects.get(manifestKey));
+assert.equal(manifest.createdAt, snapshotStartedAt, 'manifest preserves snapshot age instead of dump completion time');
 assert.equal(manifest.bytes, Buffer.byteLength('PGDMP-test-archive-bytes'));
 assert.equal(validateManifest(manifest, id), manifest);
 assert.throws(() => validateManifest({...manifest, tables: [...manifest.tables, ...manifest.tables]}, id), /INVALID_MANIFEST/);
@@ -100,14 +104,31 @@ assert.equal(createCount, 1);
 fingerprintMismatch = true;
 await assert.rejects(verifyBackup(id, {env, run, Client}), /RESTORED_DATA_MISMATCH/); assert.equal(dropCount, 2);
 fingerprintMismatch = false; restoreFailure = true;
-await assert.rejects(verifyBackup(id, {env, run, Client}), /restore failed/); assert.equal(dropCount, 3);
+await assert.rejects(verifyBackup(id, {env, run, Client}), e => e.message === 'restore failed' && e.backupStage === 'restore'); assert.equal(dropCount, 3);
 restoreFailure = false; manifestFailure = true;
-await assert.rejects(uploadBackup({env, run, Client}), /provider secret/);
+await assert.rejects(uploadBackup({env, run, Client}), e => e.message.includes('provider secret') && e.backupStage === 'upload_manifest');
 assert.equal([...objects.keys()].filter(k => k.endsWith('.json')).length, 1, 'partial upload has no manifest');
 for (const file of tempFiles) await assert.rejects(fs.stat(file), {code: 'ENOENT'});
 const check = await checkReadiness({}, async () => { throw Error('missing tool'); });
 assert.equal(check.externalBackupVerified, false);
 assert.equal(check.tools.aws, false); assert.ok(check.verify.missing.includes('R2_RESTORE_ADMIN_URL'));
+assert.equal(check.capabilities.conditionalPut, false);
+for (const supported of [false, true]) {
+ const offline = await checkReadiness(env, async (command, args, options) => {
+  if (args[0] === '--version') return {stdout: 'installed'};
+  assert.equal(command, 'aws');
+  assert.deepEqual(args, ['s3api','put-object','--generate-cli-skeleton','input','--region','auto','--no-sign-request']);
+  assert.equal(options.env.AWS_ACCESS_KEY_ID, undefined);
+  assert.equal(options.env.AWS_SECRET_ACCESS_KEY, undefined);
+  assert.equal(options.env.AWS_CONFIG_FILE, '/dev/null');
+  assert.equal(options.env.AWS_SHARED_CREDENTIALS_FILE, '/dev/null');
+  assert.equal(options.env.AWS_EC2_METADATA_DISABLED, 'true');
+  return {stdout: JSON.stringify(supported ? {IfNoneMatch: ''} : {Bucket: ''})};
+ });
+ assert.equal(offline.tools.aws, true);
+ assert.equal(offline.capabilities.conditionalPut, supported, 'installed older AWS CLI is not sufficient');
+ assert.equal(offline.externalBackupVerified, false);
+}
 const invalidCli = spawnSync(process.execPath, ['scripts/r2-backup.mjs', '--upload'], {encoding: 'utf8', env: {PATH: process.env.PATH}});
 assert.equal(invalidCli.status, 1); assert.match(invalidCli.stderr, /MISSING_CONFIG/);
 assert.ok(!invalidCli.stderr.includes('Error:'));
