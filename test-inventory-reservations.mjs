@@ -24,11 +24,14 @@ const migration=await fs.readFile(new URL('./migrations/20260910_inventory_reser
 assert((await query('select category_id from agency_inventory where id=$1',[legacy])).rows[0].category_id);
 await query("insert into agency_settings(organization_id,default_currency) values($1,'EUR')",[org]);
 // PGlite has one connection. Queue leased transactions, as a size-1 pg Pool does.
-let tail=Promise.resolve();
-const db={connect:async()=>{let unlock;const prior=tail;tail=new Promise(resolve=>{unlock=resolve;});await prior;return {query,release(){unlock();}};}};
+let tail=Promise.resolve(),checkoutClock=null,apiCases=0;
+// Override only the checkout wall-clock read to exercise sequential handovers
+// without sleeping. All storage, locks, constraints and transactions remain real.
+const leaseQuery=(sql,args)=>checkoutClock&&sql==='select now() as now'?Promise.resolve({rows:[{now:checkoutClock}]}):query(sql,args);
+const db={connect:async()=>{let unlock;const prior=tail;tail=new Promise(resolve=>{unlock=resolve;});await prior;return {query:leaseQuery,release(){unlock();}};}};
 async function call(path,method='GET',payload={},user=owner){
  let result;const handled=await inventoryReservations({req:{method,socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test/api/agency/'+path),db,session:async()=>user,body:async()=>payload,send:(_,status,data)=>{result={status,...data};}});
- assert(handled);return result;
+ assert(handled);apiCases++;return result;
 }
 const iso=offset=>new Date(Date.now()+offset).toISOString();
 const start=iso(-60000),end=iso(3600000),later=iso(7200000);
@@ -95,6 +98,21 @@ assert.equal((await call(`inventory/${card}`,'PATCH',{storage_shelf:'Invented mo
 assert.equal((await call(`inventory-reservations/${row.id}/cancel`,'POST',{expected_version:row.version},producer)).status,409);
 assert.equal((await call(`inventory-reservations/${row.id}`,'PATCH',{...reservationPayload([card]),expected_version:row.version},producer)).status,409);
 assert.equal((await call(`inventory-reservations/${row.id}/return`,'POST',{expected_version:row.version,locations:[{inventory_id:card,storage_shelf:'A'}]},producer)).status,400);
+// Partial, duplicate, malformed or invalid returns must release nothing.
+const beforeReturn=(await call(`inventory-reservations/${row.id}`)).reservation;
+const beforeItems=(await call('inventory')).records;
+for(const invalidLocations of [
+ [{inventory_id:card,storage_shelf:'A'}],
+ [{inventory_id:card,storage_shelf:'A'},{inventory_id:card,storage_shelf:'B'}],
+ [{inventory_id:card,storage_shelf:'A'},null],
+ [{inventory_id:card,storage_shelf:'A'},{inventory_id:micId,storage_shelf:' '}],
+ [{inventory_id:card,storage_shelf:'A'},{inventory_id:foreign.id,storage_shelf:'B'}],
+ [{inventory_id:card,storage_shelf:'A'},{inventory_id:micId,storage_shelf:'B',status:'retired'}]
+]){
+ assert.equal((await call(`inventory-reservations/${row.id}/return`,'POST',{expected_version:row.version,locations:invalidLocations},producer)).status,400);
+ assert.deepEqual((await call(`inventory-reservations/${row.id}`)).reservation,beforeReturn,'failed return preserves status, version and all assignees');
+ assert.deepEqual((await call('inventory')).records,beforeItems,'failed return cannot free stock or rewrite a location');
+}
 // A closed project / suspended responsible must not prevent actual returns.
 await query("update agency_projects set status='completed' where id=$1",[project]);
 await query('update organization_members set active=false where organization_id=$1 and user_id=$2',[org,secondProducer.id]);
@@ -130,6 +148,68 @@ assert.equal((await call(`inventory/${card}`,'DELETE')).status,200);
 assert.equal((await call(`inventory/${card}`)).status,404);
 assert.equal((await call(`inventory/${card}/restore`,'POST')).status,200);
 
+// Integrated category -> multi-unit booking -> reschedule -> custody -> return.
+// Each inventory record is one reservable unit; reservation is not checkout.
+const workflowCategory=(await call('inventory-categories','POST',{name:'Workflow units'})).category;
+assert.equal((await call('inventory','POST',{name:'Invalid category fixture',category:'   '})).status,400);
+const workflowItems=[];
+for(const name of ['Workflow card','Workflow mic','Workflow light'])workflowItems.push((await call('inventory','POST',{name,category_id:workflowCategory.id,storage_shelf:'Original shelf',storage_row:'1'})).record);
+const [a,b,c]=workflowItems.map(item=>String(item.id));
+const currentRange={starts_at:iso(-120000),ends_at:iso(1800000)};
+const futureRange={starts_at:'2032-12-31T22:00:00-03:00',ends_at:'2033-01-01T00:00:00-03:00'};
+const createBooking=async(ids,range=currentRange)=>{
+ const result=await call('inventory-reservations','POST',{...reservationPayload(ids),...range},producer);
+ assert.equal(result.status,201,JSON.stringify(result));return result.reservation;
+};
+let booking=await createBooking([a,b]);
+const blocker=await createBooking([c]);
+assert.equal((await call(`inventory/${a}`)).record.status,'available','reserved unit is still physically in storage');
+assert.equal((await call('inventory-reservations','POST',{...reservationPayload([a]),...currentRange},secondProducer)).status,409,'another responsible cannot double book reserved stock');
+const beforeEdit=(await call(`inventory-reservations/${booking.id}`)).reservation;
+assert.equal((await call(`inventory-reservations/${booking.id}`,'PATCH',{...reservationPayload([b,c]),...currentRange,expected_version:booking.version},producer)).status,409);
+assert.deepEqual((await call(`inventory-reservations/${booking.id}`)).reservation,beforeEdit,'conflicting edit preserves original items, dates and responsible members');
+assert.equal((await call(`inventory-reservations/${blocker.id}/cancel`,'POST',{expected_version:blocker.version},producer)).status,200);
+const edit=await call(`inventory-reservations/${booking.id}`,'PATCH',{...reservationPayload([b,c]),...currentRange,expected_version:booking.version},producer);
+assert.equal(edit.status,200);booking=edit.reservation;assert.equal(booking.version,beforeEdit.version+1);
+const released=await createBooking([a]);
+assert.equal((await call(`inventory-reservations/${released.id}/cancel`,'POST',{expected_version:released.version},producer)).status,200);
+// Renaming and archiving a category must not lose its existing stock/bookings.
+assert.equal((await call(`inventory-categories/${workflowCategory.id}`,'PATCH',{name:'Workflow renamed',active:false})).status,200);
+assert.equal((await call(`inventory/${b}`)).record.category_name,'Workflow renamed');
+assert.equal((await call('inventory','POST',{name:'Inactive category unit',category_id:workflowCategory.id})).status,400);
+const pickup=await call(`inventory-reservations/${booking.id}/checkout`,'POST',{expected_version:booking.version,custodian_user_id:secondProducer.id},producer);
+assert.equal(pickup.status,200);booking=pickup.reservation;
+const handover=await createBooking([b],{starts_at:currentRange.ends_at,ends_at:iso(3600000)});
+checkoutClock=new Date(new Date(currentRange.ends_at).getTime()+1000);
+assert.equal((await call(`inventory-reservations/${handover.id}/checkout`,'POST',{expected_version:handover.version,custodian_user_id:producer.id},producer)).status,409,'adjacent slot cannot check out equipment physically overdue from the prior booking');
+assert.equal((await call(`inventory-reservations/${handover.id}`)).reservation.status,'reserved');
+for(const id of [b,c]){
+ const unit=(await call(`inventory/${id}`)).record;
+ assert.equal(unit.location_type,'checked_out');assert.equal(String(unit.current_custodian_user_id),String(secondProducer.id));
+ assert.equal(unit.production_name,booking.title);assert.equal(unit.project_name,'Fixture project');
+}
+// Wrong versions and partial payloads do not alter custody or free either unit.
+const fullLocations=[{inventory_id:b,storage_shelf:'Returned shelf',storage_row:'4'},{inventory_id:c,storage_shelf:'Repair bench',status:'maintenance'}];
+assert.equal((await call(`inventory-reservations/${booking.id}/return`,'POST',{expected_version:booking.version-1,locations:fullLocations},secondProducer)).status,409);
+assert.equal((await call(`inventory-reservations/${booking.id}/return`,'POST',{expected_version:booking.version,locations:fullLocations.slice(0,1)},secondProducer)).status,400);
+assert.equal((await call(`inventory/${b}`)).record.location_type,'checked_out');
+assert.equal((await call(`inventory/${c}`)).record.location_type,'checked_out');
+const completed=await call(`inventory-reservations/${booking.id}/return`,'POST',{expected_version:booking.version,locations:fullLocations},secondProducer);
+assert.equal(completed.status,200);assert.equal(completed.reservation.status,'returned');
+const stored=(await call(`inventory/${b}`)).record;
+assert.equal(stored.status,'available');assert.equal(stored.location_type,'storage');assert.equal(stored.storage_shelf,'Returned shelf');assert.equal(stored.storage_row,'4');assert.equal(stored.current_custodian_user_id,null);
+const nextPickup=await call(`inventory-reservations/${handover.id}/checkout`,'POST',{expected_version:handover.version,custodian_user_id:producer.id},producer);
+assert.equal(nextPickup.status,200,'physical return unlocks the adjacent booking');
+assert.equal((await call(`inventory-reservations/${handover.id}/return`,'POST',{expected_version:nextPickup.reservation.version,locations:[fullLocations[0]]},producer)).status,200);
+checkoutClock=null;
+assert.equal((await call('inventory-reservations','POST',{...reservationPayload([c]),...currentRange},producer)).status,400,'maintenance return is not available stock');
+const future=await createBooking([b],futureRange);
+const inWindow=async(from,to)=>(await call(`inventory-reservations?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)).reservations.some(r=>String(r.id)===String(future.id));
+assert.equal(await inWindow('2032-12-01T00:00:00-03:00','2033-01-01T00:00:00-03:00'),true,'December calendar includes local December 31 across UTC year');
+assert.equal(await inWindow('2033-01-01T00:00:00-03:00','2033-02-01T00:00:00-03:00'),false,'exclusive end at local midnight does not occupy January');
+assert.equal((await call(`inventory-reservations/${future.id}/cancel`,'POST',{expected_version:future.version},producer)).status,200);
+await createBooking([b],futureRange); // Cancellation releases the same slot.
+
 // Database constraints independently reject overlap and double checkout, even
 // for an internal writer that omits the API's preflight checks.
 const direct=async (a,b)=> (await query("insert into agency_inventory_reservations(organization_id,project_id,title,starts_at,ends_at,created_by_user_id,return_user_id) values($1,$2,'Direct fixture',$3,$4,$5,$5) returning id",[org,project,a,b,owner.id])).rows[0].id;
@@ -148,4 +228,4 @@ assert.equal((await call('inventory-reservations','POST',reservationPayload([car
 assert.equal((await call('inventory-context','POST')).status,405);
 assert((await query("select count(*)::int as count from agency_operation_audit where table_name='agency_inventory_reservations' and actor=$1",[String(producer.id)])).rows[0].count>0);
 await pg.close();
-console.log('PASS: categories, legacy CRUD, six-currency default, multi-item/responsible booking, tenant/active project/member checks, own production reservations, calendar, checkout/return/cancel, recorded locations, optimistic version, overlapping requests, GiST exclusion, unique checkout, safe archive and audit. Concurrent API requests use a single-connection PGlite pool; real multi-connection PostgreSQL not run.');
+console.log(`PASS: ${apiCases} API cases; category lifecycle, multi-unit/responsible workflow, conflict rollback, reschedule/cancel releases, physical availability, overdue handover, complete-return atomicity, safe rejection of partial/malformed returns, recorded locations, calendar year/midnight boundaries, tenant/role checks, GiST exclusion, unique checkout and audit. Concurrent API requests use a single-connection PGlite pool; real multi-connection PostgreSQL not run.`);

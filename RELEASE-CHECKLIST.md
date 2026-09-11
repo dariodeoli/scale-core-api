@@ -1,5 +1,25 @@
 # Scale OS — seguimiento de entregas
 
+## Continuación sin Cloudflare — 10 de septiembre de 2026
+
+Dario pidió dejar R2 pendiente y avanzar con los demás puntos. No se cambia Cloudflare, el bucket, DNS, planes ni mantenimiento destructivo. Las versiones de partida son API `228e39e` e interfaz `8cecd779`.
+
+- Acceso pendiente: prueba de componente reprodujo tres consultas superpuestas en una conexión lenta. Corrección de consulta única, límite de espera de diez segundos, cancelación al salir y comprobación al volver a la pestaña; una validación fallida elimina el aviso anterior de aprobación. El cierre de sesión informa fallos y permite reintentar. Cambios de estado anunciados por una región accesible. Esta pantalla no consulta datos privados del equipo.
+- Fotos: comprobación local de abandono durante preparación, eventos simultáneos de carga y reintento del mismo enlace después de fallar la miniatura. Mantiene recorte central automático y proporciones de logos.
+- Inventario: validación de categoría vacía y ubicaciones de devolución malformadas. 140 solicitudes integradas del recorrido categoría → reserva de varios equipos → cambio/cancelación → retiro → devolución con ubicación y mantenimiento; errores no liberan stock ni cambian responsables. La devolución disponible es completa, no parcial.
+- Presencia: 56 solicitudes por el despachador real con dos usuarios/cookies diferentes, múltiples pestañas, identidad global, caducidad, suspensión y aislamiento. Transporte simulado y PGlite; cero conexiones externas.
+- La regresión usa proveedores y datos aislados. No sustituye la prueba visual del selector de fotos, la presencia de dos personas en navegadores reales ni PostgreSQL con conexiones concurrentes.
+
+Verificación previa: revisión entre agentes y correcciones aceptadas; 33 archivos de pruebas frontend y 26 suites backend aprobados, compilación de 39 rutas sobre árbol limpio sin WEEM/Dadoo. Falta confirmar commit exacto y salud después del despliegue. Si fallan salud, sesión o guardado, volver al código de partida, sin eliminar tablas/datos. No hay nuevas migraciones. La prueba visual y un monitoreo extendido de quince minutos no se dan por realizados.
+
+### Pendientes conservados
+
+1. R2 y restauración externa: aplazados por Dario; no reintentar ni activar limpieza en esta tanda.
+2. QA visual final y selector de fotos: navegador bloqueado por comprobación de política administrativa; no eludir el control.
+3. Trello: comparación actual pendiente de acceso permitido o exportación JSON aportada por Dario. No afirmar movimientos ni importar datos no comprobados.
+4. Correo: recepción en spam confirmada, solución no acreditada; sin nuevos mensajes ni cambios de proveedor/DNS en esta tanda.
+5. Presencia simultánea real y reservas concurrentes: conservar distinción entre pruebas aisladas y uso real de dos sesiones.
+
 ## Revisión del 10 de septiembre de 2026
 
 Esta sección prevalece sobre los pendientes históricos de abajo. Base publicada: API `9e792650`, interfaz `8cecd779`. Esa entrega incorporó identidad personal unificada con demo aislada, fotos de autores, varios responsables, presencia por proyecto, checklist editable, reservas/devoluciones de inventario, moneda de empresa y formularios compactos. Pasaron 30 suites frontend, 23 backend, compilación de 39 rutas y las 25 migraciones registradas aplicadas dos veces. No se incluyeron cambios ajenos WEEM/Dadoo.

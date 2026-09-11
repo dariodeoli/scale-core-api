@@ -141,6 +141,7 @@ async function transition(c,user,org,key,action,payload){
   if(!Array.isArray(locations)||locations.length!==ids.length)fail('Indicá dónde queda cada equipo devuelto');
   const seen=new Set();
   for(const location of locations){
+   if(!location||typeof location!=='object'||Array.isArray(location))fail('Indicá una ubicación válida para cada equipo');
    const id=identifier(location.inventory_id);if(!ids.includes(id)||seen.has(id))fail('La devolución debe incluir cada equipo una sola vez');seen.add(id);
    if(!text(location.storage_shelf,100))fail('Indicá el estante o lugar de guardado de cada equipo');
    text(location.storage_row||'',80);option(location.status||'available',['available','maintenance']);
@@ -163,6 +164,7 @@ async function saveItem(c,org,key,payload){
   category=(await c.query('select * from agency_inventory_categories where id=$1 and organization_id=$2',[identifier(merged.category_id),org])).rows[0];
  }else{
   const categoryName=text(merged.category||'Otro',80);
+  if(!categoryName)fail('Ingresá el nombre de la categoría');
   category=(await c.query('select * from agency_inventory_categories where organization_id=$1 and lower(trim(name))=lower($2)',[org,categoryName])).rows[0];
   if(!category)category=(await c.query('insert into agency_inventory_categories(organization_id,name) values($1,$2) returning *',[org,categoryName])).rows[0];
  }
