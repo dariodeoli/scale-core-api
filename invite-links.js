@@ -12,10 +12,10 @@ export function accessRequestState(row){
  const reason=row.organization_active===false?'organization_unavailable':row.revoked_at?'revoked':row.used_at?'used':row.link_valid===false?'expired':row.existing_member?'existing_access':null;
  return {status:reason?'unavailable':'pending',unavailableReason:reason};
 }
-export async function resolveInvite(db,token){
+export async function resolveInvite(db,token,{countVisit=false}={}){
  if(typeof token!=='string'||!/^[-\w]{43}$/.test(token))fail('Enlace inválido o vencido',410);
- const hit=(await db.query(`update agency_invite_links l set click_count=l.click_count+1 where l.token_hash=$1 and l.revoked_at is null and l.used_at is null and l.expires_at>now() and exists(select 1 from organizations o where o.id=l.organization_id and o.active=true and o.demo_owner_user_id is null) returning l.id`,[hash(token)])).rows[0];
- const r=hit&&(await db.query(`select l.id,l.role,l.mode,o.name as organization_name from agency_invite_links l join organizations o on o.id=l.organization_id where l.id=$1`,[hit.id])).rows[0];
+ const r=(await db.query(`select l.id,l.role,l.mode,o.name as organization_name from agency_invite_links l join organizations o on o.id=l.organization_id where l.token_hash=$1 and l.revoked_at is null and l.used_at is null and l.expires_at>now() and o.active=true and o.demo_owner_user_id is null`,[hash(token)])).rows[0];
+ if(r&&countVisit)await db.query('update agency_invite_links set click_count=click_count+1 where id=$1',[r.id]);
  if(!r)fail('Enlace inválido, usado, revocado o vencido',410);return r;
 }
 // Only called after Google verifies email AND the state cookie is checked.
@@ -34,7 +34,8 @@ export async function claimInvite(c,linkId,profile){
   // A new invitation must be reviewable even when this email had a suspended
   // membership before. It never grants access until the owner approves it.
   const name=String(profile.name||email).slice(0,160);
-  await c.query('insert into agency_access_requests(link_id,user_id,full_name) values($1,$2,$3) on conflict(link_id,user_id) do update set status=\'pending\',full_name=excluded.full_name,decided_at=null,decided_by=null',[l.id,u.id,name]);
+  const request=(await c.query('insert into agency_access_requests(link_id,user_id,full_name) values($1,$2,$3) on conflict(link_id,user_id) do update set full_name=excluded.full_name where agency_access_requests.status=\'pending\' returning id',[l.id,u.id,name])).rows[0];
+  if(!request)fail('Esta solicitud ya fue atendida. Pedí un nuevo enlace al dueño.',409);
   return{pending:true,userId:u.id,organizationId:l.organization_id};
  }
  const name=String(profile.name||email).slice(0,160);
@@ -53,14 +54,26 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
  if(!match&&url.pathname!=='/api/invitations/preview')return false;
  let c;
  try{
-  if(!match){if(req.method!=='GET')fail('Método no permitido',405);send(res,200,await resolveInvite(db,url.searchParams.get('token')));return true;}
+  if(!match){if(req.method!=='GET')fail('Método no permitido',405);send(res,200,await resolveInvite(db,url.searchParams.get('token'),{countVisit:true}));return true;}
   const user=await session(req);if(!user)fail('Ingresá a tu cuenta',401);
   if(!['owner','admin'].includes(user.role))fail('Sin permiso para gestionar accesos',403);
   if(user.demo_owner_user_id)fail('El Demo no crea enlaces ni accesos externos',403);
   c=await db.connect();await c.query('begin');
   await c.query("select set_config('app.current_user',$1,true)",[String(user.id)]);
   const [ ,kind,key]=match,org=user.organization_id;let result;
-  if(kind==='invite-links'&&req.method==='GET'&&!key){const rows=(await c.query(`select l.id,l.role,l.mode,l.created_at,l.expires_at,l.revoked_at,l.used_at,l.click_count,l.account_count,l.token_ciphertext,u.email as created_by_email,coalesce((select jsonb_agg(jsonb_build_object('email',j.email,'full_name',j.full_name,'joined_at',j.joined_at) order by j.joined_at) from (select u2.email,r.full_name,r.created_at as joined_at from agency_access_requests r join users u2 on u2.id=r.user_id where r.link_id=l.id and r.status='approved' union all select u3.email,coalesce(p.full_name,u3.email),m.created_at from organization_members m join users u3 on u3.id=m.user_id left join agency_user_profiles p on p.organization_id=m.organization_id and p.user_id=m.user_id where m.invite_link_id=l.id) j),'[]'::jsonb) as joined_users from agency_invite_links l join users u on u.id=l.created_by where l.organization_id=$1 order by l.id desc limit 100`,[org])).rows;result={links:rows.map(({token_ciphertext,...row})=>({...row,url:token_ciphertext?`${appUrl}/invitacion?token=${unseal(token_ciphertext)}`:null}))};}
+  if(kind==='invite-links'&&req.method==='GET'&&!key){
+   const rows=(await c.query(`select l.id,l.role,l.mode,l.created_at,l.expires_at,l.revoked_at,l.used_at,l.click_count,l.account_count,l.token_ciphertext,u.email as created_by_email,
+    coalesce((select jsonb_agg(jsonb_build_object('email',j.email,'full_name',j.full_name,'joined_at',j.joined_at) order by j.joined_at) from (
+     select u2.email,r.full_name,r.decided_at as joined_at from agency_access_requests r join users u2 on u2.id=r.user_id where r.link_id=l.id and r.status='approved'
+     union all select u3.email,coalesce(p.full_name,u3.email),m.created_at from organization_members m join users u3 on u3.id=m.user_id left join agency_user_profiles p on p.organization_id=m.organization_id and p.user_id=m.user_id
+     where m.invite_link_id=l.id and not exists(select 1 from agency_access_requests ar where ar.link_id=l.id and ar.user_id=m.user_id and ar.status='approved')
+    ) j),'[]'::jsonb) as joined_users
+    from agency_invite_links l join users u on u.id=l.created_by where l.organization_id=$1 order by l.id desc limit 100`,[org])).rows;
+   result={links:rows.map(({token_ciphertext,...row})=>{
+    const token=token_ciphertext&&(row.role!=='owner'||user.role==='owner')?unseal(token_ciphertext):null;
+    return {...row,url:token?`${appUrl}/invitacion?token=${token}`:null};
+   })};
+  }
   else if(kind==='invite-links'&&req.method==='POST'&&!key){
    const b=await body(req);if(!accessRoles.includes(b.role)||!['single','approval'].includes(b.mode))fail('Permiso o tipo de enlace inválido');
    if(b.role==='owner'&&user.role!=='owner')fail('Solo un dueño puede invitar dueños',403);
@@ -81,7 +94,8 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
    if(String(r.user_id)===String(user.id))fail('No podés aprobar tu propia solicitud',403);
    if(b.action==='approve'){
     if(accessRequestState(r).status==='unavailable')fail('La invitación ya no está disponible. Revisá la empresa y generá otro enlace.',409);
-    const old=(await c.query('select user_id from organization_members where user_id=$1 and organization_id=$2',[r.user_id,org])).rows[0];
+    const old=(await c.query('select user_id,active,removed_at from organization_members where user_id=$1 and organization_id=$2 for update',[r.user_id,org])).rows[0];
+    if(old?.active&&!old.removed_at)fail('Esta persona ya tiene acceso. Gestioná su permiso desde Equipo.',409);
     if(old)await c.query('update organization_members set role=$1,active=true,removed_at=null,invite_link_id=$4 where organization_id=$2 and user_id=$3',[r.role,org,r.user_id,r.link_id]);
     else await c.query('insert into organization_members(organization_id,user_id,role,invite_link_id) values($1,$2,$3,$4)',[org,r.user_id,r.role,r.link_id]);
     await c.query('insert into agency_user_profiles(organization_id,user_id,full_name) values($1,$2,$3) on conflict do nothing',[org,r.user_id,r.full_name]);

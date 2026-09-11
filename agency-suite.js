@@ -12,6 +12,17 @@ const admin=['owner','admin'], commercial=[...admin,'management','finance','sale
 const roles=[...admin,'management','finance','sales','production','editor','viewer'];
 const stages=['lead','contacted','proposal','negotiation','won','lost'];
 const driveLinks=value=>{if(value===undefined)return undefined;const rows=Array.isArray(value)?value:String(value||'').split(/\r?\n/).filter(Boolean).map(url=>({url}));if(rows.length>10)fail('Podés agregar hasta 10 enlaces');return rows.map(row=>{const url=link(row.url);return url?{url,label:text(row.label||'',80)||'Archivo o carpeta'}:null}).filter(Boolean);};
+function patchDriveLinks(old,incoming){
+ // Inspect the PATCH itself: merging with old hides omitted fields and legacy updates.
+ let links;
+ if(Object.hasOwn(incoming,'drive_links'))links=driveLinks(incoming.drive_links)||[];
+ else if(Object.hasOwn(incoming,'drive_url')){
+  const primary=link(incoming.drive_url),existing=old.drive_links||[];
+  // A legacy edit replaces only the primary; an explicit empty URL clears the links.
+  links=primary?driveLinks([{...existing[0],url:primary},...existing.slice(1)]):[];
+ }else return {links:old.drive_links||[],primary:old.drive_url};
+ return {links,primary:links[0]?.url||null};
+}
 async function member(c,key,org){if(key&&!(await c.query('select 1 from organization_members where user_id=$1 and organization_id=$2 and active=true',[key,org])).rows.length)fail('La persona no tiene acceso activo a esta empresa');}
 async function document(c,budgetId,org){const b=(await c.query('select b.*,c.name as client_name,o.name as organization_name,s.tax_id from agency_budgets b join agency_clients c on c.id=b.client_id join organizations o on o.id=b.organization_id left join agency_settings s on s.organization_id=o.id where b.id=$1 and b.organization_id=$2',[budgetId,org])).rows[0];if(!b)fail('Presupuesto no encontrado',404);return{budget:b,items:(await c.query('select * from agency_budget_items where budget_id=$1 order by position',[b.id])).rows};}
 export async function suite({req,res,url,db,session,body,send,sendInvitation}){
@@ -76,7 +87,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
      await c.query('update agency_clients set lifecycle_status=$1 where id=$2 and organization_id=$3',[state,key,org]);
     }
     if(kind==='clients'){const name=text(b.name,120);if(name.length<2)fail('Ingresá el nombre');const logo=b.logo_url===old.logo_url?old.logo_url:await clientLogo(b.logo_url),color=clientColor(b.color_key??'violet');result={record:(await c.query('update agency_clients set name=$1,email=$2,phone=$3,notes=$4,legal_name=$5,tax_id=$6,active=$7,logo_url=$8,color_key=$9,social_links=$11,updated_at=now() where id=$10 returning *',[name,email(b.email),text(b.phone||'',50),text(b.notes||''),text(b.legal_name||'',160),text(b.tax_id||'',60),b.active!==false,logo,color,key,JSON.stringify(clientLinks(b.social_links))])).rows[0]};}
-    if(kind==='projects'){const name=text(b.name,160),levels=Number(b.approval_levels);if(name.length<2||![1,2,3].includes(levels))fail('Proyecto inválido');const links=driveLinks(b.drive_links===undefined?(b.drive_url?[{url:b.drive_url}]:[]):b.drive_links),primary=links?links[0]?.url||null:link(b.drive_url);result={record:(await c.query('update agency_projects set name=$1,drive_url=$2,drive_links=$3,status=$4,start_date=$5,due_date=$6,approval_levels=$7,updated_at=now() where id=$8 returning *',[name,primary,JSON.stringify(links||[]),option(b.status,['active','paused','completed','cancelled']),date(b.start_date),date(b.due_date),levels,key])).rows[0]};}
+    if(kind==='projects'){const name=text(b.name,160),levels=Number(b.approval_levels);if(name.length<2||![1,2,3].includes(levels))fail('Proyecto inválido');const {links,primary}=patchDriveLinks(old,incoming);result={record:(await c.query('update agency_projects set name=$1,drive_url=$2,drive_links=$3,status=$4,start_date=$5,due_date=$6,approval_levels=$7,updated_at=now() where id=$8 returning *',[name,primary,JSON.stringify(links||[]),option(b.status,['active','paused','completed','cancelled']),date(b.start_date),date(b.due_date),levels,key])).rows[0]};}
     if(kind==='work-orders'){
      const state=option(b.status,['blocked','to_record','recorded','editing','review','approved','published']);let step=old.approval_step;
      if(state!==old.status){
@@ -84,7 +95,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
       if(['approved','published'].includes(state)){if(!production.includes(user.role))fail('Solo gerencia o producción puede aprobar',403);const project=await owned(c,'agency_projects',old.project_id,org);if(state==='approved'&&(old.status!=='review'||old.approval_step+1<project.approval_levels))fail('Completá los niveles de aprobación desde el detalle');if(state==='published'&&old.status!=='approved')fail('Primero aprobá la pieza');step=project.approval_levels;}
       else step=0;
      }
-     const assignee=optId(b.assigned_user_id);await member(c,assignee,org);const title=text(b.title,160);if(title.length<2)fail('Ingresá el título');const links=driveLinks(b.drive_links===undefined?(b.drive_url?[{url:b.drive_url}]:[]):b.drive_links),primary=links?links[0]?.url||null:link(b.drive_url);const record=(await c.query('update agency_work_orders set title=$1,description=$2,drive_url=$3,drive_links=$4,due_date=$5,assigned_user_id=$6,estimated_hours=$7,actual_hours=$8,status=$9,approval_step=$10,updated_at=now() where id=$11 returning *',[title,text(b.description||''),primary,JSON.stringify(links||[]),date(b.due_date),assignee,amount(b.estimated_hours||0),amount(b.actual_hours||0),state,step,key])).rows[0];result={record,workOrder:record};
+     const assignee=optId(b.assigned_user_id);await member(c,assignee,org);const title=text(b.title,160);if(title.length<2)fail('Ingresá el título');const {links,primary}=patchDriveLinks(old,incoming);const record=(await c.query('update agency_work_orders set title=$1,description=$2,drive_url=$3,drive_links=$4,due_date=$5,assigned_user_id=$6,estimated_hours=$7,actual_hours=$8,status=$9,approval_step=$10,updated_at=now() where id=$11 returning *',[title,text(b.description||''),primary,JSON.stringify(links||[]),date(b.due_date),assignee,amount(b.estimated_hours||0),amount(b.actual_hours||0),state,step,key])).rows[0];result={record,workOrder:record};
     }
    }else fail('Método no permitido',405);
   }else if(kind==='plans'||kind==='inventory'||kind==='leads'){

@@ -8,6 +8,8 @@ import {budgetDocument} from './budget-document.js';
 import {budgetSections} from './budget-sections.js';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
+// The current work-order PATCH writes drive_links, as in the production migration chain.
+await pg.exec(await fs.readFile('migrations/20260911_drive_links.sql','utf8'));
 const query=(q,p)=>pg.query(q,p),db={query,connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('daily@example.invalid','none') returning id")).rows[0].id;
@@ -58,10 +60,48 @@ assert.equal((await call(`/api/agency/reconciliation?accountId=${cash}`,'GET',{}
 assert.equal((await query('select balance from bank_accounts where id=$1',[cash])).rows[0].balance,'1000000.00');
 const project=(await query("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Project') returning id",[org,client])).rows[0].id;
 const order=(await query("insert into agency_work_orders(organization_id,project_id,title,status,drive_url,approval_step) values($1,$2,'QA piece','approved','https://drive.google.com/example',1) returning id",[org,project])).rows[0].id;
+// Both PATCH routes must distinguish omitted links from an explicit replacement/clear.
+for(const [kind,key,table,rename] of [
+ ['projects',project,'agency_projects',{name:'Project links QA'}],
+ ['work-orders',order,'agency_work_orders',{title:'Piece links QA'}],
+]){
+ const path=`/api/agency/${kind}/${key}`;
+ const stored=async()=> (await query(`select drive_url,drive_links from ${table} where id=$1`,[key])).rows[0];
+ const patch=async payload=>{const result=await call(path,'PATCH',payload);assert.equal(result.status,200,`${kind}: PATCH must succeed`);return stored();};
+ const original='https://drive.google.com/example',replacement='https://drive.google.com/new-version';
+ // Historical records have only drive_url, even after the migration defaults drive_links to [].
+ await query(`update ${table} set drive_url=$1,drive_links='[]'::jsonb where id=$2`,[original,key]);
+ assert.equal((await patch(rename)).drive_url,original,`${kind}: unrelated edits preserve a legacy asset`);
+ const multiple=[{url:original,label:'Principal'},{url:'https://drive.google.com/secondary',label:'Material adicional'}];
+ assert.deepEqual(await patch({drive_links:multiple}),{drive_url:original,drive_links:multiple});
+ assert.deepEqual(await patch(rename),{drive_url:original,drive_links:multiple},`${kind}: omitted links preserve order and labels`);
+ const changed=[{...multiple[0],url:replacement},multiple[1]];
+ assert.deepEqual(await patch({drive_url:replacement}),{drive_url:replacement,drive_links:changed},`${kind}: legacy primary edits retain additional links`);
+ const explicit=[{url:'https://drive.google.com/replacement',label:'Nueva lista'}];
+ assert.deepEqual(await patch({drive_url:original,drive_links:explicit}),{drive_url:explicit[0].url,drive_links:explicit},`${kind}: explicit list takes precedence`);
+ for(const payload of [{drive_links:[]},{drive_links:''},{drive_links:null},{drive_url:''},{drive_url:null}]){
+  await patch({drive_links:multiple});
+  assert.deepEqual(await patch(payload),{drive_url:null,drive_links:[]},`${kind}: explicit empty clears assets`);
+  assert.deepEqual(await patch(rename),{drive_url:null,drive_links:[]},`${kind}: omitted links do not resurrect cleared assets`);
+ }
+ assert.deepEqual(await patch({drive_url:replacement}),{drive_url:replacement,drive_links:[{url:replacement,label:'Archivo o carpeta'}]},`${kind}: legacy URL creates an asset from an empty list`);
+ await patch({drive_links:multiple});
+ assert.deepEqual(await patch({drive_url:original,drive_links:[]}),{drive_url:null,drive_links:[]},`${kind}: an explicit empty list overrides a stale primary`);
+ await patch({drive_links:multiple});
+ for(const payload of [{drive_url:'javascript:alert(1)'},{drive_links:[{url:'http://example.com/unsafe'}]}]){
+  assert.equal((await call(path,'PATCH',payload)).status,400);
+  assert.deepEqual(await stored(),{drive_url:original,drive_links:multiple},`${kind}: rejected URLs leave stored assets intact`);
+ }
+ assert.equal((await call(path,'PATCH',{drive_links:[]},{...user,organization_id:other})).status,404);
+ assert.equal((await call(path,'PATCH',{drive_links:[]},{...user,role:'viewer'})).status,403);
+ assert.deepEqual(await stored(),{drive_url:original,drive_links:multiple},`${kind}: unauthorized edits leave assets intact`);
+}
 r=await call(`/api/agency/work-orders/${order}/client-review`,'POST');assert.equal(r.status,200);let token=r.url.split('/').at(-1);
 assert.equal((await call(`/api/agency/work-orders/${order}/publish`,'POST')).status,400);
 assert.equal((await call(`/review/${token}`)).status,200);
-await call(`/api/agency/work-orders/${order}`,'PATCH',{drive_url:'https://drive.google.com/new-version'});
+r=await call(`/api/agency/work-orders/${order}`,'PATCH',{drive_url:'https://drive.google.com/new-version'});
+assert.equal(r.status,200,'Updating the piece must succeed before checking stale review rejection');
+assert.equal((await query('select drive_url from agency_work_orders where id=$1',[order])).rows[0].drive_url,'https://drive.google.com/new-version','The requested asset must be persisted; do not accept a review invalidated only by an unrelated timestamp change');
 assert.equal((await call(`/review/${token}/respond`,'POST',{},null,'name=QA&action=approve')).status,409);
 r=await call(`/api/agency/work-orders/${order}/client-review`,'POST');
 assert.equal((await call(`/review/${token}`)).status,404,'Previous pending link is revoked');token=r.url.split('/').at(-1);
