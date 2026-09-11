@@ -28,7 +28,7 @@ import { productivity } from './productivity.js';
 import {rucLookup} from './ruc-lookup.js';
 import {presence} from './presence.js';
 import {demoOrganization,privateDemoEntry} from './demo-session.js';
-import {inviteLinks,resolveInvite,claimInvite} from './invite-links.js';
+import {inviteLinks,resolveInvite,claimInvite,accessRequestState} from './invite-links.js';
 import {publicExperience} from './public-experience.js';
 import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
@@ -176,9 +176,10 @@ const server = http.createServer(async (req,res) => {
       if(actor){const subscription=await subscriptionState(db,actor);if(!subscription.hasAccess)return send(res,402,{code:'SUBSCRIPTION_REQUIRED',error:'La suscripción está suspendida. El dueño puede regularizar el pago sin perder los datos.',subscription});}
     }
     if(url.pathname==='/api/invitations/status'&&req.method==='GET'){
-      const r=(await db.query(`select o.name as organization_name,u.email,l.role,r.status from sessions s join users u on u.id=s.user_id join organizations o on o.id=s.organization_id join agency_invite_links l on l.organization_id=o.id join agency_access_requests r on r.link_id=l.id and r.user_id=u.id where s.id=$1 and s.expires_at>now() order by r.created_at desc limit 1`,[parseCookies(req).scale_session||''])).rows[0];
+      const r=(await db.query(`select o.name as organization_name,u.email,l.role,r.status,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=o.id and m.user_id=u.id) as existing_member from sessions s join users u on u.id=s.user_id join organizations o on o.id=s.organization_id join agency_invite_links l on l.organization_id=o.id join agency_access_requests r on r.link_id=l.id and r.user_id=u.id where s.id=$1 and s.expires_at>now() order by r.created_at desc,r.id desc limit 1`,[parseCookies(req).scale_session||''])).rows[0];
       if(!r)return send(res,401,{error:'Ingresá con Google para ver tu solicitud'});
-      const approved=await session(req);return send(res,200,{...r,status:approved?'approved':r.status==='approved'?'unavailable':r.status,role:approved?.role||r.role});
+      const approved=await session(req),effective=accessRequestState(r);
+      return send(res,200,{organization_name:r.organization_name,email:r.email,role:approved?.role||r.role,status:approved?'approved':r.status==='approved'?'unavailable':effective.status,unavailableReason:approved?null:r.status==='approved'?'access_removed':effective.unavailableReason});
     }
     if(await liveVisitors({req,res,url,db,session,send}))return;
     if(await financialForecast({req,res,url,db,session,send}))return;
@@ -239,14 +240,28 @@ const server = http.createServer(async (req,res) => {
       const state = url.searchParams.get('state') || ''; const code = url.searchParams.get('code') || '';
       if (!state || parseCookies(req).scale_oauth_state !== state) {res.writeHead(302,{Location:`${appUrl}/?authError=La%20sesión%20de%20Google%20venció.%20Intentá%20nuevamente.`});return res.end();}
       const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri,invite_link_id,trial_company,trial_currency',[state]);
-      if (!saved.rows[0] || !code) return send(res,400,{error:'Sesión de Google inválida o vencida'});
-      const tokenResponse = await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({code,client_id:googleClientId,client_secret:googleClientSecret,redirect_uri:saved.rows[0].redirect_uri,grant_type:'authorization_code'})});
-      if (!tokenResponse.ok) return send(res,401,{error:'No se pudo validar Google'});
-      const tokenData = await tokenResponse.json();
-      const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:`Bearer ${tokenData.access_token}`}});
-      if (!profileResponse.ok) return send(res,401,{error:'No se pudo obtener el perfil de Google'});
-      const profile = await profileResponse.json(); const email = String(profile.email || '').trim().toLowerCase();
-      if (!email || profile.email_verified !== true) return send(res,403,{error:'La cuenta de Google no está verificada'});
+      if (!saved.rows[0]) return send(res,400,{error:'Sesión de Google inválida o vencida'});
+      // Only a consumed, cookie-bound state selects the internal recovery route.
+      // Never use callback redirect/next/error_description (or redirect_uri) as a destination.
+      const oauthFailure=message=>{
+        const target=new URL(saved.rows[0].trial_company?'/registro':saved.rows[0].invite_link_id?'/invitacion':'/',appUrl);
+        target.searchParams.set(target.pathname==='/'?'authError':'error',message+(saved.rows[0].invite_link_id?' Volvé a abrir el enlace de invitación e intentá nuevamente.':' Intentá nuevamente desde esta pantalla.'));
+        res.writeHead(302,{Location:target.href,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+      };
+      if(!code||url.searchParams.has('error'))return oauthFailure('No se completó el acceso con Google.');
+      let profile;
+      try{
+        const tokenResponse = await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({code,client_id:googleClientId,client_secret:googleClientSecret,redirect_uri:saved.rows[0].redirect_uri,grant_type:'authorization_code'})});
+        if (!tokenResponse.ok) return oauthFailure('No se pudo validar el acceso con Google.');
+        const tokenData = await tokenResponse.json();
+        if(typeof tokenData?.access_token!=='string'||!tokenData.access_token)return oauthFailure('Google no devolvió un acceso válido.');
+        const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo',{headers:{Authorization:`Bearer ${tokenData.access_token}`}});
+        if (!profileResponse.ok) return oauthFailure('No se pudo obtener el perfil de Google.');
+        profile = await profileResponse.json();
+        if(!profile||typeof profile!=='object'||Array.isArray(profile))return oauthFailure('Google no devolvió un perfil válido.');
+      }catch{return oauthFailure('No se pudo completar la conexión con Google.');}
+      const email = String(profile.email || '').trim().toLowerCase();
+      if (!email || profile.email_verified !== true) return oauthFailure('Google no confirmó un correo verificado.');
       if(saved.rows[0].trial_company){
         const c=await db.connect();let account;
         try{await c.query('begin');account=await registerTrial(c,profile,{name:saved.rows[0].trial_company,currency:saved.rows[0].trial_currency});await c.query('commit');}

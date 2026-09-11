@@ -49,8 +49,11 @@ export async function subscriptionState(db,user,now=new Date()){
   status=timestamp<new Date(row.trial_ends_at).getTime()?'trialing':row.paid_through_at&&timestamp<new Date(row.paid_through_at).getTime()?'active':timestamp<suspend?'grace':'suspended';
   remaining=Math.max(0,Math.ceil(((status==='trialing'?new Date(row.trial_ends_at).getTime():status==='active'?due:suspend)-timestamp)/DAY));
  }
+ const canManage=!isDemo&&user.role==='owner'&&org.member_role==='owner',checkoutReady=Boolean(row&&!isDemo&&config().ready);
+ // Availability only: never expose provider IDs or infer a paid entitlement.
+ const portalReady=Boolean(canManage&&checkoutReady&&row?.stripe_customer_id&&row?.stripe_subscription_id);
  return {status,hasAccess:status!=='suspended',currency,amount:plans[currency].amount,trialEndsAt:row?iso(row.trial_ends_at):null,dueAt:iso(due),suspendAt:iso(suspend),daysRemaining:remaining,
-  canManage:!isDemo&&user.role==='owner'&&org.member_role==='owner',checkoutReady:Boolean(row&&!isDemo&&config().ready)};
+  canManage,checkoutReady,portalReady};
 }
 
 async function transaction(db,work){const c=await db.connect();try{await c.query('begin');const result=await work(c);await c.query('commit');return result;}catch(error){await c.query('rollback');throw error;}finally{c.release();}}

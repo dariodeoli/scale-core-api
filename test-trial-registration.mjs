@@ -148,7 +148,8 @@ try{
  }
  assert.equal(await count('oauth_states'),initialStates);
  for(const verified of [false,'true',undefined]){
-  const r=await callback(await start(),{email:'unverified-trial@example.invalid',email_verified:verified});assert.equal(r.status,403);
+  const r=await callback(await start(),{email:'unverified-trial@example.invalid',email_verified:verified});assert.equal(r.status,302);
+  const recovery=new URL(r.headers.Location);assert.equal(recovery.origin,'https://app.scaleparaguay.com');assert.equal(recovery.pathname,'/registro');assert.match(recovery.searchParams.get('error'),/correo verificado/);assert.match(r.headers['Set-Cookie'],/^scale_oauth_state=; Max-Age=0;/);
  }
  assert.equal(await count('organizations'),baselineOrgs);assert.equal(await count('organization_subscriptions'),0);
  assert.equal((await rows("select id from users where email='unverified-trial@example.invalid'")).length,0);

@@ -102,13 +102,17 @@ try{
  for(const role of ['admin','management','finance','sales','production','editor','viewer']){
   const id=(await query('insert into users(email,password_hash) values($1,$2) returning id',[`billing-${role}@example.invalid`,'unused'])).rows[0].id;
   await query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[owner.organization_id,id,role]);const member={id,organization_id:owner.organization_id,role};actors.push(member);
-  const read=await call('/api/billing/subscription','GET',{},member);assert.equal(read.status,200);assert.equal(read.data.canManage,false);assert.equal(Object.keys(read.data).length,10);
+  const read=await call('/api/billing/subscription','GET',{},member);assert.equal(read.status,200);assert.equal(read.data.canManage,false);assert.equal(read.data.portalReady,false);assert.equal(Object.keys(read.data).length,11);
   assert.equal((await post(member)).status,403);assert.equal((await call('/api/billing/portal','POST',{},member)).status,403);
  }
  assert.equal((await state({...actors[0],organization_id:other.organization_id}).catch(e=>e.status)),403,'tenant membership is not transferable');
  assert.equal((await post({...actors[0],role:'owner'})).status,403,'stale/elevated session role cannot bypass current membership');
  Object.assign(process.env,settings);globalThis.fetch=mockStripe;
  assert.equal((await state(owner)).checkoutReady,true);
+ assert.equal((await state(owner)).portalReady,false,'an unlinked trial has no portal');
+ assert.equal((await state(existing)).portalReady,false);assert.equal((await state(demoUser)).portalReady,false);
+ const beforeUnlinkedPortal=wire.length;
+ assert.equal((await call('/api/billing/portal','POST',{},owner)).data.code,'BILLING_NO_CUSTOMER');assert.equal(wire.length,beforeUnlinkedPortal);
  assert.equal((await post(demoUser)).status,409);assert.equal((await post(existing)).status,409);
  for(const body of [{currency:'EUR'},{currency:null},{amount:1},{customer:'cus_foreign'},{organization_id:other.organization_id},{return_url:'https://attacker.invalid'},null,[]])assert.equal((await post(owner,body)).status,400);
  const beforeCurrency=wire.length;assert.equal((await post(owner,{currency:'PYG'})).data.code,'BILLING_CURRENCY_LOCKED');assert.equal(wire.length,beforeCurrency);
@@ -130,6 +134,26 @@ try{
  const binding=await complete(owner),pygBinding=await complete(other,'PYG');
  assert.equal((await post(owner)).data.code,'BILLING_USE_PORTAL');
  const privateState=await state(owner);assert(!JSON.stringify(privateState).includes('cus_'));assert(!JSON.stringify(privateState).includes('binding_token'));
+ assert(!JSON.stringify(privateState).includes('sub_'));assert.equal(privateState.status,'trialing');assert.equal(privateState.portalReady,true);
+ const beforePortalRead=wire.length;
+ assert.equal((await state(other)).portalReady,true,'PYG bound trial also supports its portal');
+ for(const member of actors)assert.equal((await state(member)).portalReady,false,'only the current owner can manage billing');
+ assert.equal((await state({...actors[0],role:'owner'})).portalReady,false,'stale owner role cannot override actual membership');
+ // Read-only partial-binding doubles: neither provider ID alone is sufficient.
+ for(const missing of ['stripe_customer_id','stripe_subscription_id']){
+  const partialDb={query:async(sql,args)=>{const result=await query(sql,args);return sql==='select * from organization_subscriptions where organization_id=$1'?{...result,rows:result.rows.map(row=>({...row,[missing]:null}))}:result;}};
+  assert.equal((await subscriptionState(partialDb,owner,new Date(clock))).portalReady,false);
+ }
+ assert.equal(wire.length,beforePortalRead,'availability reads do not contact Stripe');
+ process.env.STRIPE_BILLING_ENABLED='false';
+ assert.equal((await state(owner)).portalReady,false);assert.equal((await state(owner)).checkoutReady,false);
+ assert.equal((await call('/api/billing/portal','POST',{},owner)).status,503);assert.equal(wire.length,beforePortalRead);
+ process.env.STRIPE_BILLING_ENABLED=settings.STRIPE_BILLING_ENABLED;
+ assert.equal((await call('/api/billing/portal','POST',{},owner)).status,200,'bound owner can manage before trial ends');
+ assert.equal(wire.at(-1).path,'billing_portal/sessions');
+ assert.equal((await state(owner)).status,'trialing');assert.equal((await state(owner)).dueAt,privateState.dueAt);
+ const beforeViewerPortal=wire.length;
+ assert.equal((await call('/api/billing/portal','POST',{},actors.at(-1))).status,403);assert.equal(wire.length,beforeViewerPortal);
  // Zero-dollar trial invoice cannot extend access beyond the original trial.
  const zero=invoice(binding.sub);Object.assign(zero,{amount_paid:0,amount_due:0,total:0});
  assert.equal((await deliver(event('invoice.paid',zero))).status,200);assert.equal((await state(owner)).dueAt,isoDate(trialEnd));

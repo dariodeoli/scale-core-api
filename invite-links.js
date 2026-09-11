@@ -2,6 +2,13 @@ import crypto from 'node:crypto';
 export const accessRoles=['owner','admin','management','finance','sales','production','editor','viewer'];
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
+// Effective UI state only: never rewrite decisions or revoke an approved membership.
+// Validity is computed by PostgreSQL's clock in each caller, not browser time.
+export function accessRequestState(row){
+ if(row.status!=='pending')return {status:row.status,unavailableReason:null};
+ const reason=row.organization_active===false?'organization_unavailable':row.revoked_at?'revoked':row.used_at?'used':row.link_valid===false?'expired':row.existing_member?'existing_access':null;
+ return {status:reason?'unavailable':'pending',unavailableReason:reason};
+}
 export async function resolveInvite(db,token){
  if(typeof token!=='string'||!/^[-\w]{43}$/.test(token))fail('Enlace inválido o vencido',410);
  const r=(await db.query(`select l.id,l.role,l.mode,o.name as organization_name from agency_invite_links l join organizations o on o.id=l.organization_id
@@ -52,16 +59,17 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
   }else if(kind==='invite-links'&&key&&req.method==='DELETE'){
    const r=await c.query("update agency_invite_links set revoked_at=now() where id=$1 and organization_id=$2 and ($3='owner' or role<>'owner') returning id",[key,org,user.role]);if(!r.rows.length)fail('Enlace no encontrado o sin permiso',404);result={ok:true};
   }else if(kind==='access-requests'&&req.method==='GET'&&!key){
-   result={requests:(await c.query("select r.id,r.full_name,r.created_at,u.email,l.role,l.expires_at,l.revoked_at from agency_access_requests r join agency_invite_links l on l.id=r.link_id join users u on u.id=r.user_id where l.organization_id=$1 and r.status='pending' order by r.created_at limit 100",[org])).rows};
+   const rows=(await c.query("select r.id,r.full_name,r.created_at,r.status,u.email,l.role,l.expires_at,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=l.organization_id and m.user_id=r.user_id) as existing_member from agency_access_requests r join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id join users u on u.id=r.user_id where l.organization_id=$1 and r.status='pending' order by r.created_at limit 100",[org])).rows;
+   result={requests:rows.map(({link_valid,organization_active,existing_member,...row})=>({...row,...accessRequestState({...row,link_valid,organization_active,existing_member})}))};
   }else if(kind==='access-requests'&&key&&req.method==='PATCH'){
    const b=await body(req);if(!['approve','reject'].includes(b.action))fail('Acción inválida');
    // Same lock as link claiming/revocation. Concurrent approvals are idempotent.
-   const r=(await c.query('select r.*,l.organization_id,l.role,l.revoked_at,l.expires_at>now() as valid from agency_access_requests r join agency_invite_links l on l.id=r.link_id where r.id=$1 and l.organization_id=$2 for update of l,r',[key,org])).rows[0];
+   const r=(await c.query('select r.*,l.organization_id,l.role,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active from agency_access_requests r join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id where r.id=$1 and l.organization_id=$2 for update of l,r',[key,org])).rows[0];
    if(!r)fail('Solicitud no encontrada',404);if(r.status!=='pending')fail('La solicitud ya fue atendida',409);
    if(r.role==='owner'&&user.role!=='owner')fail('Solo un dueño puede aprobar otro dueño',403);
    if(String(r.user_id)===String(user.id))fail('No podés aprobar tu propia solicitud',403);
    if(b.action==='approve'){
-    if(r.revoked_at||!r.valid)fail('El enlace venció o fue revocado. Generá otro enlace.',409);
+    if(accessRequestState(r).status==='unavailable')fail('La invitación ya no está disponible. Revisá la empresa y generá otro enlace.',409);
     const old=(await c.query('select user_id from organization_members where user_id=$1 and organization_id=$2',[r.user_id,org])).rows[0];
     if(old)fail('Esta persona ya tiene un registro de acceso. Administralo desde Equipo.',409);
     await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,r.user_id,r.role]);

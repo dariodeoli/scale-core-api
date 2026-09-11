@@ -1,5 +1,30 @@
 # Scale OS — seguimiento de entregas
 
+## Cierre adicional de guardado y acceso
+
+Correcciones verificadas tras la unificación de interfaz:
+
+- Ocho formularios heredados bloquean el doble envío antes de validar; una segunda solicitud ignorada no desbloquea el guardado original. La transferencia entre monedas también impide cerrar mientras guarda y conserva el identificador de reintento.
+- Revertir un cobro cierra tras confirmar la escritura. Si el refresco posterior falla, muestra advertencia, no un falso error de persistencia ni otra reversión.
+- La disponibilidad del portal de suscripción se informa con un booleano, sin IDs privados. El dueño puede gestionarla durante una prueba ya vinculada cuando Stripe esté configurado; no se ofrece otro checkout. No se activó Stripe ni se cambiaron precios, permisos o plazos.
+- Solicitudes vencidas, revocadas o inviables se muestran como no disponibles tanto al solicitante como a administración, sin botón Aprobar. El servidor sigue rechazando la aprobación. Vencer/revocar el enlace no retira accesos previamente aprobados.
+- Cancelar Google o recibir errores de transporte/perfil regresa a una ruta interna fija con mensaje de reintento, únicamente después de validar cookie y consumir el estado de un uso. No se conceden accesos ni se aceptan destinos o mensajes enviados por el callback.
+
+Validación sobre export limpio sin cambios ajenos WEEM/Dadoo: 107 resultados frontend, compilación de 41 rutas y 30 suites backend aprobados. Adicionalmente, recuperación de acceso: 170 solicitudes a handlers y 42 escenarios OAuth en base aislada con esquema comprometido; concurrencia PostgreSQL real: dos ejecuciones aprobadas descritas más abajo. Revisión independiente de guardado, permisos y redirecciones cerrada. No se enviaron correos, invitaciones ni cobros reales.
+
+Publicar API antes de interfaz: la nueva pantalla de solicitudes requiere el campo de estado que el servidor anterior omitía. Confirmar ambos commits y salud antes de acreditar publicación. Reversión de código si falla salud, autenticación o guardado: backend runtime `7239089308c21bc3d4c68394943ecacbc224c305` e interfaz `4b2ca26c9bac2b19ea18922a5f7a6331141bd1fd`; conservar base de datos. No hay nuevas migraciones. Los bloqueos externos y visuales de abajo continúan vigentes.
+
+## Unificación de interfaz — 10-09-2026
+
+Interfaz publicada `4b2ca26c9bac2b19ea18922a5f7a6331141bd1fd`; despliegue `hep5vk8fsvbznhzbshrcqh06` finalizado el 11-09-2026 a las 02:10:42 UTC (noche del 10-09 en Paraguay), commit exacto confirmado y aplicación `running:healthy`. API respondió HTTP 200 con base `ready`. No cambió el runtime del backend ni hubo migraciones.
+
+- Sistema compartido de contenedores, espaciado, controles, formularios y estados aplicado a los once apartados, conservando los diseños especializados de Producción, calendarios e informes. No equivale a once pantallas rediseñadas y revisadas visualmente de forma individual.
+- Diálogos con foco contenido y recuperado, Escape para la ventana superior, selectores con manejo propio y bloqueo de cierre durante guardado. Los formularios de edición cierran tras persistir; los comentarios y otras acciones parciales conservan su ficha. Fallos de persistencia no descartan borradores; fallos posteriores al refrescar no se presentan como un guardado fallido.
+- Perfil reorganizado sin miniatura duplicada. Vista previa de presupuestos sin heredar dimensiones de la barra lateral ni truncar importes. Controles móviles y bordes coherentes.
+- Verificación sobre export limpio: 94 resultados aprobados y compilación de 41 rutas. Revisión independiente cerrada; cambios ajenos WEEM/Dadoo preservados. Detalle en `scale-os/DESIGN-SYSTEM.md`.
+
+La comprobación visual en navegador, móvil físico y selector de fotos continúa bloqueada por la política administrativa; no se intentaron rutas alternativas. La publicación y estas pruebas no cierran los bloqueos externos enumerados a continuación. Referencia de reversión de interfaz: `daf8e5615e53bf1a0802c2f2baa0ff7a84f4c4f8`, sin borrar datos.
+
 ## Estado consolidado después de Informes y precio fundador — 10-09-2026
 
 Esta sección distingue entregas verificadas de bloqueos y prevalece sobre los estados de preparación de las secciones históricas. Referencias publicadas: API `7239089308c21bc3d4c68394943ecacbc224c305` (11-09 01:14:51 UTC), interfaz de Informes `bfc5368a` (01:19:36 UTC), aviso fundador `82ea64b2025d9c55e382381b49a57d95f50c2803` (01:29:14 UTC). Despliegues finalizados y aplicaciones saludables; API/database ready y rutas privadas de informes rechazan consultas anónimas. Son fechas UTC; corresponden a la noche del 10-09 en Paraguay.
@@ -23,10 +48,12 @@ Esta sección distingue entregas verificadas de bloqueos y prevalece sobre los e
 | Correo en spam | Remitente Scale verificado y resolver límite del proveedor; prueba de entrega autorizada | SPF/DKIM/DMARC previos no garantizan Recibidos; no contratar planes ni cambiar DNS por inferencia |
 | Navegador y móvil | Restablecer la comprobación de política administrativa y permiso del selector de archivos | No eludir mediante otro navegador, CDP o descarga/captura alternativa; faltan revisión visual, foto real y dos sesiones de presencia |
 | Trello y logos restantes | Acceso permitido al tablero y clientes o exportación aportada por Dario; confirmar identidad de cada marca | No afirmar movimientos recientes ni sobrescribir fotos/logos sin identificar la empresa correcta |
-| Reservas simultáneas | PostgreSQL aislado con varias conexiones y dos sesiones de prueba | PGlite valida reglas y transacciones, no acredita la concurrencia real ni prueba táctil física |
+| Reservas: interacción visual simultánea | Dos sesiones de navegador permitidas | La concurrencia de base de datos ya pasó en PostgreSQL real; no sustituye la interacción visual/táctil |
 | Respaldo externo/R2 y purga | Reanudar explícitamente lo aplazado, almacenamiento y destino de restauración, evidencia de restore y retención | R2 continúa aplazado; no activar limpieza ni borrado de demos |
 
 Tras el aviso «Desbloqueado» de Dario se volvió a comprobar el acceso: el inventario de pestañas respondió, pero abrir la pestaña existente de Scale OS fue rechazado nuevamente por imposibilidad de verificar la política administrativa. No se usó ningún acceso indirecto; el bloqueo visual no está resuelto.
+
+Actualización de concurrencia: dos ejecuciones aprobadas en PostgreSQL 16.15 local y aislado, esquema/migraciones de `0555520` (28 migraciones), handler real sin cambios. Seis carreras con conexiones distintas: solapes rechazados, horarios adyacentes, versión optimista, retiro/devolución idempotentes y empresas independientes. La séptima carrera usa SQL directo y comprueba espera real y rechazo `23P01` por la restricción de solapes. PIDs diferentes comprobados mediante `pg_backend_pid()` y bloqueos mediante `pg_blocking_pids()`. Ambos clústeres se detuvieron y eliminaron; sin TCP, datos reales, UI ni conexiones de producción. Ver `POSTGRES-CONCURRENCY.md` y `test-inventory-postgres.mjs`. Los binarios locales permanecen instalados, sin servicio automático. Este resultado sustituye el pendiente histórico de concurrencia multiconexión, no las pruebas visuales ni la presencia en dos navegadores.
 
 Correcciones de esta revisión: presentar Informes y la demo histórica en la landing; completar accesos de la guía a partir de la navegación canónica, conservando los ocho roles; corregir el 404 de `/informes` bajo el dominio público de demo; mejorar el contraste de bordes del formulario de contacto. Las rutas privadas mantienen autenticación y noindex. Verificación sobre export limpio: 61 resultados de pruebas aprobados y compilación de 41 rutas; sin cambios ajenos WEEM/Dadoo. Interfaz `daf8e5615e53bf1a0802c2f2baa0ff7a84f4c4f8`, despliegue `fzcxodkw70mtajacr7xs73ia` finalizado el 11-09 a las 01:45:04 UTC (noche del 10-09 en Paraguay), commit exacto confirmado. No son autorización para ampliar funciones ni para ejecutar los bloqueos externos de la tabla.
 

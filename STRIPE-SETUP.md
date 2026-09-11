@@ -24,7 +24,7 @@ import {startTrial, subscriptionState, subscriptionBilling} from './subscription
   `/auth/me`, lecturas ni un backfill de empresas existentes.
 - `await subscriptionState(db, user, now?)`: consulta membresía vigente y devuelve
   exactamente `{status, hasAccess, currency, amount, trialEndsAt, dueAt,
-  suspendAt, daysRemaining, canManage, checkoutReady}`. `now` es Date o valor
+  suspendAt, daysRemaining, canManage, checkoutReady, portalReady}`. `now` es Date o valor
   admitido por Date, para pruebas. No hace llamadas a Stripe.
 - `await subscriptionBilling({req,res,url,db,session,body,send})`: devuelve
   `false` si no reconoce la ruta; `true` después de responder. Solo `db.connect`
@@ -41,7 +41,7 @@ del integrador, no de este módulo.
 | --- | --- |
 | GET `/api/billing/subscription` | Cualquier miembro autenticado/activo de la empresa de su sesión. Estado directo, sin IDs Stripe ni tokens internos. |
 | POST `/api/billing/checkout` | Solo owner de sesión **y** membresía actual. `{}` o `{currency:'USD'|'PYG'}` coincidente con el alta. Devuelve `{url}` HTTPS de `checkout.stripe.com`. Si un checkout ya completado se reconcilia al consultar, devuelve `{completed:true}`: refrescar estado, no intentar abrir una URL ausente. |
-| POST `/api/billing/portal` | Solo owner. Body `{}`. Requiere customer/subscription previamente vinculados. Disponible aunque el estado de cobro esté pausado, vencido o suspendido. Devuelve `{url}` de `billing.stripe.com`. |
+| POST `/api/billing/portal` | Solo owner. Body `{}`. Requiere customer/subscription previamente vinculados. Disponible también durante el trial o con el estado de cobro pausado, vencido o suspendido. Devuelve `{url}` de `billing.stripe.com`. |
 | POST `/api/billing/webhook` | Sin sesión/cookie. Firma Stripe sobre bytes crudos, validada antes de interpretar JSON. |
 
 El webhook debe llegar **antes** de parsers JSON, de la exigencia de sesión y
@@ -74,6 +74,16 @@ gracia debe ser persistente; **no se envían notificaciones ni emails propios**.
   contra Stripe al pulsar. Sin credenciales, la prueba local conserva sus fechas;
   no activar comercialmente un gate que termine bloqueando a usuarios sin un
   canal de pago validado. Coordinar esa decisión con main antes de habilitarlo.
+- `portalReady` es un booleano: requiere owner de sesión y membresía vigente,
+  configuración habilitada y ambos vínculos locales (customer y suscripción).
+  No expone IDs, no consulta Stripe ni confirma pago o acceso. Permite mostrar el
+  portal durante un trial vinculado sin ofrecer otro checkout. Con el flag de
+  billing apagado siempre es `false`.
+- Compatibilidad: el cliente acepta `portalReady?: boolean`. Un `false` explícito
+  impide inferir disponibilidad por estado; si un servidor anterior omite el
+  campo, conserva el portal anterior solo para active/grace/suspended. El trial
+  exige `true` explícito. Clientes anteriores ignoran el campo aditivo: publicar
+  ambas versiones para resolver esa UI. Los permisos del endpoint no cambian.
 
 La moneda es **fija desde el alta**, independiente de la moneda operativa de la
 agencia. Signup puede elegir USD/PYG; altas que omiten moneda quedan USD.
