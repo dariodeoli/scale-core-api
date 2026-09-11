@@ -1,5 +1,17 @@
 # Scale OS — seguimiento de entregas
 
+## Plan por agencia y registro — 10 de septiembre de 2026
+
+Precio confirmado por Dario: US$10 o G.50.000 mensuales por agencia, con todos sus integrantes incluidos; son alternativas fijas, no una conversión. Landing y registro describen 30 días de prueba y 48 horas de gracia, con suspensión operativa desde el tercer día de atraso sin borrar datos. Empresas existentes y demos quedan exentas; no hay adhesión retroactiva.
+
+Registro con Google verificado, consentimiento y una prueba pública por usuario; repetir el registro no reinicia fechas ni reemplaza su identidad. El servidor protege operaciones y agregados entre empresas suspendidas, conservando suscripción, cambio de empresa y cierre de sesión. Las nuevas migraciones son aditivas; rollback de código no debe borrar tablas.
+
+Stripe está preparado pero desactivado. No se crearon productos, claves, cargos ni correos. Faltan configurar la cuenta y ambos precios, comprobar su disponibilidad y ejecutar pagos/webhooks reales en modo prueba antes de habilitar cobro. Ver STRIPE-SETUP.md: no basta pegar un enlace de pago para aplicar suspensión y reactivación verificadas. Los nuevos trials sí comienzan al registrarse; debe habilitarse y probarse el canal de pago antes de sus vencimientos.
+
+Base anterior verificada: API `6b669384`, interfaz móvil `5005e160`; despliegues finalizados. Esta entrega utiliza componentes y API con proveedores simulados; no acredita QA visual en navegador, concurrencia PostgreSQL multiconexión ni cobro real. R2, revisión actual de Trello y resolución de spam conservan sus pendientes.
+
+Verificación de esta entrega: 40 archivos frontend (50 resultados del runner), 28 suites backend, 27 migraciones registradas aplicadas dos veces y build de 40 rutas aprobados sobre export limpio sin WEEM/Dadoo. Billing cubre 87 casos y registro 104 solicitudes aisladas. También se verificaron ambas ramas del Hub opcional: métricas ausentes como `null` explícito, y agregados reales de fixtures sin incluir empresas suspendidas o ajenas. Publicación: comprobar commit exacto, salud y rechazo anónimo antes de darla por terminada.
+
 ## Continuación sin Cloudflare — 10 de septiembre de 2026
 
 Dario pidió dejar R2 pendiente y avanzar con los demás puntos. No se cambia Cloudflare, el bucket, DNS, planes ni mantenimiento destructivo. Las versiones de partida son API `228e39e` e interfaz `8cecd779`.

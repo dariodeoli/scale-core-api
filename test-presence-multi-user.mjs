@@ -20,6 +20,7 @@ for(const file of [
  '20260910_client_links','20260910_client_lifecycle','20260910_invite_links',
  '20260910_currencies','20260910_company_currency','20260910_global_identity','20260910_presence'
 ])await sql(`migrations/${file}.sql`);
+for(const file of ['20260911_subscriptions','20260911_trial_registration'])await sql(`migrations/${file}.sql`);
 
 // Model a pg Pool with max=1: concurrent requests queue complete transactions.
 // PGlite has a single connection; interleaving BEGIN/COMMIT would falsify the test.

@@ -31,6 +31,8 @@ import {inviteLinks,resolveInvite,claimInvite} from './invite-links.js';
 import {publicExperience} from './public-experience.js';
 import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
+import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
+import {trialDetails,registerTrial} from './trial-registration.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -97,6 +99,8 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_project_assignees.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_inventory_reservations.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_work_checklists.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260911_subscriptions.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260911_trial_registration.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -162,6 +166,13 @@ const server = http.createServer(async (req,res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if(url.pathname.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
+    if(await subscriptionBilling({req,res,url,db,session,body,send}))return;
+    // Billing is separate from membership: suspended owners retain billing,
+    // logout and company switching, but no private operational reads/writes.
+    if(url.pathname.startsWith('/api/agency/')||url.pathname==='/api/metrics'||url.pathname==='/api/hub/overview'||(url.pathname==='/api/auth/organizations'&&req.method==='POST')){
+      const actor=await session(req);
+      if(actor){const subscription=await subscriptionState(db,actor);if(!subscription.hasAccess)return send(res,402,{code:'SUBSCRIPTION_REQUIRED',error:'La suscripción está suspendida. El dueño puede regularizar el pago sin perder los datos.',subscription});}
+    }
     if(url.pathname==='/api/invitations/status'&&req.method==='GET'){
       const r=(await db.query(`select o.name as organization_name,u.email,l.role,r.status from sessions s join users u on u.id=s.user_id join organizations o on o.id=s.organization_id join agency_invite_links l on l.organization_id=o.id join agency_access_requests r on r.link_id=l.id and r.user_id=u.id where s.id=$1 and s.expires_at>now() order by r.created_at desc limit 1`,[parseCookies(req).scale_session||''])).rows[0];
       if(!r)return send(res,401,{error:'Ingresá con Google para ver tu solicitud'});
@@ -209,11 +220,14 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/auth/google/start' && req.method === 'GET') {
       if (!googleClientId || !googleClientSecret) return send(res,503,{error:'Google OAuth aún no está configurado'});
+      const trial=trialDetails(url.searchParams);
+      if(trial&&!await throttle(db,'trial-registration-start',60))return send(res,429,{error:'Hay muchas solicitudes de registro. Intentá nuevamente en unos minutos.'});
       const organizationSlug = '';
       const inviteToken=url.searchParams.get('invite');
       const invite=inviteToken?await resolveInvite(db,inviteToken):null;
       const state = id();
       await db.query('insert into oauth_states(state,organization_slug,redirect_uri,expires_at) values($1,$2,$3,now()+interval \'10 minutes\')',[state,organizationSlug,googleRedirectUri]);
+      if(trial)await db.query('update oauth_states set trial_company=$1,trial_currency=$2 where state=$3',[trial.name,trial.currency,state]);
       if(invite)await db.query('update oauth_states set invite_link_id=$1 where state=$2',[invite.id,state]);
       const params = new URLSearchParams({ client_id: googleClientId, redirect_uri: googleRedirectUri, response_type: 'code', scope: 'openid email profile', state, prompt: 'select_account' });
       res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)}); return res.end();
@@ -221,7 +235,7 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/google/callback' && req.method === 'GET') {
       const state = url.searchParams.get('state') || ''; const code = url.searchParams.get('code') || '';
       if (!state || parseCookies(req).scale_oauth_state !== state) {res.writeHead(302,{Location:`${appUrl}/?authError=La%20sesión%20de%20Google%20venció.%20Intentá%20nuevamente.`});return res.end();}
-      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri,invite_link_id',[state]);
+      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri,invite_link_id,trial_company,trial_currency',[state]);
       if (!saved.rows[0] || !code) return send(res,400,{error:'Sesión de Google inválida o vencida'});
       const tokenResponse = await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({code,client_id:googleClientId,client_secret:googleClientSecret,redirect_uri:saved.rows[0].redirect_uri,grant_type:'authorization_code'})});
       if (!tokenResponse.ok) return send(res,401,{error:'No se pudo validar Google'});
@@ -230,6 +244,13 @@ const server = http.createServer(async (req,res) => {
       if (!profileResponse.ok) return send(res,401,{error:'No se pudo obtener el perfil de Google'});
       const profile = await profileResponse.json(); const email = String(profile.email || '').trim().toLowerCase();
       if (!email || profile.email_verified !== true) return send(res,403,{error:'La cuenta de Google no está verificada'});
+      if(saved.rows[0].trial_company){
+        const c=await db.connect();let account;
+        try{await c.query('begin');account=await registerTrial(c,profile,{name:saved.rows[0].trial_company,currency:saved.rows[0].trial_currency});await c.query('commit');}
+        catch(e){await c.query('rollback');res.writeHead(302,{Location:`${appUrl}/registro?error=${encodeURIComponent(e.status?e.message:'No se pudo iniciar la prueba. Intentá nuevamente.')}`});return res.end();}finally{c.release();}
+        const ticket=id();await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at,trial_registration) values($1,$2,$3,now()+interval '60 seconds',true)",[crypto.createHash('sha256').update(ticket).digest('hex'),account.userId,account.organizationId]);
+        res.writeHead(302,{Location:`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+      }
       if(saved.rows[0].invite_link_id){
         const c=await db.connect();let claim;
         try{await c.query('begin');await c.query("select set_config('app.current_user','google-invitation',true)");claim=await claimInvite(c,saved.rows[0].invite_link_id,profile);await c.query('commit');}
@@ -245,14 +266,14 @@ const server = http.createServer(async (req,res) => {
     }
     if(url.pathname==='/api/auth/google/complete' && req.method==='GET') {
       const ticket=url.searchParams.get('ticket')||'';
-      const saved=await db.query('delete from oauth_handoffs where token_hash=$1 and expires_at>now() returning user_id,organization_id',[crypto.createHash('sha256').update(ticket).digest('hex')]);
+      const saved=await db.query('delete from oauth_handoffs where token_hash=$1 and expires_at>now() returning user_id,organization_id,trial_registration',[crypto.createHash('sha256').update(ticket).digest('hex')]);
       if(!saved.rows[0]) {res.writeHead(302,{Location:`${appUrl}/?authError=El%20acceso%20venció.%20Intentá%20nuevamente.`});return res.end();}
       const token=id();await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,saved.rows[0].user_id,saved.rows[0].organization_id]);
       const member=await db.query('select 1 from organization_members where user_id=$1 and organization_id=$2 and active=true and removed_at is null',[saved.rows[0].user_id,saved.rows[0].organization_id]);
-      res.writeHead(302,{Location:member.rows.length?`${appUrl}/?chooseCompany=1`:`${appUrl}/acceso-pendiente`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
+      res.writeHead(302,{Location:member.rows.length?(saved.rows[0].trial_registration?`${appUrl}/produccion`:`${appUrl}/?chooseCompany=1`):`${appUrl}/acceso-pendiente`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
-    if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:u}) : send(res,401,{error:'No autenticado'}); }
+    if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:{...u,subscription:await subscriptionState(db,u)}}) : send(res,401,{error:'No autenticado'}); }
     if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
       const r=await db.query('select o.id,o.slug,o.name,m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name',[user.id]);
@@ -264,7 +285,8 @@ const server = http.createServer(async (req,res) => {
       const user=await session(req);if(!can(user,['owner','admin']))return send(res,403,{error:'Solo administración puede crear una empresa'});
       const b=await body(req),name=typeof b.name==='string'?b.name.trim():'',slug=typeof b.slug==='string'?b.slug.trim().toLowerCase():'';
       if(name.length<2||name.length>160||!/^\w[\w-]{2,59}$/.test(slug))return send(res,400,{error:'Nombre y código de empresa inválidos'});
-      const c=await db.connect();try{await c.query('begin');const org=(await c.query('insert into organizations(name,slug) values($1,$2) returning *',[name,slug])).rows[0];await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);await c.query('commit');return send(res,201,{organization:org});}catch(e){await c.query('rollback');return send(res,e.code==='23505'?409:500,{error:e.code==='23505'?'Ese código ya está utilizado':'No se pudo crear la empresa'});}finally{c.release();}
+      if(b.billingCurrency!==undefined&&!['USD','PYG'].includes(b.billingCurrency))return send(res,400,{error:'Elegí USD o PYG para la suscripción'});
+      const c=await db.connect();try{await c.query('begin');const org=(await c.query('insert into organizations(name,slug) values($1,$2) returning *',[name,slug])).rows[0];await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);await startTrial(c,org.id,b.billingCurrency||'USD');await c.query('commit');return send(res,201,{organization:org});}catch(e){await c.query('rollback');return send(res,e.code==='23505'?409:500,{error:e.code==='23505'?'Ese código ya está utilizado':'No se pudo crear la empresa'});}finally{c.release();}
     }
     if (url.pathname === '/api/auth/switch-organization' && req.method === 'POST') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'}); const {organizationId}=await body(req);
@@ -302,6 +324,14 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/hub/overview' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
+      const candidates=(await db.query('select o.id,m.role from organizations o join organization_members m on m.organization_id=o.id where m.user_id=$1 and m.active and m.removed_at is null and o.active',[user.id])).rows;
+      const allowed=[];for(const org of candidates){if((await subscriptionState(db,{...user,organization_id:org.id,role:org.role})).hasAccess)allowed.push(String(org.id));}
+      // Hub metrics are an optional integration, not a dependency of Scale signup.
+      // Missing integration means unavailable totals, never fabricated zero sales.
+      if(!(await db.query("select to_regclass('public.hub_metric_values') as relation")).rows[0].relation){
+        const organizations=(await db.query('select slug,name,null::numeric as revenue,null::numeric as collected,null::numeric as leads,null::numeric as sales from organizations where id=any($1::bigint[]) order by name',[allowed])).rows;
+        return send(res,200,{organizations,metricsAvailable:false});
+      }
       const r=await db.query(`select o.slug,o.name,
         coalesce(sum(case when v.metric_key='revenue' then v.value else 0 end),0)::numeric as revenue,
         coalesce(sum(case when v.metric_key='collected' then v.value else 0 end),0)::numeric as collected,
@@ -309,7 +339,7 @@ const server = http.createServer(async (req,res) => {
         coalesce(sum(case when v.metric_key='sales' then v.value else 0 end),0)::numeric as sales
         from organizations o join organization_members m on m.organization_id=o.id
         left join hub_metric_values v on v.organization_id=o.id and v.period_end >= current_date - interval '30 days'
-        where m.user_id=$1 and m.active=true and m.removed_at is null and o.active=true group by o.id order by o.name`,[user.id]);
+        where m.user_id=$1 and m.active=true and m.removed_at is null and o.active=true and o.id=any($2::bigint[]) group by o.id order by o.name`,[user.id,allowed]);
       return send(res,200,{organizations:r.rows});
     }
     if (url.pathname === '/api/hub/metrics' && req.method === 'POST') {
