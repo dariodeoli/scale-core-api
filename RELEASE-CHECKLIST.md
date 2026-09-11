@@ -2,6 +2,8 @@
 
 ## Cierre adicional de guardado y acceso
 
+Publicación confirmada: API `bca35b87f2526253c12b96c7593e812369a7dfb6`, despliegue `24acbtthwdp74odt24p9hoht` finalizado el 11-09-2026 a las 02:33:03 UTC; interfaz `0f7c4ce98b525cea57f3dd16c4920c0bd6709e33`, despliegue `a3cvhezduz3zuhwvlnral0ed` finalizado a las 02:38:27 UTC. Noche del 10-09 en Paraguay. API publicada antes de interfaz, commits exactos confirmados; ambos servicios `running:healthy`, `/health` HTTP 200 con database `ready`. Esta comprobación no acredita QA visual ni monitoreo extendido.
+
 Correcciones verificadas tras la unificación de interfaz:
 
 - Ocho formularios heredados bloquean el doble envío antes de validar; una segunda solicitud ignorada no desbloquea el guardado original. La transferencia entre monedas también impide cerrar mientras guarda y conserva el identificador de reintento.
