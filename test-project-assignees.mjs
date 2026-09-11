@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {projectAssignees,getRecordAssignees,setRecordAssignees,normalizeAssigneeIds} from './project-assignees.js';
+import {suite} from './agency-suite.js';
 
 const pg=new PGlite();
 const load=async file=>pg.exec(await fs.readFile(new URL(file,import.meta.url),'utf8'));
@@ -96,5 +97,47 @@ for(const [kind,key] of [['clients',client],['projects',project],['work-orders',
 await query('update organizations set active=false where id=$1',[org]);assert.equal((await call(orderPath)).status,403);
 await query('update organizations set active=true where id=$1',[org]);
 assert.ok((await query("select 1 from agency_operation_audit where table_name='agency_work_order_assignees' and actor=$1",[user.id])).rows.length,'supplementary changes are audited');
+// Exercise the actual detail endpoint: assignment validation must roll back details too.
+await load('migrations/20260911_drive_links.sql');
+async function detail(kind,key,payload,as=user){
+ let response;
+ await suite({req:{method:'PATCH',socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL(`https://test/api/agency/${kind}/${key}`),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>{response={status,...data};}});
+ return response;
+}
+for(const [kind,key,field] of [['projects',project,'name'],['work-orders',order,'title']]){
+ const table=kind==='projects'?'agency_projects':'agency_work_orders';
+ const read=async()=>(await query(`select * from ${table} where id=$1`,[key])).rows[0];
+ const before=await read(),snapshot=await call(`/api/agency/${kind}/${key}/assignees`);
+ const payload={[field]:'Unified update',expected_updated_at:before.updated_at,assignees:{assigned_user_ids:[people.editor.id],assigned_user_id:people.editor.id,expected_version:snapshot.assignee_version}};
+ assert.equal((await detail(kind,key,{...payload,assignees:{...payload.assignees,expected_version:'999999'}})).status,409);
+ assert.deepEqual(await read(),before,'assignment conflict rolls back all detail fields');
+ assert.equal((await detail(kind,key,{...payload,assignees:{...payload.assignees,assigned_user_ids:[outsider],assigned_user_id:outsider}})).status,400);
+ assert.deepEqual(await read(),before,'invalid membership rolls back details');
+ assert.equal((await detail(kind,key,{...payload,expected_updated_at:'2000-01-01T00:00:00Z'})).status,409);
+ assert.equal((await detail(kind,key,payload,people.viewer)).status,403);
+ assert.equal((await detail(kind,key,{...payload,assigned_user_id:people.editor.id})).status,400,'mixed legacy and unified assignments rejected');
+ assert.equal((await detail(kind,key,{...payload,[field]:'x'})).status,400);
+ assert.deepEqual((await call(`/api/agency/${kind}/${key}/assignees`)).assigned_user_ids,snapshot.assigned_user_ids,'invalid details preserve assignments');
+ const saved=await detail(kind,key,payload);
+ assert.equal(saved.status,200);assert.equal(saved.record[field],'Unified update');
+ assert.deepEqual(saved.assignees.assigned_user_ids,[people.editor.id]);
+ assert.equal(String(saved.record.assignee_version),saved.assignees.assignee_version,'response includes the final version');
+ assert.equal((await detail(kind,key,payload)).status,409,'replay cannot overwrite newer details');
+}
+const oldPrimary=(await query('select assigned_user_id from agency_work_orders where id=$1',[order])).rows[0].assigned_user_id;
+await query('update organization_members set active=false where organization_id=$1 and user_id=$2',[org,oldPrimary]);
+const inactiveOrder=(await query('select * from agency_work_orders where id=$1',[order])).rows[0];
+assert.equal((await detail('work-orders',order,{title:'Replace inactive primary',expected_updated_at:inactiveOrder.updated_at,assignees:{assigned_user_ids:[user.id],assigned_user_id:user.id,expected_version:String(inactiveOrder.assignee_version)}})).status,200,'unified edit can remove inactive legacy primary');
+// Run the real list query with a local identity-view fixture, including a foreign project.
+await query(`create view organization_person_identity as select m.organization_id,m.user_id,u.email,u.email as full_name,null::text as photo_url from organization_members m join users u on u.id=m.user_id where m.active and m.removed_at is null`);
+const server=await fs.readFile(new URL('server.js',import.meta.url),'utf8');
+const listSQL=server.match(/const r=await db.query\(`(select p\.\*,c\.name as client_name[^`]+)`/)[1].replaceAll("${visibleRecord('o','work-orders')}",'true').replaceAll("${visibleRecord('p','projects')}",'true').replaceAll("${visibleRecord('c','clients')}",'true');
+const listed=(await query(listSQL,[org])).rows;
+assert.ok(listed.every(row=>String(row.organization_id)===org),'project directory remains tenant scoped');
+assert.ok(!listed.some(row=>String(row.id)===foreignProject));
+assert.deepEqual(listed.find(row=>String(row.id)===project).assignees,[],'inactive assignments do not leak through directory');
+await query('update organization_members set active=true where organization_id=$1 and user_id=$2',[org,oldPrimary]);
+const listedPerson=(await query(listSQL,[org])).rows.find(row=>String(row.id)===project).assignees[0];
+assert.equal(listedPerson.id,people.editor.id);assert.equal(listedPerson.is_primary,true);assert.ok(listedPerson.full_name);
 await pg.close();
 console.log('PASS: repeatable migration, legacy primary, multiple assignees, canonical IDs, idempotence, versions, tenant/role/membership guards, archive chain, FK guards, audit and rollback');

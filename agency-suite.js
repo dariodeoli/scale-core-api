@@ -8,6 +8,7 @@ import {budgetSections} from './budget-sections.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {clientColor,clientLogo} from './client-identity.js';
 import {clientLinks} from './client-links.js';
+import {setRecordAssignees} from './project-assignees.js';
 const admin=['owner','admin'], commercial=[...admin,'management','finance','sales'], production=[...admin,'management','production'];
 const roles=[...admin,'management','finance','sales','production','editor','viewer'];
 const stages=['lead','contacted','proposal','negotiation','won','lost'];
@@ -81,6 +82,12 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
     if(action==='approve'){if(old.status!=='review')fail('La pieza debe estar en revisión');const step=old.approval_step+1;await c.query("update agency_work_orders set approval_step=$1,status=$2,updated_at=now() where id=$3",[step,step>=project.approval_levels?'approved':'review',key]);}
     else if(action==='publish'){if(old.status!=='approved')fail('Primero aprobá la pieza');await ensureClientApproval(c,old);await c.query("update agency_work_orders set status='published',updated_at=now() where id=$1",[key]);}else fail('Acción inválida');result={ok:true};
    }else if(req.method==='PATCH'&&!action){const incoming=await body(req),b={...old,...incoming};
+    const unified=Object.hasOwn(incoming,'assignees');
+    if(unified){
+     if(!['projects','work-orders'].includes(kind)||Object.hasOwn(incoming,'assigned_user_id'))fail('Asignación inválida');
+     const expected=new Date(incoming.expected_updated_at).getTime();
+     if(!Number.isFinite(expected)||expected!==new Date(old.updated_at).getTime())fail('Los detalles cambiaron. Cerrá y volvé a abrir para revisar antes de guardar.',409);
+    }
     if(kind==='clients'&&Object.hasOwn(old,'lifecycle_status')){
      const state=option(incoming.lifecycle_status??(Object.hasOwn(incoming,'active')?(incoming.active===false?'inactive':'active'):old.lifecycle_status),['active','paused','cancelled','expired','inactive']);
      b.active=state==='active';
@@ -95,7 +102,12 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
       if(['approved','published'].includes(state)){if(!production.includes(user.role))fail('Solo gerencia o producción puede aprobar',403);const project=await owned(c,'agency_projects',old.project_id,org);if(state==='approved'&&(old.status!=='review'||old.approval_step+1<project.approval_levels))fail('Completá los niveles de aprobación desde el detalle');if(state==='published'&&old.status!=='approved')fail('Primero aprobá la pieza');step=project.approval_levels;}
       else step=0;
      }
-     const assignee=optId(b.assigned_user_id);await member(c,assignee,org);const title=text(b.title,160);if(title.length<2)fail('Ingresá el título');const {links,primary}=patchDriveLinks(old,incoming);const record=(await c.query('update agency_work_orders set title=$1,description=$2,drive_url=$3,drive_links=$4,due_date=$5,assigned_user_id=$6,estimated_hours=$7,actual_hours=$8,status=$9,approval_step=$10,updated_at=now() where id=$11 returning *',[title,text(b.description||''),primary,JSON.stringify(links||[]),date(b.due_date),assignee,amount(b.estimated_hours||0),amount(b.actual_hours||0),state,step,key])).rows[0];result={record,workOrder:record};
+     const assignee=optId(b.assigned_user_id);if(!unified)await member(c,assignee,org);const title=text(b.title,160);if(title.length<2)fail('Ingresá el título');const {links,primary}=patchDriveLinks(old,incoming);const record=(await c.query('update agency_work_orders set title=$1,description=$2,drive_url=$3,drive_links=$4,due_date=$5,assigned_user_id=$6,estimated_hours=$7,actual_hours=$8,status=$9,approval_step=$10,updated_at=now() where id=$11 returning *',[title,text(b.description||''),primary,JSON.stringify(links||[]),date(b.due_date),assignee,amount(b.estimated_hours||0),amount(b.actual_hours||0),state,step,key])).rows[0];result={record,workOrder:record};
+    }
+    if(unified){
+     const assignees=await setRecordAssignees(c,user,kind,key,incoming.assignees);
+     const record=(await c.query(`select * from ${table} where id=$1 and organization_id=$2`,[key,org])).rows[0];
+     result={...result,record,...(kind==='work-orders'?{workOrder:record}:{}),assignees};
     }
    }else fail('Método no permitido',405);
   }else if(kind==='plans'||kind==='inventory'||kind==='leads'){

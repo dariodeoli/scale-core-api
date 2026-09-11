@@ -9,6 +9,7 @@ import pg from 'pg';
 import { operations } from './operations.js';
 import { suite } from './agency-suite.js';
 import { passwordAccess, throttle } from './password-access.js';
+import {loginOrganization,defaultOrganizationId,setDefaultOrganization} from './default-organization.js';
 import {attributeActors} from './actor-identity.js';
 import { financeControls } from './finance-controls.js';
 import { contentReview } from './content-review.js';
@@ -27,6 +28,7 @@ import {ensurePersonalIdentity,ensurePersonalIdentityInTransaction} from './iden
 import {rememberGooglePhoto} from './google-profile-photo.js';
 import {liveVisitors,startLiveVisitorCleanup} from './live-visitors.js';
 import { productivity } from './productivity.js';
+import {weeklyReports} from './weekly-reports.js';
 import {rucLookup} from './ruc-lookup.js';
 import {presence} from './presence.js';
 import {demoOrganization,privateDemoEntry} from './demo-session.js';
@@ -110,6 +112,8 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_invite_link_metrics.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_invite_link_details.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_google_profile_photo.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260911_default_login_organization.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260911_weekly_reports.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -206,6 +210,7 @@ const server = http.createServer(async (req,res) => {
     if(await financeControls({req,res,url,db,session,body,send}))return;
     if(await contentReview({req,res,url,db,session,body,send}))return;
     if(await productivity({req,res,url,db,session,body,send}))return;
+    if(await weeklyReports({req,res,url,db,session,body,send}))return;
     if(await rucLookup({req,res,url,db,session,body,send}))return;
     if(await presence({req,res,url,db,session,body,send,sessionKey:req=>crypto.createHash('sha256').update(parseCookies(req).scale_session||'').digest('hex')}))return;
     if(await notifications({req,res,url,db,session,body,send}))return;
@@ -220,8 +225,9 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
       const { email='', password='' } = await body(req); const e=email.trim().toLowerCase();
       if(!await throttle(db,'login:'+e,30))return send(res,429,{error:'Demasiados intentos. Esperá 15 minutos.'});
-      const r=await db.query('select u.id,u.password_hash,(select m.organization_id from organization_members m join organizations o on o.id=m.organization_id where m.user_id=u.id and m.active=true and m.removed_at is null and o.active=true and o.demo_owner_user_id is null order by m.organization_id limit 1) as organization_id from users u where u.email=$1',[e]);
+      const r=await db.query('select id,password_hash from users where email=$1',[e]);
       if (!r.rows[0] || !(await bcrypt.compare(password,r.rows[0].password_hash))) return send(res,401,{error:'Credenciales inválidas'});
+      r.rows[0].organization_id=(await loginOrganization(db,{userId:r.rows[0].id}))?.organization_id;
       if (!r.rows[0].organization_id) return send(res,403,{error:'Usuario sin organización asignada'});
       const token=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,r.rows[0].id,r.rows[0].organization_id]);
       return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session',token,604800)});
@@ -283,30 +289,37 @@ const server = http.createServer(async (req,res) => {
         const ticket=id();await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),claim.userId,claim.organizationId]);
         res.writeHead(302,{Location:`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
       }
-      const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name',[email]);
+      const selected=await loginOrganization(db,{email,orderByName:true});
+      const member={rows:selected?[selected]:[]};
       if(!member.rows.length){const pending=await db.query("select u.id,l.organization_id from users u join agency_access_requests r on r.user_id=u.id join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id where u.email=$1 and r.status='pending' and o.active=true order by r.created_at desc limit 1",[email]);member.rows=pending.rows;}
       if (!member.rows[0]) { res.writeHead(302,{Location:`${appUrl}/?authError=${encodeURIComponent('Tu correo de Google todavía no fue invitado a esta empresa. Pedí una invitación al administrador.')}`}); return res.end(); }
       await rememberGooglePhoto(db,member.rows[0].id,profile);
       if(profile.picture||profile.name)await ensurePersonalIdentity(db,member.rows[0].id,member.rows[0].organization_id);
-      const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
+      const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at,normal_login) values($1,$2,$3,now()+interval '60 seconds',true)",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
       res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)}); return res.end();
     }
     if(url.pathname==='/api/auth/google/complete' && req.method==='GET') {
       const ticket=url.searchParams.get('ticket')||'';
-      const saved=await db.query('delete from oauth_handoffs where token_hash=$1 and expires_at>now() returning user_id,organization_id,trial_registration',[crypto.createHash('sha256').update(ticket).digest('hex')]);
+      const saved=await db.query('delete from oauth_handoffs where token_hash=$1 and expires_at>now() returning user_id,organization_id,trial_registration,normal_login',[crypto.createHash('sha256').update(ticket).digest('hex')]);
       if(!saved.rows[0]) {res.writeHead(302,{Location:`${appUrl}/?authError=El%20acceso%20venció.%20Intentá%20nuevamente.`});return res.end();}
+      const preferred=saved.rows[0].normal_login?await loginOrganization(db,{userId:saved.rows[0].user_id,orderByName:true}):null;
+      if(preferred)saved.rows[0].organization_id=preferred.organization_id;
       const token=id();await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,saved.rows[0].user_id,saved.rows[0].organization_id]);
       const member=await db.query('select 1 from organization_members where user_id=$1 and organization_id=$2 and active=true and removed_at is null',[saved.rows[0].user_id,saved.rows[0].organization_id]);
-      res.writeHead(302,{Location:member.rows.length?(saved.rows[0].trial_registration?`${appUrl}/produccion`:`${appUrl}/?chooseCompany=1`):`${appUrl}/acceso-pendiente`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
+      res.writeHead(302,{Location:member.rows.length?(saved.rows[0].trial_registration?`${appUrl}/produccion`:preferred?.is_default?`${appUrl}/`:`${appUrl}/?chooseCompany=1`):`${appUrl}/acceso-pendiente`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:{...u,subscription:await subscriptionState(db,u)}}) : send(res,401,{error:'No autenticado'}); }
     if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query('select o.id,o.slug,o.name,m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name',[user.id]);
+      const r=await db.query(`select o.id,o.slug,o.name,m.role,(o.demo_source_id is not null or o.slug='scale-demo-controles-20260908') as "isDemo" from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name`,[user.id]);
       const demo=await privateDemoEntry(db,user.id);
-      if(demo&&!r.rows.some(o=>String(o.id)===String(demo.id)))r.rows.push(demo);
-      return send(res,200,{organizations:r.rows,currentOrganizationId:user.demo_source_id||user.organization_id});
+      if(demo&&!r.rows.some(o=>String(o.id)===String(demo.id)))r.rows.push({...demo,isDemo:true});
+      return send(res,200,{organizations:r.rows,currentOrganizationId:user.demo_source_id||user.organization_id,defaultOrganizationId:await defaultOrganizationId(db,user.id)});
+    }
+    if(url.pathname==='/api/auth/default-organization'&&req.method==='POST'){
+      const user=await session(req);if(!user)return send(res,401,{error:'No autenticado'});
+      return send(res,200,await setDefaultOrganization(db,user,await body(req)));
     }
     if(url.pathname==='/api/auth/organizations'&&req.method==='POST'){
       const user=await session(req);if(!can(user,['owner','admin']))return send(res,403,{error:'Solo administración puede crear una empresa'});
@@ -405,7 +418,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query(`select p.*,c.name as client_name,count(o.id)::int as work_order_count from agency_projects p join agency_clients c on c.id=p.client_id left join agency_work_orders o on o.project_id=p.id and ${visibleRecord('o','work-orders')} where p.organization_id=$1 and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} group by p.id,c.name order by p.created_at desc`,[user.organization_id]);
+      const r=await db.query(`select p.*,c.name as client_name,coalesce((select jsonb_agg(jsonb_build_object('id',a.user_id::text,'full_name',coalesce(nullif(i.full_name,''),i.email),'photo_url',i.photo_url,'is_primary',a.is_primary) order by a.is_primary desc,a.user_id) from agency_record_assignees a join organization_person_identity i on i.organization_id=a.organization_id and i.user_id=a.user_id where a.organization_id=p.organization_id and a.kind='projects' and a.record_id=p.id),'[]'::jsonb) as assignees,count(o.id)::int as work_order_count from agency_projects p join agency_clients c on c.id=p.client_id left join agency_work_orders o on o.project_id=p.id and ${visibleRecord('o','work-orders')} where p.organization_id=$1 and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} group by p.id,c.name order by p.created_at desc`,[user.organization_id]);
       return send(res,200,{projects:r.rows});
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'POST') {

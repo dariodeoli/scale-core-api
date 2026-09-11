@@ -10,6 +10,8 @@ for(const f of ['20260908_treasury_ledger.sql','20260908_google_oauth.sql','2026
 for(const f of ['20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_notifications.sql','20260910_client_links.sql','20260910_invite_links.sql','20260910_currencies.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 for(const f of ['20260910_company_currency.sql','20260910_global_identity.sql','20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const query=(s,v)=>db.query(s,v);
+await db.exec(await fs.readFile(new URL('./migrations/20260911_default_login_organization.sql',import.meta.url),'utf8'));
+await db.exec(await fs.readFile(new URL('./migrations/20260911_google_profile_photo.sql',import.meta.url),'utf8'));
 for(const f of ['20260911_subscriptions.sql','20260911_trial_registration.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 for(const f of ['20260910_client_lifecycle.sql','20260911_agency_reports.sql','20260911_invite_link_metrics.sql','20260911_invite_link_details.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const org=(await query("insert into organizations(slug,name) values('other','Another agency') returning id")).rows[0].id;
