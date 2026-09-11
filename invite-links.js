@@ -2,6 +2,9 @@ import crypto from 'node:crypto';
 export const accessRoles=['owner','admin','management','finance','sales','production','editor','viewer'];
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
+const inviteKey=crypto.createHash('sha256').update(process.env.INVITE_LINK_SECRET||process.env.GOOGLE_CLIENT_SECRET||'scale-os-invite-key').digest();
+const seal=v=>{const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',inviteKey,iv),data=Buffer.concat([cipher.update(v,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),data]).toString('base64url');};
+const unseal=v=>{try{const raw=Buffer.from(v,'base64url'),dec=crypto.createDecipheriv('aes-256-gcm',inviteKey,raw.subarray(0,12));dec.setAuthTag(raw.subarray(12,28));return Buffer.concat([dec.update(raw.subarray(28)),dec.final()]).toString('utf8');}catch{return null;}};
 // Effective UI state only: never rewrite decisions or revoke an approved membership.
 // Validity is computed by PostgreSQL's clock in each caller, not browser time.
 export function accessRequestState(row){
@@ -11,8 +14,8 @@ export function accessRequestState(row){
 }
 export async function resolveInvite(db,token){
  if(typeof token!=='string'||!/^[-\w]{43}$/.test(token))fail('Enlace inválido o vencido',410);
- const r=(await db.query(`select l.id,l.role,l.mode,o.name as organization_name from agency_invite_links l join organizations o on o.id=l.organization_id
- where l.token_hash=$1 and l.revoked_at is null and l.used_at is null and l.expires_at>now() and o.active=true and o.demo_owner_user_id is null`,[hash(token)])).rows[0];
+ const hit=(await db.query(`update agency_invite_links l set click_count=l.click_count+1 where l.token_hash=$1 and l.revoked_at is null and l.used_at is null and l.expires_at>now() and exists(select 1 from organizations o where o.id=l.organization_id and o.active=true and o.demo_owner_user_id is null) returning l.id`,[hash(token)])).rows[0];
+ const r=hit&&(await db.query(`select l.id,l.role,l.mode,o.name as organization_name from agency_invite_links l join organizations o on o.id=l.organization_id where l.id=$1`,[hit.id])).rows[0];
  if(!r)fail('Enlace inválido, usado, revocado o vencido',410);return r;
 }
 // Only called after Google verifies email AND the state cookie is checked.
@@ -38,8 +41,9 @@ export async function claimInvite(c,linkId,profile){
   await c.query('insert into agency_access_requests(link_id,user_id,full_name) values($1,$2,$3) on conflict(link_id,user_id) do nothing',[l.id,u.id,name]);
   return{pending:true,userId:u.id,organizationId:l.organization_id};
  }
- await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[l.organization_id,u.id,l.role]);
+ await c.query('insert into organization_members(organization_id,user_id,role,invite_link_id) values($1,$2,$3,$4)',[l.organization_id,u.id,l.role,l.id]);
  await c.query('insert into agency_user_profiles(organization_id,user_id,full_name) values($1,$2,$3) on conflict do nothing',[l.organization_id,u.id,name]);
+ await c.query('update agency_invite_links set account_count=account_count+1 where id=$1',[l.id]);
  await c.query('update agency_invite_links set used_at=now() where id=$1',[l.id]);
  return{userId:u.id,organizationId:l.organization_id};
 }
@@ -55,12 +59,12 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
   c=await db.connect();await c.query('begin');
   await c.query("select set_config('app.current_user',$1,true)",[String(user.id)]);
   const [ ,kind,key]=match,org=user.organization_id;let result;
-  if(kind==='invite-links'&&req.method==='GET'&&!key){result={links:(await c.query('select id,role,mode,created_at,expires_at,revoked_at,used_at from agency_invite_links where organization_id=$1 order by id desc limit 100',[org])).rows};}
+  if(kind==='invite-links'&&req.method==='GET'&&!key){const rows=(await c.query(`select l.id,l.role,l.mode,l.created_at,l.expires_at,l.revoked_at,l.used_at,l.click_count,l.account_count,l.token_ciphertext,u.email as created_by_email,coalesce((select jsonb_agg(jsonb_build_object('email',j.email,'full_name',j.full_name,'joined_at',j.joined_at) order by j.joined_at) from (select u2.email,r.full_name,r.created_at as joined_at from agency_access_requests r join users u2 on u2.id=r.user_id where r.link_id=l.id and r.status='approved' union all select u3.email,coalesce(p.full_name,u3.email),m.created_at from organization_members m join users u3 on u3.id=m.user_id left join agency_user_profiles p on p.organization_id=m.organization_id and p.user_id=m.user_id where m.invite_link_id=l.id) j),'[]'::jsonb) as joined_users from agency_invite_links l join users u on u.id=l.created_by where l.organization_id=$1 order by l.id desc limit 100`,[org])).rows;result={links:rows.map(({token_ciphertext,...row})=>({...row,url:token_ciphertext?`${appUrl}/invitacion?token=${unseal(token_ciphertext)}`:null}))};}
   else if(kind==='invite-links'&&req.method==='POST'&&!key){
    const b=await body(req);if(!accessRoles.includes(b.role)||!['single','approval'].includes(b.mode))fail('Permiso o tipo de enlace inválido');
    if(b.role==='owner'&&user.role!=='owner')fail('Solo un dueño puede invitar dueños',403);
    const token=crypto.randomBytes(32).toString('base64url');
-   const link=(await c.query("insert into agency_invite_links(organization_id,token_hash,role,mode,created_by,expires_at) values($1,$2,$3,$4,$5,now()+interval '7 days') returning id,expires_at",[org,hash(token),b.role,b.mode,user.id])).rows[0];
+   const link=(await c.query("insert into agency_invite_links(organization_id,token_hash,token_ciphertext,role,mode,created_by,expires_at) values($1,$2,$3,$4,$5,$6,now()+interval '7 days') returning id,expires_at",[org,hash(token),seal(token),b.role,b.mode,user.id])).rows[0];
    result={...link,url:appUrl+'/invitacion?token='+token};
   }else if(kind==='invite-links'&&key&&req.method==='DELETE'){
    const r=await c.query("update agency_invite_links set revoked_at=now() where id=$1 and organization_id=$2 and ($3='owner' or role<>'owner') returning id",[key,org,user.role]);if(!r.rows.length)fail('Enlace no encontrado o sin permiso',404);result={ok:true};
@@ -77,9 +81,10 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
    if(b.action==='approve'){
     if(accessRequestState(r).status==='unavailable')fail('La invitación ya no está disponible. Revisá la empresa y generá otro enlace.',409);
     const old=(await c.query('select user_id from organization_members where user_id=$1 and organization_id=$2',[r.user_id,org])).rows[0];
-    if(old)await c.query('update organization_members set role=$1,active=true,removed_at=null where organization_id=$2 and user_id=$3',[r.role,org,r.user_id]);
-    else await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,r.user_id,r.role]);
+    if(old)await c.query('update organization_members set role=$1,active=true,removed_at=null,invite_link_id=$4 where organization_id=$2 and user_id=$3',[r.role,org,r.user_id,r.link_id]);
+    else await c.query('insert into organization_members(organization_id,user_id,role,invite_link_id) values($1,$2,$3,$4)',[org,r.user_id,r.role,r.link_id]);
     await c.query('insert into agency_user_profiles(organization_id,user_id,full_name) values($1,$2,$3) on conflict do nothing',[org,r.user_id,r.full_name]);
+    await c.query('update agency_invite_links set account_count=account_count+1 where id=$1',[r.link_id]);
    }
    await c.query('update agency_access_requests set status=$1,decided_at=now(),decided_by=$2 where id=$3',[b.action==='approve'?'approved':'rejected',user.id,key]);result={ok:true};
   }else fail('Método no permitido',405);

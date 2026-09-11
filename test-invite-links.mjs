@@ -8,7 +8,7 @@ for(const f of ['20260908_treasury_ledger.sql','20260908_google_oauth.sql','2026
 await pg.exec(await fs.readFile('migrations/20260910_invite_links.sql','utf8'));await pg.exec(await fs.readFile('migrations/20260910_currencies.sql','utf8'));
 for(const file of ['20260910_company_currency.sql','20260910_global_identity.sql','20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const query=(s,v)=>pg.query(s,v),db={query,connect:async()=>({query,release(){}})};
-for(const file of ['20260910_client_lifecycle.sql','20260911_agency_reports.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
+for(const file of ['20260910_client_lifecycle.sql','20260911_agency_reports.sql','20260911_invite_link_metrics.sql','20260911_invite_link_details.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const owner=(await query("insert into users(email,password_hash) values('owner@example.invalid','!') returning id")).rows[0].id;
 await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org,owner]);
@@ -31,7 +31,7 @@ assert.equal((await claim(many,'third@example.invalid')).pending,true);rows=(awa
 await call(links+'/'+many.id,'DELETE');assert.equal((await call(requests+'/'+rows[0].id,'PATCH',{action:'approve'})).status,409);
 await assert.rejects(()=>claim(many,'fourth@example.invalid'),{status:410});
 const ownerLink=await make('single','owner');await claim(ownerLink,'one@example.invalid');assert.equal((await query('select role from organization_members where user_id=$1',[granted.userId])).rows[0].role,'editor');
-assert(!(await call(links)).links.some(l=>l.token_hash||l.url));
+assert(!(await call(links)).links.some(l=>l.token_hash));assert((await call(links)).links.some(l=>l.url));
 const before=(await query('select count(*)::int as n from agency_clients where organization_id=$1',[org])).rows[0].n;
 const demo=await call('/api/demo/start','POST',{},null,publicExperience);assert.equal(demo.status,201);assert(demo.headers['Set-Cookie']);
 const demoOrg=(await query('select id from organizations where demo_owner_user_id is not null order by id desc limit 1')).rows[0].id;
