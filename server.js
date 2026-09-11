@@ -506,8 +506,13 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/invoices' && req.method === 'GET') {
       const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
-      const r=await db.query('select i.*,c.name as client_name from agency_invoices i join agency_clients c on c.id=i.client_id where i.organization_id=$1 order by i.created_at desc',[user.organization_id]);
-      return send(res,200,{invoices:r.rows});
+      const requested=new URL(url,'https://scale.local').searchParams.get('limit');
+      if(requested==='all'){
+        const r=await db.query('select i.*,c.name as client_name from agency_invoices i join agency_clients c on c.id=i.client_id where i.organization_id=$1 order by i.created_at desc',[user.organization_id]);
+        return send(res,200,{invoices:r.rows,hasMore:false});
+      }
+      const r=await db.query('select i.*,c.name as client_name from agency_invoices i join agency_clients c on c.id=i.client_id where i.organization_id=$1 order by i.created_at desc limit 21',[user.organization_id]);
+      return send(res,200,{invoices:r.rows.slice(0,20),hasMore:r.rows.length>20});
     }
     if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {
       const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
