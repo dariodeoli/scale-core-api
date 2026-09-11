@@ -70,7 +70,7 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
   }else if(kind==='invite-links'&&key&&req.method==='DELETE'){
    const r=await c.query("update agency_invite_links set revoked_at=now() where id=$1 and organization_id=$2 and ($3='owner' or role<>'owner') returning id",[key,org,user.role]);if(!r.rows.length)fail('Enlace no encontrado o sin permiso',404);result={ok:true};
   }else if(kind==='access-requests'&&req.method==='GET'&&!key){
-   const rows=(await c.query("select r.id,r.full_name,r.created_at,r.status,u.email,l.role,l.expires_at,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=l.organization_id and m.user_id=r.user_id) as existing_member from agency_access_requests r join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id join users u on u.id=r.user_id where l.organization_id=$1 and r.status='pending' order by r.created_at limit 100",[org])).rows;
+   const rows=(await c.query("select r.id,r.full_name,r.created_at,r.status,u.email,l.role,l.expires_at,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=l.organization_id and m.user_id=r.user_id and m.active=true and m.removed_at is null) as existing_member from agency_access_requests r join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id join users u on u.id=r.user_id where l.organization_id=$1 and r.status='pending' order by r.created_at limit 100",[org])).rows;
    result={requests:rows.map(({link_valid,organization_active,existing_member,...row})=>({...row,...accessRequestState({...row,link_valid,organization_active,existing_member})}))};
   }else if(kind==='access-requests'&&key&&req.method==='PATCH'){
    const b=await body(req);if(!['approve','reject'].includes(b.action))fail('Acción inválida');
@@ -85,7 +85,7 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
     if(old)await c.query('update organization_members set role=$1,active=true,removed_at=null,invite_link_id=$4 where organization_id=$2 and user_id=$3',[r.role,org,r.user_id,r.link_id]);
     else await c.query('insert into organization_members(organization_id,user_id,role,invite_link_id) values($1,$2,$3,$4)',[org,r.user_id,r.role,r.link_id]);
     await c.query('insert into agency_user_profiles(organization_id,user_id,full_name) values($1,$2,$3) on conflict do nothing',[org,r.user_id,r.full_name]);
-    await c.query('update agency_invite_links set account_count=account_count+1 where id=$1',[r.link_id]);
+    await c.query('update agency_invite_links set account_count=account_count+1,used_at=case when mode=\'single\' then now() else used_at end where id=$1',[r.link_id]);
    }
    await c.query('update agency_access_requests set status=$1,decided_at=now(),decided_by=$2 where id=$3',[b.action==='approve'?'approved':'rejected',user.id,key]);result={ok:true};
   }else fail('Método no permitido',405);
