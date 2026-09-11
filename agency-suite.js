@@ -9,6 +9,7 @@ import {visibleRecord} from './record-lifecycle.js';
 import {clientColor,clientLogo} from './client-identity.js';
 import {clientLinks} from './client-links.js';
 import {setRecordAssignees} from './project-assignees.js';
+import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 const admin=['owner','admin'], commercial=[...admin,'management','finance','sales'], production=[...admin,'management','production'];
 const roles=[...admin,'management','finance','sales','production','editor','viewer'];
 const stages=['lead','contacted','proposal','negotiation','won','lost'];
@@ -156,6 +157,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
    if(req.method==='GET')result={records:(await c.query('select * from agency_exchange_rates where organization_id=$1 order by rate_date desc limit 90',[org])).rows};
    else if(req.method==='POST'){const b=await body(req),rate=amount(b.usd_to_pyg),on=date(b.rate_date);if(!rate||!on)fail('Fecha y cotización requeridas');await c.query('insert into agency_exchange_rates values($1,$2,$3) on conflict(organization_id,rate_date) do update set usd_to_pyg=excluded.usd_to_pyg',[org,on,rate]);result={ok:true};}else fail('Método no permitido',405);
   }else fail('Método no permitido',405);
+  if(kind==='work-orders')await enrichWorkOrderAssignees(c,org,result.record||result.workOrder);
   await c.query('commit');transaction=false;send(res,status,result);return true;
  }catch(e){if(transaction)await c.query('rollback');console.error(JSON.stringify({event:'suite_error',path:url.pathname,status:e.status||500,code:e.code}));send(res,e.status||500,{error:e.status?e.message:'No se pudo completar la operación'});return true;}finally{c?.release();}
 }

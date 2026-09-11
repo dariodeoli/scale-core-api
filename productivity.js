@@ -1,4 +1,5 @@
 import {attributeActors} from './actor-identity.js';
+import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {fail,text,id,optId,date,option,owned,link} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {profilePhoto} from './media-policy.js';
@@ -116,6 +117,7 @@ export async function productivity({req,res,url,db,session,body,send}){
    }
    if([...finance,'management','sales'].includes(user.role))result.budgets=(await c.query(`select b.id,b.title,b.number,b.status,b.currency,b.total from agency_budgets b where b.organization_id=$1 and b.client_id=$2 and ${visibleRecord('b','budgets')} order by b.id desc limit 100`,[org,key])).rows;
   }else fail('Método no permitido',405);
+  await enrichWorkOrderAssignees(c,org,result.orders||result.order);
   await attributeActors(c,org,[
    {rows:result.comment,userId:'author_user_id',fallback:['author_email']},
    {rows:result.templates||result.template,userId:'created_by'},

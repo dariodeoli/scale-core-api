@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {identitySchema} from './scripts/test-identity-schema.mjs';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {projectAssignees,getRecordAssignees,setRecordAssignees,normalizeAssigneeIds} from './project-assignees.js';
@@ -8,6 +9,7 @@ const pg=new PGlite();
 const load=async file=>pg.exec(await fs.readFile(new URL(file,import.meta.url),'utf8'));
 await load('schema.sql');
 for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls','20260910_productivity'])await load(`migrations/${name}.sql`);
+await identitySchema(pg);
 const query=(sql,values)=>pg.query(sql,values),db={query,connect:async()=>({query,release(){}})};
 const insert=async(sql,values)=>String((await query(sql+' returning id',values)).rows[0].id);
 const org=String((await query("select id from organizations where slug='scale'")).rows[0].id);
@@ -128,8 +130,7 @@ const oldPrimary=(await query('select assigned_user_id from agency_work_orders w
 await query('update organization_members set active=false where organization_id=$1 and user_id=$2',[org,oldPrimary]);
 const inactiveOrder=(await query('select * from agency_work_orders where id=$1',[order])).rows[0];
 assert.equal((await detail('work-orders',order,{title:'Replace inactive primary',expected_updated_at:inactiveOrder.updated_at,assignees:{assigned_user_ids:[user.id],assigned_user_id:user.id,expected_version:String(inactiveOrder.assignee_version)}})).status,200,'unified edit can remove inactive legacy primary');
-// Run the real list query with a local identity-view fixture, including a foreign project.
-await query(`create view organization_person_identity as select m.organization_id,m.user_id,u.email,u.email as full_name,null::text as photo_url from organization_members m join users u on u.id=m.user_id where m.active and m.removed_at is null`);
+// Run the real list query with the production identity view and a foreign project.
 const server=await fs.readFile(new URL('server.js',import.meta.url),'utf8');
 const listSQL=server.match(/const r=await db.query\(`(select p\.\*,c\.name as client_name[^`]+)`/)[1].replaceAll("${visibleRecord('o','work-orders')}",'true').replaceAll("${visibleRecord('p','projects')}",'true').replaceAll("${visibleRecord('c','clients')}",'true');
 const listed=(await query(listSQL,[org])).rows;

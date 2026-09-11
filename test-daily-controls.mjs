@@ -12,6 +12,7 @@ for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_c
 // The current work-order PATCH writes drive_links, as in the production migration chain.
 await pg.exec(await fs.readFile('migrations/20260911_drive_links.sql','utf8'));
 await identitySchema(pg);
+await pg.exec(await fs.readFile('migrations/20260910_project_assignees.sql','utf8'));
 const query=(q,p)=>pg.query(q,p),db={query,connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('daily@example.invalid','none') returning id")).rows[0].id;

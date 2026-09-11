@@ -12,6 +12,7 @@ await pg.exec(await fs.readFile('migrations/20260910_profile_identity.sql','utf8
 await pg.exec(await fs.readFile('migrations/20260910_profile_identity.sql','utf8'));
 for(const name of ['20260908_google_oauth.sql','20260910_demo_sessions.sql','20260910_invite_links.sql','20260910_global_identity.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 const query=(s,v)=>pg.query(s,v),db={query,connect:async()=>({query,release(){}})};
+await pg.exec(await fs.readFile('migrations/20260910_project_assignees.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_client_links.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_client_lifecycle.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_client_lifecycle.sql','utf8'));

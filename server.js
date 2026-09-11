@@ -21,6 +21,7 @@ import { invitationEmail,resetEmail } from './invitation-email.js';
 import {financialForecast} from './forecast.js';
 import {reports} from './reports.js';
 import {projectAssignees} from './project-assignees.js';
+import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {startMaintenance} from './maintenance.js';
 import {inventoryReservations} from './inventory-reservations.js';
 import {workChecklists} from './work-checklists.js';
@@ -434,6 +435,7 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/agency/work-orders' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
       const r=await db.query(`select o.*,p.name as project_name,c.name as client_name,u.email as assignee_email,array(select a.user_id::text from agency_record_assignees a where a.organization_id=o.organization_id and a.kind='work-orders' and a.record_id=o.id order by a.is_primary desc,a.user_id) as assigned_user_ids,(select count(*)::int from agency_work_checklist_items ci where ci.organization_id=o.organization_id and ci.work_order_id=o.id) as checklist_total,(select count(*)::int from agency_work_checklist_items ci where ci.organization_id=o.organization_id and ci.work_order_id=o.id and ci.completed) as checklist_completed from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id left join users u on u.id=o.assigned_user_id where o.organization_id=$1 and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} order by o.updated_at desc`,[user.organization_id]);
+      await enrichWorkOrderAssignees(db,user.organization_id,r.rows);
       return send(res,200,{workOrders:r.rows});
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {

@@ -35,9 +35,8 @@ async function record(c,kind,key,org){
  return r;
 }
 async function snapshot(c,kind,r,org){
- const assignees=(await c.query(`select a.user_id::text as id,a.is_primary,u.email,coalesce(nullif(p.full_name,''),u.email) as full_name
-  from agency_record_assignees a join users u on u.id=a.user_id
-  left join agency_user_profiles p on p.user_id=a.user_id and p.organization_id=a.organization_id
+ const assignees=(await c.query(`select a.user_id::text as id,a.is_primary,i.email,coalesce(nullif(trim(i.full_name),''),i.email) as full_name,i.photo_url
+  from agency_record_assignees a join organization_person_identity i on i.user_id=a.user_id and i.organization_id=a.organization_id
   where a.organization_id=$1 and a.kind=$2 and a.record_id=$3 order by a.is_primary desc,a.user_id`,[org,kind,r.id])).rows;
  return {assigned_user_id:assignees.find(a=>a.is_primary)?.id??null,assigned_user_ids:assignees.map(a=>a.id),assignee_version:String(r.assignee_version),assignees};
 }
@@ -77,9 +76,8 @@ export async function projectAssignees({req,res,url,db,session,body,send}){
   let result;
   if(people){
    const org=await authorize(c,user);
-   result={members:(await c.query(`select m.user_id::text as id,u.email,coalesce(nullif(p.full_name,''),u.email) as full_name,true as active
-    from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=m.user_id and p.organization_id=m.organization_id
-    where m.organization_id=$1 and m.active and m.removed_at is null order by full_name,m.user_id`,[org])).rows};
+   result={members:(await c.query(`select i.user_id::text as id,i.email,coalesce(nullif(trim(i.full_name),''),i.email) as full_name,i.photo_url,true as active
+    from organization_person_identity i where i.organization_id=$1 order by full_name,i.user_id`,[org])).rows};
   }else result=req.method==='GET'?await getRecordAssignees(c,user,match[1],match[2]):await setRecordAssignees(c,user,match[1],match[2],await body(req));
   await c.query('commit');send(res,200,result);
  }catch(e){
