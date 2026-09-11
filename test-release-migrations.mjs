@@ -23,9 +23,9 @@ async function migrate(){
  try{await pg.exec(await read(current));for(const file of files){current='migrations/'+file;await pg.exec(await read(current));}await pg.exec('commit');}
  catch(error){await pg.exec('rollback');throw Error(`Release migration ${current}: ${error.code||''} ${error.message}`,{cause:error});}
 }
-async function call(handler,path,as,method='GET',payload={}){
+async function call(handler,path,as,method='GET',payload={},expectedStatus=200){
  let response;const handled=await handler({req:{method,socket:{remoteAddress:'release-fixture'}},res:{},url:new URL('https://test/api/agency/'+path),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>{response={status,...data};}});
- assert.equal(handled,true);assert.equal(response.status,200,JSON.stringify(response));return response;
+ assert.equal(handled,true);assert.equal(response.status,expectedStatus,JSON.stringify(response));return response;
 }
 try{
  await migrate();
@@ -44,7 +44,8 @@ try{
  await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner'),($3,$4,'owner')",[demo,uid,publicDemo,guest]);
  const demoSelf={...self,organization_id:demo};
  assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.full_name,'Identidad release');
- await call(productivity,'productivity/profile',demoSelf,'PATCH',{full_name:'Copia demo',photo_url:'https://example.invalid/demo.png'});
+ assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.identity_scope,'personal_readonly');
+ await call(productivity,'productivity/profile',demoSelf,'PATCH',{full_name:'Copia demo',photo_url:'https://example.invalid/demo.png'},403);
  await call(productivity,'productivity/profile',{...self,id:guest,organization_id:publicDemo},'PATCH',{full_name:'Invitado independiente'});
  assert.equal((await call(productivity,'productivity/profile',self)).profile.full_name,'Identidad release');
  assert.equal((await query('select count(*)::int as n from user_personal_identities where user_id=$1',[guest])).rows[0].n,0);
@@ -59,8 +60,8 @@ try{
  // Re-run the exact server transaction with populated identities and assignments.
  await migrate();
  assert.equal((await call(productivity,'productivity/profile',other)).profile.full_name,'Identidad release');
- assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.full_name,'Copia demo');
- assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.photo_url,'https://example.invalid/demo.png');
+ assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.full_name,'Identidad release');
+ assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.photo_url,'https://example.invalid/release.png');
  assert.deepEqual((await call(projectAssignees,`work-orders/${order}/assignees`,self)).assigned_user_ids,[String(uid)]);
  await query("insert into agency_collaborators(organization_id,user_id,full_name,job_title,compensation_amount) values($1,$2,'Identidad release','Editor',100)",[a,uid]);
  await query('update organization_members set active=false where organization_id=$1 and user_id=$2',[a,uid]);
@@ -72,7 +73,8 @@ try{
  assert.deepEqual(await ensurePersonalIdentity(db,uid,a),{full_name:'Actualizado desde B',photo_url:null});
  assert.equal((await call(productivity,'productivity/profile',self)).profile.full_name,'Actualizado desde B');
  assert.equal((await call(productivity,'productivity/profile',self)).profile.photo_url,null);
- assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.full_name,'Copia demo');
+ assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.full_name,'Actualizado desde B');
+ assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.photo_url,null);
  assert.equal((await query('select role from organization_members where organization_id=$1 and user_id=$2',[b,uid])).rows[0].role,'editor');
  console.log(`PASS: schema + ${files.length} server-registered migrations twice, session identity initialization, real reactivation/HR sync, demo isolation, assignee flow, inventory/checklist relations; optional Dadoo excluded`);
 }catch(error){console.error(error.stack||error);process.exitCode=1;}
