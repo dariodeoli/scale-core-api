@@ -11,6 +11,7 @@ const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,re
 await pg.exec(await fs.readFile('migrations/20260910_productivity.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_client_links.sql','utf8'));
 for(const file of ['20260908_google_oauth.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_invite_links.sql','20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
+await pg.exec(await fs.readFile('migrations/20260911_drive_links.sql','utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('suite-other','Other') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('suite-owner@example.invalid','unused') returning id")).rows[0].id;
@@ -32,6 +33,9 @@ assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{name:'Renamed'
 assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{social_links:{website:'javascript:alert(1)'}})).status,400);
 assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{social_links:{}},{...user,role:'editor'})).status,403);
 assert.equal((await call(`/api/agency/clients/${client}`,'PATCH',{name:'Cross tenant'},{...user,organization_id:other})).status,404);
+let linksResult=await call(`/api/agency/projects/${project}`,'PATCH',{drive_links:'https://drive.google.com/file/d/one\nhttps://drive.google.com/drive/folders/two'});assert.equal(linksResult.record.drive_url,'https://drive.google.com/file/d/one');assert.equal(linksResult.record.drive_links.length,2);
+linksResult=await call(`/api/agency/work-orders/${order}`,'PATCH',{drive_links:'https://drive.google.com/file/d/order\nhttps://drive.google.com/drive/folders/assets'});assert.equal(linksResult.workOrder.drive_links.length,2);assert.equal(linksResult.workOrder.drive_url,'https://drive.google.com/file/d/order');
+assert.equal((await call(`/api/agency/work-orders/${order}`,'PATCH',{drive_links:Array.from({length:11},(_,i)=>({url:`https://drive.google.com/${i}`}))})).status,400);
 assert.equal((await call(`/api/agency/work-orders/${order}`,'PATCH',{status:'approved'})).status,400);
 assert.equal((await call(`/api/agency/work-orders/${order}/approve`,'POST',{}, {...user,role:'editor'})).status,403);
 assert.equal((await call(`/api/agency/work-orders/${order}/approve`,'POST')).status,200);
