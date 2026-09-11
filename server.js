@@ -17,6 +17,7 @@ import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
 import { invitationEmail,resetEmail } from './invitation-email.js';
 import {financialForecast} from './forecast.js';
+import {reports} from './reports.js';
 import {projectAssignees} from './project-assignees.js';
 import {startMaintenance} from './maintenance.js';
 import {inventoryReservations} from './inventory-reservations.js';
@@ -101,6 +102,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_work_checklists.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_subscriptions.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_trial_registration.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260911_agency_reports.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -190,6 +192,7 @@ const server = http.createServer(async (req,res) => {
       if(actor?.demo_owner_user_id&&(url.pathname==='/api/auth/organizations'||url.pathname==='/api/events'||/\/(share|client-review)$/.test(url.pathname)||/\/budgets\/\d+\/publish$/.test(url.pathname)))return send(res,403,{error:'El Demo no comparte datos públicamente ni crea empresas o eventos externos.'});
     }
     if(url.pathname.startsWith('/api/agency/members')&&req.method!=='GET'){const actor=await session(req);if(actor?.demo_owner_user_id)return send(res,403,{error:'El Demo no envía invitaciones ni cambia accesos reales. Usá Equipo en tu agencia.'});}
+    if(await reports({req,res,url,db,session,body,send}))return;
     if(await recordLifecycle({req,res,url,db,session,send}))return;
     if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
     if(await financeControls({req,res,url,db,session,body,send}))return;

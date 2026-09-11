@@ -1,5 +1,17 @@
 # Scale OS — seguimiento de entregas
 
+## Informes mensuales de agencias — 10 de septiembre de 2026
+
+Solicitud de Dario: comparar clientes, facturación, ticket, planes, antigüedad y tipos de clientes; demo profesional con meses pasados. Apartado `/informes` separado, solo Dueño, Administración y Finanzas. La ficha del cliente aporta clasificación, plan de servicio y fecha de inicio; no se infieren de su nombre o RUC.
+
+Los clientes existentes comienzan con un registro observado al aplicar la migración; no se retrocede su estado hasta `created_at`. Cambios posteriores de estado, clasificación, plan y archivo/restauración producen eventos históricos. Los meses sin cobertura suficiente se muestran como desconocidos o parciales. Las facturas registradas se agrupan por fecha de emisión, los cobros por fecha de recepción y las reversiones por su propia fecha, siempre separados por moneda. Presupuestos y transferencias no son facturación ni ventas.
+
+La historia de la demo se genera únicamente dentro de nuevas copias privadas, con registros ficticios enlazados y fechas relativas. No altera agencias reales, la plantilla compartida ni sesiones de demo ya abiertas. Reabrir/reiniciar una nueva demo permite ver la nueva experiencia. El mantenimiento existente conoce las tablas nuevas, pero R2 y la limpieza externa siguen sin activarse.
+
+Verificación local completa sobre export limpio sin WEEM/Dadoo: 30 suites backend, 43 archivos frontend (53 resultados del runner), 28 migraciones registradas aplicadas dos veces y compilación de 41 rutas. Dominio: 52 llamadas a handlers de informes; registro: 107 solicitudes, incluidos informes bloqueados al suspenderse. Demo: siete meses dinámicos, 58 facturas y 58 recibos históricos, saldos conciliados y sesiones previas/agencias reales sin cambios. Revisión independiente cerrada tras comprobar zona horaria local, aislamiento, altas no duplicadas y bajas de actividad. Mantenimiento probado solo en memoria, sin activarlo externamente.
+
+QA visual sigue bloqueada por la comprobación administrativa del navegador; no eludirla. Publicación exige verificar ambos commits exactos, salud y rechazo de solicitudes anónimas; no confundir build local con despliegue finalizado. Base de reversión API `cac9578a`, interfaz `a1e5a2e9`; revertir código sin borrar tablas ni historial si falla salud, sesión o integridad de datos. No modificar los cambios ajenos de WEEM/Dadoo.
+
 ## Plan por agencia y registro — 10 de septiembre de 2026
 
 Precio confirmado por Dario: US$10 o G.50.000 mensuales por agencia, con todos sus integrantes incluidos; son alternativas fijas, no una conversión. Landing y registro describen 30 días de prueba y 48 horas de gracia, con suspensión operativa desde el tercer día de atraso sin borrar datos. Empresas existentes y demos quedan exentas; no hay adhesión retroactiva.

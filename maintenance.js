@@ -14,11 +14,14 @@ const scopedTables = `organizations organization_members sessions events oauth_h
  agency_invite_links agency_access_requests oauth_states
  agency_project_assignees agency_work_order_assignees agency_inventory_categories
  agency_inventory_reservations agency_inventory_reservation_members agency_inventory_reservation_items
- agency_work_checklists agency_work_checklist_items`.trim().split(/\s+/);
+ agency_work_checklists agency_work_checklist_items
+ agency_reporting_coverage agency_client_reporting_events`.trim().split(/\s+/);
 const switches = [
  ['agency_payments', 'agency_payments_sync'],
  ['agency_payment_reversals', 'payment_reversal_sync'],
  ['account_transfers', 'account_transfers_sync'],
+ ['agency_client_reporting_events', 'agency_reporting_events_immutable'],
+ ['agency_archived_records', 'agency_reporting_archive_snapshot'],
 ];
 const ident = value => '"' + value.replaceAll('"', '""') + '"';
 const tableName = table => 'public.' + ident(table);

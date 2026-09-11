@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {seedDemoReports} from './demo-reports.js';
 const templateSlug='scale-demo-controles-20260908';
 // A real agency owner can open a personal fixture without membership in the shared template.
 export async function privateDemoEntry(c,userId){
@@ -25,6 +26,8 @@ export async function demoOrganization(c,{userId,sourceId,demoKey}){
  return org;
 }
 export async function seedPrivateDemo(c,org,userId){
+ // Demo dates and report month cutoffs use the same calendar; transaction-local.
+ await c.query("select set_config('TimeZone','America/Asuncion',true)");
  const palette=['#560766','#355fb0','#15857b','#b47a12','#b04170'];
  const portrait=(label,index,person=false)=>'data:image/svg+xml;base64,'+Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="${palette[index%5]}"/>${person?'<circle cx="128" cy="93" r="43" fill="#f6d4bd"/><path d="M43 256v-36a85 85 0 0 1 170 0v36" fill="#fff"/><path d="M86 91a44 44 0 0 1 84-15l-39-21-44 38" fill="#292130"/>':`<text x="128" y="154" text-anchor="middle" font-family="Arial,sans-serif" font-size="74" font-weight="700" fill="white">${label}</text>`}</svg>`).toString('base64');
  await c.query("insert into agency_settings(organization_id,legal_name,tax_id,address,phone,onboarding_completed) values($1,'Agencia Horizonte E.A.S.','80000000-0','Av. Mariscal López 120 · Asunción','+595 000 000000',true) on conflict do nothing",[org]);
@@ -99,6 +102,7 @@ export async function seedPrivateDemo(c,org,userId){
  await c.query("insert into agency_internal_tasks(organization_id,title,description) values($1,'Preparar reunión de equipo','Revisar entregas de la semana, bloqueos y agenda de grabación.')",[org]);
  const archived=(await c.query("insert into agency_inventory(organization_id,name,category,category_id,value,storage_shelf,storage_row,notes) values($1,'Trípode de estudio','Accesorio',$2,150000,'Revisión técnica','1','Retirado del inventario activo; pendiente de revisión técnica.') returning id",[org,categories.get('Accesorio')])).rows[0].id;
  await c.query("insert into agency_archived_records(organization_id,kind,record_id,removed_by) values($1,'inventory',$2,$3)",[org,archived,userId]);
+ await seedDemoReports(c,{organizationId:org,userId});
  // Rolling history includes the current and previous month, never fixed calendar dates.
  for(let day=0;day<60;day++)for(const [name,count]of [['page_view',day<30?18+(day%8):9+(day%5)],['mobile_view',day<30?10:5],['whatsapp_click',day%3+1]]){
   await c.query('insert into events(organization_id,name,metadata,event_date) select $1,$2,\'{"demo":true}\'::jsonb,current_date-$3::int from generate_series(1,$4::int)',[org,name,day,count]);

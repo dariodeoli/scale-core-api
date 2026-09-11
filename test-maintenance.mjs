@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {randomUUID, createHash} from 'node:crypto';
 import {PGlite} from '@electric-sql/pglite';
-import {demoOrganization, seedPrivateDemo} from './demo-session.js';
+import {demoOrganization} from './demo-session.js';
 import {runMaintenance as maintenance, maintenanceSettings, startMaintenance} from './maintenance.js';
 
 // Synthetic receipt is exclusively a unit-test fixture; no external backup was verified.
@@ -22,14 +22,13 @@ for (const name of ['20260908_client_payment_status', '20260908_treasury_ledger'
  '20260910_client_links', '20260910_client_lifecycle', '20260910_ruc_lookup', '20260910_presence',
  '20260910_invite_links', '20260910_currencies', '20260910_global_identity', '20260910_project_assignees',
  '20260910_live_visitors', '20260910_company_currency', '20260910_inventory_reservations',
- '20260910_work_checklists']) await pg.exec(await fs.readFile(`migrations/${name}.sql`, 'utf8'));
+ '20260910_work_checklists','20260911_agency_reports']) await pg.exec(await fs.readFile(`migrations/${name}.sql`, 'utf8'));
 const query = (s, v) => pg.query(s, v), c = {query};
 const db = {connect: async () => ({query, release() {}})};
 const insert = async (s, v) => (await query(s + ' returning id', v)).rows[0].id;
 const count = async (table, org) => (await query(`select count(*)::int as n from ${table}${org ? ' where organization_id=$1' : ''}`, org ? [org] : [])).rows[0].n;
 const owner = await insert("insert into users(email,password_hash) values('maintenance-owner@example.invalid','canonical')");
-// The seed builds a new organization's catalog. Do not run it over Scale's
-// pre-existing migration catalog; this protected real-company fixture is fresh.
+// A synthetic non-demo tenant, independent of the private-demo fixture builder.
 const real = await insert("insert into organizations(slug,name) values('maintenance-real-fixture','Protected real fixture')");
 const template = await insert("insert into organizations(slug,name) values('scale-demo-controles-20260908','Template')");
 await query("insert into organization_members(organization_id,user_id,role) values($1,$3,'owner'),($2,$3,'owner')", [real, template, owner]);
@@ -47,12 +46,25 @@ async function fixture(full = false) {
  await query('insert into agency_demo_sessions(demo_key,user_id,organization_id) values($1,$2,$3)', [randomUUID(), owner, org]);
  await expired(org); return org;
 }
-// Real financial data is synthetic test-only, but must remain byte-for-byte intact.
-await seedPrivateDemo(c, real, owner);
+// Representative non-demo data exists only in PGlite and must remain unchanged.
+// Production demo seeding requires a newly created private demo transaction;
+// never relax its guard to populate this protected tenant.
 await query("select set_config('app.current_user',$1,false),set_config('app.current_organization',$2,false)", [String(owner), String(real)]);
+const realClient = await insert("insert into agency_clients(organization_id,name) values($1,'Protected fixture client')", [real]);
+const realCash = await insert("insert into bank_accounts(organization_id,name,account_type,currency) values($1,'Fixture cash','cash','PYG')", [real]);
+const realBank = await insert("insert into bank_accounts(organization_id,name,account_type,currency) values($1,'Fixture bank','bank','PYG')", [real]);
+const realInvoice = await insert("insert into agency_invoices(organization_id,client_id,number,total,currency) values($1,$2,'FIXTURE-001',1000000,'PYG')", [real, realClient]);
+await query("insert into agency_payments(organization_id,invoice_id,account_id,amount,received_by_user_id,reference) values($1,$2,$3,600000,$4,'Synthetic receipt')", [real, realInvoice, realCash, owner]);
+await query("insert into account_transfers(organization_id,from_account_id,to_account_id,amount,created_by_user_id,reference) values($1,$2,$3,200000,$4,'Synthetic transfer')", [real, realCash, realBank, owner]);
+const realProject = await insert("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Protected fixture project')", [real, realClient]);
+await query("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Protected fixture piece')", [real, realProject]);
+assert.deepEqual((await query('select balance::text from bank_accounts where id in ($1,$2) order by id', [realCash, realBank])).rows, [{balance: '400000.00'}, {balance: '200000.00'}]);
+assert.deepEqual((await query('select status,paid_amount::text from agency_invoices where id=$1', [realInvoice])).rows, [{status: 'partial', paid_amount: '600000.00'}]);
+for (const table of ['agency_clients','agency_payments','account_transfers','agency_projects','agency_work_orders','agency_reporting_coverage','agency_client_reporting_events'])
+ assert.ok(await count(table, real), `protected fixture must contain ${table}`);
 await query("insert into user_personal_identities(user_id,full_name) values($1,'Canonical identity')", [owner]);
 const identitiesBefore = (await query('select * from user_personal_identities order by user_id')).rows;
-const protectedTables = ['organizations','users','organization_members','sessions','bank_accounts','agency_invoices','agency_payments','account_transfers','agency_inventory_categories','agency_inventory','agency_inventory_reservations','agency_work_checklists','agency_work_checklist_items'];
+const protectedTables = ['organizations','users','organization_members','sessions','agency_clients','agency_projects','agency_work_orders','bank_accounts','agency_invoices','agency_payments','account_transfers','agency_reporting_coverage','agency_client_reporting_events','agency_inventory_categories','agency_inventory','agency_inventory_reservations','agency_work_checklists','agency_work_checklist_items'];
 const capture = async () => Object.fromEntries(await Promise.all(protectedTables.filter(t => t !== 'users').map(async t =>
  [t, (await query(`select * from ${t} where ${t === 'organizations' ? 'id' : 'organization_id'} in ($1,$2,22) order by 1`, [real, template])).rows])));
 const baseline = await capture();

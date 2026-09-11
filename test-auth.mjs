@@ -11,6 +11,7 @@ for(const f of ['20260908_daily_controls.sql','20260910_productivity.sql','20260
 for(const f of ['20260910_company_currency.sql','20260910_global_identity.sql','20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const query=(s,v)=>db.query(s,v);
 for(const f of ['20260911_subscriptions.sql','20260911_trial_registration.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
+for(const f of ['20260910_client_lifecycle.sql','20260911_agency_reports.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const org=(await query("insert into organizations(slug,name) values('other','Another agency') returning id")).rows[0].id;
 const scale=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('member@example.invalid','unused') returning id")).rows[0].id;

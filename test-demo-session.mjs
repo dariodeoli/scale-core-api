@@ -9,7 +9,7 @@ assert(start>=0&&end>start);
 const migrations=[...server.slice(start,end).matchAll(/(2026\d{4}_[a-z0-9_]+\.sql)/g)].map(m=>m[1]).filter(f=>f!=='20260908_dadoo_hub.sql');
 for(const name of ['20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql'])assert(migrations.includes(name));
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
-await pg.exec("set timezone to 'UTC'");
+await pg.exec("set timezone to 'America/Asuncion'");
 for(const name of migrations)await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 const c={query:(s,v)=>pg.query(s,v)};
 const source=(await c.query("insert into organizations(slug,name) values('scale-demo-controles-20260908','Demo') returning id")).rows[0].id;
@@ -49,7 +49,7 @@ for(const demo of [first,second,nextLogin]){
  assert.equal(await scalar("select count(*)::int n from agency_inventory_reservation_items a join agency_inventory_reservation_items b on a.inventory_id=b.inventory_id and a.reservation_id<b.reservation_id and a.starts_at<b.ends_at and b.starts_at<a.ends_at where a.organization_id=$1"),0);
  assert.equal(await scalar("select count(*)::int n from agency_inventory_reservation_items r join agency_archived_records a on a.organization_id=r.organization_id and a.kind='inventory' and a.record_id=r.inventory_id where r.organization_id=$1"),0);
 }
-const tenantTables=['agency_clients','agency_projects','agency_work_orders','agency_project_assignees','agency_work_order_assignees','agency_work_checklists','agency_work_checklist_items','agency_inventory_categories','agency_inventory','agency_inventory_reservations','agency_inventory_reservation_members','agency_inventory_reservation_items','organization_members','agency_user_profiles','agency_collaborators'];
+const tenantTables=['agency_clients','agency_projects','agency_work_orders','agency_project_assignees','agency_work_order_assignees','agency_work_checklists','agency_work_checklist_items','agency_inventory_categories','agency_inventory','agency_inventory_reservations','agency_inventory_reservation_members','agency_inventory_reservation_items','organization_members','agency_user_profiles','agency_collaborators','agency_invoices','agency_payments','bank_accounts','agency_reporting_coverage','agency_client_reporting_events'];
 const snapshot=async org=>Object.fromEntries(await Promise.all(tenantTables.map(async table=>[table,(await c.query(`select to_jsonb(t)::text as row from ${table} t where organization_id=$1 order by to_jsonb(t)::text`,[org])).rows])));
 const firstOrder=(await c.query('select id from agency_work_orders where organization_id=$1 order by id limit 1',[first])).rows[0].id;
 await c.query("update agency_work_orders set assigned_user_id=$1,title='Edición conservada' where organization_id=$2 and id=$3",[users[0],first,firstOrder]);
@@ -67,7 +67,10 @@ assert.equal((await c.query('select count(*)::int as n from agency_clients where
 assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[source])).rows[0].n,0);
 assert.equal((await c.query('select count(*)::int as n from organization_members where organization_id=$1',[first])).rows[0].n,6);
 const accounts=(await c.query("select balance from bank_accounts where organization_id=$1 and currency='PYG' order by id",[first])).rows;
-assert.equal(Number(accounts[0].balance),35250000);assert.equal(Number(accounts[1].balance),1000000);
+const pastReceipts=(await c.query("select coalesce(sum(p.amount),0)::text total from agency_payments p join agency_invoices i on i.id=p.invoice_id and i.organization_id=p.organization_id where p.organization_id=$1 and i.currency='PYG' and i.number like 'DEMO-REPORTS-V1-%'",[first])).rows[0];
+assert(BigInt(pastReceipts.total.split('.')[0])>0n,'new demo includes past receipts');
+assert.equal(BigInt(accounts[0].balance.split('.')[0]),35250000n+BigInt(pastReceipts.total.split('.')[0]),'current cash plus historical receipts reconcile exactly');
+assert.equal(Number(accounts[1].balance),1000000);
 const continental=(await c.query("select name,institution,account_number,holder_name from bank_accounts where organization_id=$1 and account_number='310056630007'",[first])).rows[0];
 assert.equal(continental.name,'Banco Continental · Caja de ahorro en guaraníes');
 assert.equal(continental.institution,'Banco Continental');

@@ -8,6 +8,7 @@ for(const f of ['20260908_treasury_ledger.sql','20260908_google_oauth.sql','2026
 await pg.exec(await fs.readFile('migrations/20260910_invite_links.sql','utf8'));await pg.exec(await fs.readFile('migrations/20260910_currencies.sql','utf8'));
 for(const file of ['20260910_company_currency.sql','20260910_global_identity.sql','20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const query=(s,v)=>pg.query(s,v),db={query,connect:async()=>({query,release(){}})};
+for(const file of ['20260910_client_lifecycle.sql','20260911_agency_reports.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const owner=(await query("insert into users(email,password_hash) values('owner@example.invalid','!') returning id")).rows[0].id;
 await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org,owner]);
