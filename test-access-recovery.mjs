@@ -89,10 +89,12 @@ try{
  await query('update organization_members set active=false where user_id=$1',[approved.user]);
  assert.equal((await status(approved.cookie)).status,'unavailable');
  assert.equal((await rows('select status from agency_access_requests where id=$1',[approved.id]))[0].status,'approved');
- const oldLink=await invitation(),old=await applicant(oldLink,'existing-access@example.invalid');
- await query("insert into organization_members(organization_id,user_id,role,active) values($1,$2,'viewer',false)",[org,old.user]);
- assert.equal((await status(old.cookie)).unavailableReason,'existing_access');assert.equal((await list()).find(r=>String(r.id)===String(old.id)).status,'unavailable');
- assert.equal((await decide(old.id,'approve')).status,409);
+ const oldLink=await invitation('production'),old=await applicant(oldLink,'existing-access@example.invalid');
+ await query("insert into organization_members(organization_id,user_id,role,active,removed_at) values($1,$2,'viewer',false,now())",[org,old.user]);
+ assert.equal((await status(old.cookie)).status,'pending','a suspended member with a fresh invitation must keep seeing the approval wait state');
+ assert.equal((await list()).find(r=>String(r.id)===String(old.id)).status,'pending','owners must be able to approve a suspended member again');
+ assert.equal((await decide(old.id,'approve')).status,200);
+ assert.deepEqual((await rows('select role,active,removed_at from organization_members where user_id=$1 and organization_id=$2',[old.user,org]))[0],{role:'production',active:true,removed_at:null});
  const inactiveLink=await invitation(),inactive=await applicant(inactiveLink,'inactive-org@example.invalid');
  await query('update organizations set active=false where id=$1',[org]);assert.equal((await status(inactive.cookie)).unavailableReason,'organization_unavailable');
  await query('update organizations set active=true where id=$1',[org]);
