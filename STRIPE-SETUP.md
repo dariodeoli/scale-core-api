@@ -144,8 +144,15 @@ Si faltan menos de 49 horas pero la prueba no terminó, devuelve
 `409 BILLING_TRIAL_ENDING`: la UI debe indicar volver al finalizar. No hay cobro
 adelantado ni ampliación gratuita para sortear esa limitación.
 
-Cada intento guarda parámetros inmutables **antes** de la llamada externa y usa
-la misma clave de idempotencia. Repetir el botón recupera la sesión abierta. Una
+Antes de guardar un intento nuevo, se consulta y valida el precio activo bajo el
+bloqueo de la fila de suscripción de la agencia. Un precio inválido/inactivo o un
+timeout en esa consulta no deja intentos guardados; al reintentar se calcula un
+vencimiento nuevo, conservando el fin original del trial.
+Cada intento guarda parámetros inmutables **antes** de solicitar la creación de
+Checkout y usa la misma clave de idempotencia. Los intentos existentes omiten esa
+validación previa y conservan sus parámetros, incluso si la respuesta de creación
+se perdió: no se reemplaza una operación cuyo resultado pueda ser incierto.
+Repetir el botón recupera la sesión abierta. Una
 sesión cuya expiración se verifica se cierra localmente y responde
 `409 BILLING_CHECKOUT_EXPIRED`; el siguiente clic puede crear otro intento, con
 el fin de trial original. Resultado desconocido por más de 23 horas devuelve

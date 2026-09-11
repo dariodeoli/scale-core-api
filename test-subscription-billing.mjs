@@ -24,14 +24,16 @@ async function call(path,method='GET',payload={},user=null,req=null){
 const state=(user,at=clock)=>subscriptionState(db,user,new Date(at));
 const post=(user,body={})=>call('/api/billing/checkout','POST',body,user);
 const wire=[],sessions=new Map(),subscriptions=new Map(),invoices=new Map(),keys=new Map();
-let badPrice=false,failNext=false,loseCheckoutResponse=false,invalidCheckoutUrl=false,invalidPortalUrl=false;
+let badPrice=false,inactivePrice=false,failNext=false,loseCheckoutResponse=false,invalidCheckoutUrl=false,invalidPortalUrl=false;
 const price=currency=>({id:currency==='USD'?'price_usd':'price_pyg',object:'price',product:'prod_scale',active:true,livemode:false,type:'recurring',billing_scheme:'per_unit',currency:currency.toLowerCase(),unit_amount:currency==='USD'?1000:50000,recurring:{interval:'month',interval_count:1,usage_type:'licensed'}});
 async function mockStripe(input,options){
  const url=new URL(input);assert.equal(url.origin,'https://api.stripe.com');assert.equal(options.redirect,'error');assert.equal(options.headers['Stripe-Version'],'2025-03-31.basil');assert.equal(options.headers.Authorization,`Bearer ${settings.STRIPE_SECRET_KEY}`);
  const path=url.pathname.replace('/v1/',''),params=Object.fromEntries(options.body||[]);wire.push({path,params,method:options.method,key:options.headers['Idempotency-Key']});
  if(failNext){failNext=false;throw new Error('Fixture timeout');}
  let result;
- if(path.startsWith('prices/')){result=price(path.endsWith('price_usd')?'USD':'PYG');if(badPrice)result={...result,unit_amount:1};}
+ if(path.startsWith('prices/')){
+  result=price(path.endsWith('price_usd')?'USD':'PYG');if(badPrice)result={...result,unit_amount:1};if(inactivePrice)result={...result,active:false};
+ }
  else if(path==='checkout/sessions'){
   const key=options.headers['Idempotency-Key'];assert(key);
   if(keys.has(key)){const old=keys.get(key);assert.deepEqual(params,old.params,'retried request uses identical persisted parameters');result=sessions.get(old.id);}
@@ -118,18 +120,42 @@ try{
  const beforeCurrency=wire.length;assert.equal((await post(owner,{currency:'PYG'})).data.code,'BILLING_CURRENCY_LOCKED');assert.equal(wire.length,beforeCurrency);
  assert.equal((await query('select count(*)::int as n from subscription_checkout_attempts where organization_id=$1',[owner.organization_id])).rows[0].n,0);
  badPrice=true;assert.equal((await post(owner)).data.code,'BILLING_PRICE_MISMATCH');badPrice=false;
+ assert.equal((await query('select count(*)::int as n from subscription_checkout_attempts where organization_id=$1',[owner.organization_id])).rows[0].n,0,'invalid price leaves no attempt to expire');
+ inactivePrice=true;assert.equal((await post(owner)).data.code,'BILLING_PRICE_MISMATCH');inactivePrice=false;
+ assert.equal((await query('select count(*)::int as n from subscription_checkout_attempts where organization_id=$1',[owner.organization_id])).rows[0].n,0,'inactive price leaves no attempt either');
  assert.equal(wire.filter(r=>r.path==='checkout/sessions').length,0,'invalid price cannot create checkout');
+ clock+=31*60000;
  const simultaneous=await Promise.all([post(owner,{currency:'USD'}),post(owner,{currency:'USD'})]);assert(simultaneous.every(r=>r.status===200),JSON.stringify(simultaneous));assert.equal(simultaneous[0].data.url,simultaneous[1].data.url);assert.equal(wire.filter(r=>r.path==='checkout/sessions').length,1);
+ assert.equal((await query('select count(*)::int as n from subscription_checkout_attempts where organization_id=$1',[owner.organization_id])).rows[0].n,1,'corrected price after 31 minutes creates one serialized attempt');
  const afterPending=wire.length;assert.equal((await post(owner,{currency:'PYG'})).data.code,'BILLING_CURRENCY_LOCKED');assert.equal(wire.length,afterPending,'currency cannot change with an open checkout either');
  const usdPost=wire.find(r=>r.path==='checkout/sessions');assert.equal(usdPost.params['line_items[0][price]'],'price_usd');assert.equal(usdPost.params['subscription_data[trial_end]'],String(Math.floor(trialEnd/1000)));assert(!Object.hasOwn(usdPost.params,'subscription_data[trial_period_days]'));
+ assert.equal(Number(usdPost.params.expires_at),Math.floor(clock/1000)+1800,'new expiration is based on the successful validation time');
  assert.equal(usdPost.params['line_items[0][quantity]'],'1','all eight agency members are included, never billed as seats');
  assert.equal((await query('select count(*)::int as n from organization_subscriptions where organization_id=$1',[owner.organization_id])).rows[0].n,1,'one subscription per agency, not one per member');
  assert.match(usdPost.params['custom_text[submit][message]'],/mensual recurrente: 10 USD/);
+ const beforePriceTimeout=wire.length;failNext=true;assert.equal((await post(other,{currency:'PYG'})).data.code,'BILLING_PROVIDER_UNAVAILABLE');
+ assert.deepEqual(wire.slice(beforePriceTimeout).map(r=>r.path),['prices/price_pyg'],'timeout occurs during price lookup, before checkout creation');
+ assert.equal((await query('select count(*)::int as n from subscription_checkout_attempts where organization_id=$1',[other.organization_id])).rows[0].n,0,'price lookup timeout leaves no uncertain creation');
+ clock+=31*60000;
  assert.equal((await post(other,{currency:'PYG'})).status,200);assert.equal(wire.filter(r=>r.path==='checkout/sessions').at(-1).params['line_items[0][price]'],'price_pyg');
+ assert.equal(Number(wire.filter(r=>r.path==='checkout/sessions').at(-1).params.expires_at),Math.floor(clock/1000)+1800,'price timeout retry gets a fresh expiration');
+ console.log('PASS: invalid/inactive price and price-lookup timeout leave zero attempts; corrected prices after 31 minutes create fresh checkout; overlapping requests share one attempt/session');
  await startTrial(db,near.organization_id);await query("update organization_subscriptions set trial_started_at=now()-interval '29 days',trial_ends_at=now()+interval '1 day',due_at=now()+interval '1 day' where organization_id=$1",[near.organization_id]);
  assert.equal((await post(near)).data.code,'BILLING_TRIAL_ENDING');
- await startTrial(db,uncertain.organization_id);loseCheckoutResponse=true;assert.equal((await post(uncertain)).status,503);const beforeKeys=keys.size;assert.equal((await post(uncertain)).status,200);assert.equal(keys.size,beforeKeys,'lost provider response is recovered with same idempotency key');
- await complete(uncertain,'USD',true);
+ await startTrial(db,uncertain.organization_id);loseCheckoutResponse=true;assert.equal((await post(uncertain)).status,503);
+ const uncertainAttempt=(await query('select * from subscription_checkout_attempts where organization_id=$1',[uncertain.organization_id])).rows[0];
+ assert.equal(uncertainAttempt.stripe_session_id,null);assert.equal(uncertainAttempt.closed,false);
+ const firstCreation=wire.at(-1);assert.equal(firstCreation.path,'checkout/sessions');assert.deepEqual(firstCreation.params,uncertainAttempt.parameters);
+ const beforeKeys=keys.size,beforeSessions=sessions.size,beforeRetry=wire.length;
+ clock+=60000;badPrice=true;assert.equal((await post(uncertain)).status,200);badPrice=false;
+ assert.deepEqual(wire.slice(beforeRetry).map(r=>r.path),['checkout/sessions'],'uncertain creation retries bypass fresh price validation');
+ assert.deepEqual(wire.at(-1),firstCreation,'retry preserves idempotency key and every immutable parameter');
+ assert.equal(keys.size,beforeKeys);assert.equal(sessions.size,beforeSessions,'lost response cannot create a second checkout');
+ const recovered=(await query('select * from subscription_checkout_attempts where organization_id=$1',[uncertain.organization_id])).rows;
+ assert.equal(recovered.length,1);assert.equal(recovered[0].id,uncertainAttempt.id);assert.deepEqual(recovered[0].parameters,uncertainAttempt.parameters);
+ const beforeSubscriptions=subscriptions.size;await complete(uncertain,'USD',true);
+ assert.equal((await post(uncertain)).data.code,'BILLING_USE_PORTAL');assert.equal(subscriptions.size,beforeSubscriptions+1);assert.equal(sessions.size,beforeSessions,'completed retry cannot create a second subscription checkout');
+ console.log('PASS: uncertain checkout creation keeps committed parameters and idempotency key despite later price mismatch; one session and one linked subscription');
  await startTrial(db,badUrl.organization_id);invalidCheckoutUrl=true;assert.equal((await post(badUrl)).status,503);invalidCheckoutUrl=false;
  const binding=await complete(owner),pygBinding=await complete(other,'PYG');
  assert.equal((await post(owner)).data.code,'BILLING_USE_PORTAL');

@@ -1,5 +1,17 @@
 # Scale OS — seguimiento de entregas
 
+## Primer ingreso, filtros y reintento de checkout — 11-09-2026
+
+Candidato verificado, pendiente de confirmar publicación: guía inicial compacta y opcional, basada en permisos y datos confirmados; no infiere tareas completadas de errores, consultas pendientes o ejemplos demo. Preferencias locales por persona/empresa para abrir Resumen, Producción o Mi día, sin cambiar destinos explícitos. Filtros guardados del tablero por cliente, asignación propia y semana del calendario local; restablecimiento explícito y aviso si el cliente dejó de existir o el navegador impide guardar.
+
+Buscador dirige órdenes a Producción, no Resumen; icono de marca servido desde la propia app. La carga inicial captura la identidad autenticada. Cargas reemplazadas, cierre explícito, vencimiento 401 y suspensión descartan respuestas operativas atrasadas; cierre y 401 comparten limpieza del estado de sesión.
+
+Checkout: se valida el precio antes de crear un nuevo intento persistente. Una configuración inválida corregida después de 30 minutos no deja atrapado el próximo intento en un vencimiento antiguo. Un resultado incierto conserva el intento, los parámetros y la clave de idempotencia originales. Stripe continúa desactivado; Dario confirmó que todavía no tiene la cuenta y la preparará después. Sin credenciales nuevas, cargos, correos, invitaciones ni migraciones.
+
+Verificación sobre exportaciones limpias: **135 resultados frontend aprobados**, compilación y tipos de **41 rutas**, **30 suites backend aprobadas**. Billing: 94 casos con Stripe simulado y PGlite; no se acredita concurrencia PostgreSQL real de checkout ni pagos del proveedor. Revisión independiente de interfaz y checkout cerrada después de corregir el vencimiento 401 y reforzar su regresión. No se ejecutaron pruebas visuales/móvil ni dos navegadores: continúa el bloqueo administrativo. Cambios ajenos WEEM/Dadoo fuera del candidato.
+
+Publicar API y luego interfaz; confirmar commits exactos, estado de despliegue y salud. Reversión de código ante fallo de salud/autenticación/guardado: API runtime `bca35b87f2526253c12b96c7593e812369a7dfb6`, interfaz `0f7c4ce98b525cea57f3dd16c4920c0bd6709e33`. Conservar base de datos. R2, purgas y demás dependencias externas siguen pendientes, sin reintentos.
+
 ## Cierre adicional de guardado y acceso
 
 Publicación confirmada: API `bca35b87f2526253c12b96c7593e812369a7dfb6`, despliegue `24acbtthwdp74odt24p9hoht` finalizado el 11-09-2026 a las 02:33:03 UTC; interfaz `0f7c4ce98b525cea57f3dd16c4920c0bd6709e33`, despliegue `a3cvhezduz3zuhwvlnral0ed` finalizado a las 02:38:27 UTC. Noche del 10-09 en Paraguay. API publicada antes de interfaz, commits exactos confirmados; ambos servicios `running:healthy`, `/health` HTTP 200 con database `ready`. Esta comprobación no acredita QA visual ni monitoreo extendido.

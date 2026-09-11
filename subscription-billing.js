@@ -97,7 +97,7 @@ async function verifyCheckout(c,cfg,row,attempt,session){
 }
 
 async function checkout(db,user,cfg,requestedCurrency){
- // Prepare and COMMIT the immutable request before contacting Stripe, so a
+ // Prepare and COMMIT the immutable request before creating Checkout, so a
  // response lost after provider success is retried with the same key/parameters.
  const prepared=await transaction(db,async c=>{
   const org=await actor(c,user,true);if(demo(org))fail('Las demos están exentas de cobro',409,'BILLING_DEMO');
@@ -106,6 +106,10 @@ async function checkout(db,user,cfg,requestedCurrency){
   if(row.stripe_subscription_id)fail('La suscripción ya existe; usá el portal',409,'BILLING_USE_PORTAL');
   const previous=(await c.query('select * from subscription_checkout_attempts where organization_id=$1 and not closed',[org.id])).rows[0];
   if(previous)return previous;
+  // Validate NEW attempts while holding the organization lock. A failed price
+  // lookup cannot leave an expiring request behind; uncertain creations above
+  // must retain their committed parameters and bypass this preflight on retry.
+  const price=await stripe(cfg,`prices/${cfg.prices[row.currency]}`);priceValid(price,row,cfg);if(!price.active)fail('Precio no disponible',409,'BILLING_PRICE_MISMATCH');
   const seconds=Math.floor(new Date(row.trial_ends_at).getTime()/1000),now=Math.floor(Date.now()/1000),remaining=seconds-now;
   // Checkout's minimum trial window is not permission to extend our trial or
   // charge before it ends. Owners can return when the original trial finishes.
@@ -128,7 +132,6 @@ async function checkout(db,user,cfg,requestedCurrency){
   else{
    if(Date.now()-new Date(attempt.created_at).getTime()>23*3600000)fail('Operación de resultado incierto; requiere conciliación antes de reintentar',409,'BILLING_RECONCILIATION_REQUIRED');
    if(attempt.parameters['line_items[0][price]']!==cfg.prices[row.currency])fail('La configuración cambió; requiere conciliación',409,'BILLING_RECONCILIATION_REQUIRED');
-   const price=await stripe(cfg,`prices/${cfg.prices[row.currency]}`);priceValid(price,row,cfg);if(!price.active)fail('Precio no disponible',409,'BILLING_PRICE_MISMATCH');
    session=await stripe(cfg,'checkout/sessions',attempt.parameters,`scale-checkout-${attempt.id}`);
   }
   const sub=await verifyCheckout(c,cfg,row,attempt,session);
