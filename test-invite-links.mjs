@@ -46,4 +46,22 @@ assert.equal((await call('/api/public/contact','POST',payload,null,publicExperie
 assert.equal((await query("select count(*)::int as n from agency_leads where organization_id=$1 and email='qa@example.invalid'",[org])).rows[0].n,1);
 for(const currency of ['EUR','BRL','ARS','MXN'])await query("insert into bank_accounts(organization_id,name,account_type,currency) values($1,$2,'bank',$2)",[demoOrg,currency]);
 await assert.rejects(()=>query("insert into bank_accounts(organization_id,name,account_type,currency) values($1,'Bad','bank','XXX')",[demoOrg]));
-await pg.close();console.log('PASS: single-use consumption, approval without access, revocation, tenant/role boundaries, no role escalation, private public Demo, contact dedup and supported currencies');
+// Public status is authoritative and does not leak tenant or member data when unavailable.
+const previewLink=await make('approval');
+const previewPath='/api/invitations/preview?token='+previewLink.token;
+let preview=await call(previewPath,'GET',{},null);
+assert.equal(preview.link_status,'active');assert(preview.expires_at);
+assert.equal(preview.organization_name,'Scale Strategy Group');
+const clicks=(await query('select click_count from agency_invite_links where id=$1',[previewLink.id])).rows[0].click_count;
+for(const [sql,state] of [
+ ["update agency_invite_links set expires_at=now()-interval '1 second' where id=$1",'expired'],
+ ["update agency_invite_links set revoked_at=now() where id=$1",'revoked'],
+ ["update agency_invite_links set revoked_at=null,used_at=now() where id=$1",'used']
+]){
+ await query(sql,[previewLink.id]);preview=await call(previewPath,'GET',{},null);
+ assert.equal(preview.status,410);assert.equal(preview.link_status,state);
+ assert.equal(preview.organization_name,undefined);assert.equal(preview.role,undefined);
+}
+assert.equal((await query('select click_count from agency_invite_links where id=$1',[previewLink.id])).rows[0].click_count,clicks);
+assert.equal((await call('/api/invitations/preview?token='+'z'.repeat(43),'GET',{},null)).link_status,'unavailable');
+await pg.close();console.log('PASS: single-use consumption, approval without access, revocation, tenant/role boundaries, public status and expiration, no role escalation, private public Demo, contact dedup and supported currencies');

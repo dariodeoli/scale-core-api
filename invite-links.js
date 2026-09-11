@@ -14,9 +14,12 @@ export function accessRequestState(row){
 }
 export async function resolveInvite(db,token,{countVisit=false}={}){
  if(typeof token!=='string'||!/^[-\w]{43}$/.test(token))fail('Enlace inválido o vencido',410);
- const r=(await db.query(`select l.id,l.role,l.mode,o.name as organization_name from agency_invite_links l join organizations o on o.id=l.organization_id where l.token_hash=$1 and l.revoked_at is null and l.used_at is null and l.expires_at>now() and o.active=true and o.demo_owner_user_id is null`,[hash(token)])).rows[0];
- if(r&&countVisit)await db.query('update agency_invite_links set click_count=click_count+1 where id=$1',[r.id]);
- if(!r)fail('Enlace inválido, usado, revocado o vencido',410);return r;
+ const r=(await db.query(`select l.id,l.role,l.mode,l.expires_at,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,o.demo_owner_user_id,o.name as organization_name from agency_invite_links l join organizations o on o.id=l.organization_id where l.token_hash=$1`,[hash(token)])).rows[0];
+ // Use the database clock; never expose organization details for unavailable links.
+ const reason=!r||!r.organization_active||r.demo_owner_user_id?'unavailable':r.revoked_at?'revoked':r.used_at?'used':!r.link_valid?'expired':null;
+ if(reason)throw Object.assign(Error('Enlace no disponible. Pedí una nueva invitación al equipo.'),{status:410,link_status:reason});
+ if(countVisit)await db.query('update agency_invite_links set click_count=click_count+1 where id=$1',[r.id]);
+ return {id:r.id,role:r.role,mode:r.mode,organization_name:r.organization_name,expires_at:r.expires_at,link_status:'active'};
 }
 // Only called after Google verifies email AND the state cookie is checked.
 export async function claimInvite(c,linkId,profile){
@@ -104,5 +107,5 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
    await c.query('update agency_access_requests set status=$1,decided_at=now(),decided_by=$2 where id=$3',[b.action==='approve'?'approved':'rejected',user.id,key]);result={ok:true};
   }else fail('Método no permitido',405);
   await c.query('commit');send(res,200,result);return true;
- }catch(e){if(c)await c.query('rollback');send(res,e.status||500,{error:e.status?e.message:'No se pudo gestionar la invitación'});return true;}finally{c?.release();}
+ }catch(e){if(c)await c.query('rollback');send(res,e.status||500,{error:e.status?e.message:'No se pudo gestionar la invitación',...(!match&&e.status===410?{link_status:e.link_status||'unavailable'}:{})});return true;}finally{c?.release();}
 }

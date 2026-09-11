@@ -19,7 +19,7 @@ for(const file of migrations)await pg.exec(await fs.readFile(new URL('./migratio
 const query=(s,v)=>pg.query(s,v),rows=async(s,v)=>(await query(s,v)).rows;
 const insert=async(s,v)=>(await rows(s+' returning id',v))[0].id;
 let handler,calls=0,providerCalls=0,mode='success';
-const profile={email:'oauth-recovery@example.invalid',name:'OAuth Fixture',email_verified:true};
+const profile={email:'oauth-recovery@example.invalid',name:'OAuth Fixture',picture:'https://lh3.googleusercontent.com/fixture-photo',email_verified:true};
 async function google(url){
  providerCalls++;
  assert(['https://oauth2.googleapis.com/token','https://openidconnect.googleapis.com/v1/userinfo'].includes(url),'No external resource is allowed');
@@ -99,6 +99,8 @@ try{
    if(!pending){
     assert.equal((await membership(user)).role,kind==='active'?'viewer':'editor');
     assert.equal((await request('/api/auth/me',{cookie:signed.cookie})).status,200);
+    const personal=(await rows('select full_name,photo_url from user_personal_identities where user_id=$1',[user]))[0];
+    assert.equal(personal.full_name,profile.name);assert.equal(personal.photo_url,profile.picture);
     assert.equal(signed.path,'/');
     if(kind==='active'){
      assert.deepEqual(await membership(user),before,'existing active access must retain its role');
@@ -121,6 +123,7 @@ try{
    assert.deepEqual(await membership(user),{role:'editor',active:true,removed_at:null});
    assert.equal((await status(signed.cookie)).status,'approved');
    assert.equal((await request('/api/auth/me',{cookie:signed.cookie})).status,200);
+   assert.equal((await rows('select photo_url from user_personal_identities where user_id=$1',[user]))[0].photo_url,profile.picture);
    assert.equal((await decide(item.id,'approve')).status,409);
    const persisted=(await rows('select used_at,account_count from agency_invite_links where id=$1',[link.id]))[0];
    assert.equal(persisted.account_count,1);
@@ -241,5 +244,15 @@ try{
   assert.equal(directDetails.joined_users.length,1);
   assert.equal(directDetails.joined_users[0].email,directEmail);
   assert.equal(new Date(directDetails.joined_users[0].joined_at).getTime(),new Date(directMember.created_at).getTime());
+ });
+ await test('Google never replaces a chosen personal name or photo across organizations',async()=>{
+  const email='chosen-profile@example.invalid',link=await invitation('viewer','approval');
+  const user=await member(email,'active');
+  const first=await login(link,email);
+  const saved=await request('/api/agency/productivity/profile',{cookie:first.cookie,method:'PATCH',payload:{full_name:'Nombre elegido',photo_url:'https://example.invalid/chosen.webp'}});
+  assert.equal(saved.status,200);
+  await login(link,email);
+  const personal=(await rows('select full_name,photo_url from user_personal_identities where user_id=$1',[user]))[0];
+  assert.equal(personal.full_name,'Nombre elegido');assert.equal(personal.photo_url,'https://example.invalid/chosen.webp');
  });
 }finally{await pg.close();}

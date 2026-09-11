@@ -22,7 +22,8 @@ import {projectAssignees} from './project-assignees.js';
 import {startMaintenance} from './maintenance.js';
 import {inventoryReservations} from './inventory-reservations.js';
 import {workChecklists} from './work-checklists.js';
-import {ensurePersonalIdentity} from './identity-session.js';
+import {ensurePersonalIdentity,ensurePersonalIdentityInTransaction} from './identity-session.js';
+import {rememberGooglePhoto} from './google-profile-photo.js';
 import {liveVisitors,startLiveVisitorCleanup} from './live-visitors.js';
 import { productivity } from './productivity.js';
 import {rucLookup} from './ruc-lookup.js';
@@ -107,6 +108,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_drive_links.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_invite_link_metrics.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_invite_link_details.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260911_google_profile_photo.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -268,14 +270,14 @@ const server = http.createServer(async (req,res) => {
       if (!email || profile.email_verified !== true) return oauthFailure('Google no confirmó un correo verificado.');
       if(saved.rows[0].trial_company){
         const c=await db.connect();let account;
-        try{await c.query('begin');account=await registerTrial(c,profile,{name:saved.rows[0].trial_company,currency:saved.rows[0].trial_currency});await c.query('commit');}
+        try{await c.query('begin');account=await registerTrial(c,profile,{name:saved.rows[0].trial_company,currency:saved.rows[0].trial_currency});await rememberGooglePhoto(c,account.userId,profile);if(profile.picture||profile.name)await ensurePersonalIdentityInTransaction(c,account.userId,account.organizationId);await c.query('commit');}
         catch(e){await c.query('rollback');res.writeHead(302,{Location:`${appUrl}/registro?error=${encodeURIComponent(e.status?e.message:'No se pudo iniciar la prueba. Intentá nuevamente.')}`});return res.end();}finally{c.release();}
         const ticket=id();await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at,trial_registration) values($1,$2,$3,now()+interval '60 seconds',true)",[crypto.createHash('sha256').update(ticket).digest('hex'),account.userId,account.organizationId]);
         res.writeHead(302,{Location:`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
       }
       if(saved.rows[0].invite_link_id){
         const c=await db.connect();let claim;
-        try{await c.query('begin');await c.query("select set_config('app.current_user','google-invitation',true)");claim=await claimInvite(c,saved.rows[0].invite_link_id,profile);await c.query('commit');}
+        try{await c.query('begin');await c.query("select set_config('app.current_user','google-invitation',true)");claim=await claimInvite(c,saved.rows[0].invite_link_id,profile);await rememberGooglePhoto(c,claim.userId,profile);if(profile.picture||profile.name)await ensurePersonalIdentityInTransaction(c,claim.userId,claim.organizationId);await c.query('commit');}
         catch(e){await c.query('rollback');res.writeHead(302,{Location:`${appUrl}/invitacion?error=${encodeURIComponent(e.status?e.message:'No se pudo aceptar el enlace')}`});return res.end();}finally{c.release();}
         const ticket=id();await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),claim.userId,claim.organizationId]);
         res.writeHead(302,{Location:`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
@@ -283,6 +285,8 @@ const server = http.createServer(async (req,res) => {
       const member = await db.query('select u.id,m.organization_id from users u join organization_members m on m.user_id=u.id join organizations o on o.id=m.organization_id where u.email=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name',[email]);
       if(!member.rows.length){const pending=await db.query("select u.id,l.organization_id from users u join agency_access_requests r on r.user_id=u.id join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id where u.email=$1 and r.status='pending' and o.active=true order by r.created_at desc limit 1",[email]);member.rows=pending.rows;}
       if (!member.rows[0]) { res.writeHead(302,{Location:`${appUrl}/?authError=${encodeURIComponent('Tu correo de Google todavía no fue invitado a esta empresa. Pedí una invitación al administrador.')}`}); return res.end(); }
+      await rememberGooglePhoto(db,member.rows[0].id,profile);
+      if(profile.picture||profile.name)await ensurePersonalIdentity(db,member.rows[0].id,member.rows[0].organization_id);
       const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
       res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)}); return res.end();
     }

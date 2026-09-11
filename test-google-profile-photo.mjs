@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {googleProfilePhoto,rememberGooglePhoto} from './google-profile-photo.js';
+const profile={email:'person@example.invalid',email_verified:true,name:'Nombre Google',picture:'https://lh3.googleusercontent.com/a/photo'};
+assert.equal(googleProfilePhoto(profile),profile.picture);
+for(const picture of ['http://lh3.googleusercontent.com/a','https://googleusercontent.com.attacker.test/a','https://lh3.googleusercontent.com@attacker.test/a','data:image/png;base64,AAAA','https://127.0.0.1/a','javascript:alert(1)'])assert.equal(googleProfilePhoto({...profile,picture}),null);
+assert.equal(googleProfilePhoto({...profile,email_verified:false}),null);
+let writes=0;
+await rememberGooglePhoto({query:async()=>{writes++;}},1,{...profile,email_verified:false});assert.equal(writes,0);
+await rememberGooglePhoto({query:async(sql,args)=>{assert(sql.includes('not is_demo_guest'));assert.equal(args[0],profile.picture);assert.equal(args[3],profile.name);writes++;}},1,profile);
+assert.equal(writes,1);
+console.log('PASS: Google picture origin, verified profile and no arbitrary image fetch');

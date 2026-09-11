@@ -23,7 +23,7 @@ export async function ensurePersonalIdentityInTransaction(c,userId,orgId){
  const prior=(await c.query("select current_setting('app.current_user',true) as actor,current_setting('app.current_organization',true) as organization")).rows[0];
  await c.query("select set_config('app.current_user',$1,true),set_config('app.current_organization',$2,true)",[user,org]);
  await c.query(`insert into user_personal_identities(user_id,full_name,photo_url,updated_at)
-  select u.id,coalesce(p.full_name,left(trim(u.email),120)),p.photo_url,coalesce(p.updated_at,now())
+  select u.id,coalesce(nullif(p.full_name,u.email),nullif(to_jsonb(u)->>'google_full_name',''),p.full_name,left(trim(u.email),120)),coalesce(nullif(p.photo_url,''),to_jsonb(u)->>'google_photo_url'),coalesce(p.updated_at,now())
   from users u
   left join lateral (
    select trim(p.full_name) as full_name,p.photo_url,p.updated_at
@@ -36,6 +36,13 @@ export async function ensurePersonalIdentityInTransaction(c,userId,orgId){
    where i.user_id=u.id and i.organization_id=$2 and not i.is_demo)
    and length(coalesce(p.full_name,left(trim(u.email),120))) between 2 and 120
   on conflict(user_id) do nothing returning user_id`,[user,org]);
+ // Fill only an absent photo, under the same owner lock. Never replace a chosen photo.
+ await c.query(`update user_personal_identities g set photo_url=to_jsonb(u)->>'google_photo_url',updated_at=now()
+  from users u where g.user_id=$1 and u.id=g.user_id and nullif(g.photo_url,'') is null
+  and nullif(to_jsonb(u)->>'google_photo_url','') is not null`,[user]);
+ await c.query(`update user_personal_identities g set full_name=to_jsonb(u)->>'google_full_name',updated_at=now()
+  from users u where g.user_id=$1 and u.id=g.user_id and (g.full_name=u.email or nullif(trim(g.full_name),'') is null)
+  and length(to_jsonb(u)->>'google_full_name') between 2 and 120`,[user]);
  // Do not change the enclosing login/switch transaction's audit identity.
  // On a SQL error the caller must roll back, so no query runs in an aborted tx.
  await c.query("select set_config('app.current_user',$1,true),set_config('app.current_organization',$2,true)",[prior.actor||'',prior.organization||'']);
