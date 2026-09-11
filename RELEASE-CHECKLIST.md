@@ -2,7 +2,9 @@
 
 ## Primer ingreso, filtros y reintento de checkout — 11-09-2026
 
-Candidato verificado, pendiente de confirmar publicación: guía inicial compacta y opcional, basada en permisos y datos confirmados; no infiere tareas completadas de errores, consultas pendientes o ejemplos demo. Preferencias locales por persona/empresa para abrir Resumen, Producción o Mi día, sin cambiar destinos explícitos. Filtros guardados del tablero por cliente, asignación propia y semana del calendario local; restablecimiento explícito y aviso si el cliente dejó de existir o el navegador impide guardar.
+Publicación confirmada: API `63e492fd2bfff90a2284ca5e8e2f5920fc6c5518`, despliegue `ln8x5gtir1jkzj2g5tjzy56s`, finalizado el 11-09-2026 a las 03:39:51 UTC; interfaz `5fd8e5a5ae0d35b97f90f93e301848fd9d267a1f`, despliegue `8eogtpkjksm9cpngsc4fq9ch`, finalizado a las 03:45:16 UTC. Commits exactos confirmados, ambos `running:healthy`, `/health` HTTP 200 y base `ready`. Es comprobación de publicación y salud, no QA visual ni monitoreo extendido.
+
+Guía inicial compacta y opcional, basada en permisos y datos confirmados; no infiere tareas completadas de errores, consultas pendientes o ejemplos demo. Preferencias locales por persona/empresa para abrir Resumen, Producción o Mi día, sin cambiar destinos explícitos. Filtros guardados del tablero por cliente, asignación propia y semana del calendario local; restablecimiento explícito y aviso si el cliente dejó de existir o el navegador impide guardar.
 
 Buscador dirige órdenes a Producción, no Resumen; icono de marca servido desde la propia app. La carga inicial captura la identidad autenticada. Cargas reemplazadas, cierre explícito, vencimiento 401 y suspensión descartan respuestas operativas atrasadas; cierre y 401 comparten limpieza del estado de sesión.
 
