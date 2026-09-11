@@ -31,7 +31,8 @@ export async function claimInvite(c,linkId,profile){
  // A link never changes the role or reactivates a previously removed/suspended member.
  if(existing){
   if(existing.active&&!existing.removed_at)return{userId:u.id,organizationId:l.organization_id};
-  if(l.mode!=='approval')fail('Tu acceso está suspendido o retirado. Contactá al dueño.',403);
+  // A new invitation must be reviewable even when this email had a suspended
+  // membership before. It never grants access until the owner approves it.
   const name=String(profile.name||email).slice(0,160);
   await c.query('insert into agency_access_requests(link_id,user_id,full_name) values($1,$2,$3) on conflict(link_id,user_id) do update set status=\'pending\',full_name=excluded.full_name,decided_at=null,decided_by=null',[l.id,u.id,name]);
   return{pending:true,userId:u.id,organizationId:l.organization_id};
