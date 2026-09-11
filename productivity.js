@@ -48,11 +48,12 @@ export async function productivity({req,res,url,db,session,body,send}){
   }else if(kind==='profile'&&!key&&!action){
    // Serialize partial self edits across organizations, including the first insert.
    if(req.method==='PATCH')await c.query('select u.id from users u join organization_person_identity i on i.user_id=u.id where u.id=$1 and i.organization_id=$2 for update of u',[user.id,org]);
-   const current=(await c.query('select full_name,photo_url,is_demo from organization_person_identity where user_id=$1 and organization_id=$2',[user.id,org])).rows[0];
+   const current=(await c.query("select full_name,photo_url,is_demo,coalesce((to_jsonb(i)->>'personal_in_demo')::boolean,false) as personal_in_demo from organization_person_identity i where user_id=$1 and organization_id=$2",[user.id,org])).rows[0];
    if(!current)fail('Sin acceso activo a esta empresa',403);
-   const context={email:user.email,role:user.role,identity_scope:current.is_demo?'demo':'personal'};
+   const context={email:user.email,role:user.role,identity_scope:current.personal_in_demo?'personal_readonly':current.is_demo?'demo':'personal'};
    if(req.method==='GET')result={profile:{...current,...context}};
    else if(req.method==='PATCH'){
+    if(current.personal_in_demo)fail('Tu perfil está unificado. Cambiá a tu empresa real para editarlo; la demo no modifica tus datos personales.',403);
     const incoming=await body(req);if(Object.keys(incoming).some(k=>!['full_name','photo_url'].includes(k)))fail('Solo podés modificar tu nombre y foto');
     const b={...current,...incoming},name=text(b.full_name,120);if(name.length<2)fail('Ingresá tu nombre completo');
     const photo=Object.hasOwn(incoming,'photo_url')?await profilePhoto(incoming.photo_url):current.photo_url;

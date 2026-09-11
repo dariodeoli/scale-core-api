@@ -28,6 +28,10 @@ assert.equal((await c.query("select count(*)::int as n from agency_clients where
 // useful progress, and future bookings; no fake live presence is created.
 for(const demo of [first,second,nextLogin]){
  const scalar=async sql=>(await c.query(sql,[demo])).rows[0].n;
+ assert.equal(await scalar("select count(*)::int n from agency_clients where organization_id=$1 and email like '%.example' and phone like '+595 000 421 %' and logo_url like 'data:image/svg+xml;base64,%'"),20);
+ assert.equal(await scalar('select count(distinct logo_url)::int n from agency_clients where organization_id=$1'),20);
+ assert.equal(await scalar("select count(*)::int n from agency_collaborators where organization_id=$1 and photo_url like 'data:image/webp;base64,%' and email like '%@horizonte.example' and notes like '%no operativo%'"),5);
+ assert.equal(await scalar('select count(distinct photo_url)::int n from agency_collaborators where organization_id=$1'),5);
  assert.equal(await scalar('select count(*)::int n from agency_inventory_categories where organization_id=$1'),7);
  assert.equal(await scalar('select count(*)::int n from agency_inventory i join agency_inventory_categories c on c.id=i.category_id and c.organization_id=i.organization_id and c.name=i.category where i.organization_id=$1 and i.storage_shelf<>\'\''),4);
  assert.equal(await scalar('select count(distinct assigned_user_id)::int n from agency_work_orders where organization_id=$1'),4);

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import {seedDemoReports} from './demo-reports.js';
+import {demoClients,demoStaff,demoPhone,demoPortrait} from './demo-identities.js';
 const templateSlug='scale-demo-controles-20260908';
 // A real agency owner can open a personal fixture without membership in the shared template.
 export async function privateDemoEntry(c,userId){
@@ -28,9 +29,9 @@ export async function demoOrganization(c,{userId,sourceId,demoKey}){
 export async function seedPrivateDemo(c,org,userId){
  // Demo dates and report month cutoffs use the same calendar; transaction-local.
  await c.query("select set_config('TimeZone','America/Asuncion',true)");
- const palette=['#560766','#355fb0','#15857b','#b47a12','#b04170'];
- const portrait=(label,index,person=false)=>'data:image/svg+xml;base64,'+Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="256" height="256" rx="48" fill="${palette[index%5]}"/>${person?'<circle cx="128" cy="93" r="43" fill="#f6d4bd"/><path d="M43 256v-36a85 85 0 0 1 170 0v36" fill="#fff"/><path d="M86 91a44 44 0 0 1 84-15l-39-21-44 38" fill="#292130"/>':`<text x="128" y="154" text-anchor="middle" font-family="Arial,sans-serif" font-size="74" font-weight="700" fill="white">${label}</text>`}</svg>`).toString('base64');
- await c.query("insert into agency_settings(organization_id,legal_name,tax_id,address,phone,onboarding_completed) values($1,'Agencia Horizonte E.A.S.','80000000-0','Av. Mariscal López 120 · Asunción','+595 000 000000',true) on conflict do nothing",[org]);
+ await c.query("insert into agency_settings(organization_id,legal_name,tax_id,address,phone,onboarding_completed) values($1,'Agencia Horizonte E.A.S.','80000000-0','Av. Mariscal López 120 · Asunción',$2,true) on conflict do nothing",[org,demoPhone(0)]);
+ // Tenant-local demo identity only: never overwrite the visitor's real profile.
+ await c.query("insert into agency_user_profiles(organization_id,user_id,full_name,photo_url) select $1,id,'Sebastián Benítez',$3 from users where id=$2 and is_demo_guest on conflict do nothing",[org,userId,demoPortrait('sebastian')]);
  await c.query('insert into agency_exchange_rates(organization_id,rate_date,usd_to_pyg) values($1,current_date,7500),($1,current_date-1,7480)',[org]);
  const account=[];
  for(const [name,type,currency,institution,number,holder] of [['Caja de oficina','cash','PYG','','','Agencia Horizonte E.A.S.'],['Banco Continental · Caja de ahorro en guaraníes','bank','PYG','Banco Continental','310056630007','SCALE STRATEGY GROUP E.A.S.'],['Caja de ahorro en dólares','bank','USD','Banco Continental','010010000123','Agencia Horizonte E.A.S.']]){
@@ -39,17 +40,20 @@ export async function seedPrivateDemo(c,org,userId){
  const staff=[],people=[];
  let personIndex=0;
  for(const [name,job,salary,role] of [['Lucía Acosta','Dirección',6000000,'admin'],['Mateo Ríos','Editor audiovisual',3500000,'editor'],['Camila Vera','Administración',4000000,'finance'],['Nicolás Duarte','Comercial',2500000,'sales'],['Valentina Sol','Producción',3800000,'production']]){
+  const [,mail,photo]=demoStaff[personIndex];
+  // Preserve internal no-login markers used by auth and bounded demo cleanup.
   const email=`persona-${org}-${personIndex}@demo.example.invalid`;
   const person=(await c.query("insert into users(email,password_hash) values($1,'!fictional-demo-no-login') returning id",[email])).rows[0].id;
   await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,person,role]);
   people.push(person);
-  staff.push((await c.query("insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_amount,payment_day,started_on,notes) values($1,$2,$3,$4,$5,$6,$7,5,current_date-90,'Honorarios mensuales. Coordinación de entregas en la reunión semanal.') returning id",[org,person,name,email,portrait('',personIndex++,true),job,salary])).rows[0].id);
+  staff.push((await c.query("insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_amount,payment_day,started_on,notes) values($1,$2,$3,$4,$5,$6,$7,5,current_date-90,$8) returning id",[org,person,name,`${mail}@horizonte.example`,demoPortrait(photo),job,salary,`Honorarios mensuales. Coordinación de entregas en la reunión semanal. Contacto ilustrativo: ${demoPhone(++personIndex)} (no operativo).`])).rows[0].id);
  }
- const names=['Aurora Café','Bosque Hogar','Órbita Fitness','Nube Software','Luna Moda','Brisa Viajes','Prisma Diseño','Raíz Orgánica','Faro Inmuebles','Menta Salud','Sur Automotores','Pixel Academy','Alma Cocina','Ruta Outdoor','Nova Energía','Marea Cosmética','Roble Muebles','Cumbre Seguros','Punto Libros','Sol Pet'];
+ const names=demoClients.map(client=>client.name);
  const projects=[];
  for(let i=0;i<names.length;i++){
   const currency=i%5===3?'USD':'PYG',total=i%5===3?1200:((i%5)+3)*1000000;
-  const client=(await c.query("insert into agency_clients(organization_id,name,email,notes,color_key,logo_url) values($1,$2,$3,'Enviar calendario de contenidos antes del inicio de cada mes.',$4,$5) returning id",[org,names[i],`cliente${i}@demo.example.invalid`,['violet','blue','teal','gold','rose'][i%5],portrait(names[i].split(' ').map(w=>w[0]).join(''),i)])).rows[0].id;
+  const identity=demoClients[i];
+  const client=(await c.query("insert into agency_clients(organization_id,name,email,notes,color_key,logo_url,phone) values($1,$2,$3,'Enviar calendario de contenidos antes del inicio de cada mes. Datos de contacto ilustrativos, no operativos.',$4,$5,$6) returning id",[org,names[i],identity.email,['violet','blue','teal','gold','rose'][i%5],identity.logo,identity.phone])).rows[0].id;
   const project=(await c.query('insert into agency_projects(organization_id,client_id,name,approval_levels,start_date,due_date,assigned_user_id) values($1,$2,$3,$4,current_date-7,current_date+21,$5) returning id',[org,client,'Campaña · '+names[i],i%3+1,i%2?userId:people[0]])).rows[0].id;
   projects.push(project);
   await c.query('insert into agency_project_assignees(organization_id,project_id,user_id) values($1,$2,$3)',[org,project,people[4]]);

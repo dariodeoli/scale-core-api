@@ -163,5 +163,21 @@ let released=0,rollback=0;
 const failingDb={connect:async()=>({query:async s=>{if(s==='rollback'){rollback++;return {rows:[]};}if(s==='begin')return {rows:[]};throw Error('identity failure');},release(){released++;}})};
 await assert.rejects(()=>ensurePersonalIdentity(failingDb,uid,org),/identity failure/);assert.equal(rollback,1);assert.equal(released,1);
 await assert.rejects(()=>ensurePersonalIdentity(db,'1 OR 1=1',org),/Invalid identity id/);
+// Current behavior: real owners use live personal identity even in existing demos.
+await sql('migrations/20260911_demo_owner_identity.sql');
+const shared=await call('profile','GET',{},demoSelf);
+assert.equal(shared.profile.identity_scope,'personal_readonly');
+assert.equal(shared.profile.full_name,(await canonical(uid)).full_name);
+assert.equal(shared.profile.photo_url,(await canonical(uid)).photo_url);
+assert.equal((await call('profile','PATCH',{full_name:'No debe cambiar'},demoSelf)).status,403);
+await call('profile','PATCH',{full_name:'Unificado en todas',photo_url:'https://example.invalid/unified.png'});
+for(const organization_id of [org,other,newDemo,demo]){
+ const p=(await call('profile','GET',{}, {...self,organization_id})).profile;
+ assert.equal(p.full_name,'Unificado en todas');assert.equal(p.photo_url,'https://example.invalid/unified.png');
+}
+assert.equal((await call('profile','GET',{}, {...self,id:guest,organization_id:template})).profile.full_name,'Invitado independiente');
+// Startup replays both migrations safely, without dropping view columns or changing users.
+await sql('migrations/20260910_global_identity.sql');await sql('migrations/20260911_demo_owner_identity.sql');
+assert.equal((await call('profile','GET',{},demoSelf)).profile.full_name,'Unificado en todas');
 await pg.close();
 console.log('PASS: deterministic identity, self propagation, scoped roles/HR/authors, demo isolation, reactivation reconciliation, session initialization/idempotency/fallback, pending/guest guards, transaction rollback');

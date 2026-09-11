@@ -13,7 +13,8 @@ create or replace view organization_person_identity as
   case when g.user_id is not null then g.full_name else coalesce(p.full_name,'') end as full_name,
   case when g.user_id is not null then g.photo_url else p.photo_url end as photo_url,
   (o.demo_owner_user_id is not null or o.demo_source_id is not null
-   or o.slug='scale-demo-controles-20260908' or u.is_demo_guest) as is_demo
+   or o.slug='scale-demo-controles-20260908' or u.is_demo_guest) as is_demo,
+  false as personal_in_demo
  from organization_members m join organizations o on o.id=m.organization_id
  join users u on u.id=m.user_id
  left join agency_user_profiles p on p.organization_id=m.organization_id and p.user_id=m.user_id

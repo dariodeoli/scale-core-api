@@ -97,6 +97,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_company_currency.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_live_visitors.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_global_identity.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260911_demo_owner_identity.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_project_assignees.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_inventory_reservations.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_work_checklists.sql'),'utf8'));

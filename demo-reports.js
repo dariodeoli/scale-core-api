@@ -1,6 +1,7 @@
 // Internal fixture builder only. The caller must supply the transaction that
 // created this private demo, after its clients/plans/current receipts are seeded.
 // No provider calls, credential reads, real payments or aggregate report rows.
+import {demoClients} from './demo-identities.js';
 const version='DEMO-REPORTS-V1';
 const note='Historia ilustrativa de una demo privada: fechas relativas y movimientos ficticios; no son documentos fiscales ni pagos reales.';
 const completeNote=`${version}:complete · ${note}`;
@@ -38,8 +39,8 @@ async function context(c,organizationId,userId){
   from agency_clients c left join agency_invoices i on i.client_id=c.id and i.organization_id=c.organization_id
    and i.issued_on>=date_trunc('month',current_date)::date and i.issued_on<=current_date
   where c.organization_id=$1 order by c.id`,[organizationId])).rows;
- if(clients.length!==20||clients.some(client=>!client.newly_created||!client.active||client.lifecycle_status!=='active'||
-   !/^cliente\d+@demo\.example\.invalid$/.test(client.email)||client.invoice_count!==1||!client.invoice_id||
+ if(clients.length!==20||clients.some((client,index)=>!client.newly_created||!client.active||client.lifecycle_status!=='active'||
+   client.email!==demoClients[index].email||client.name!==demoClients[index].name||client.invoice_count!==1||!client.invoice_id||
    !['PYG','USD'].includes(client.currency)||!/^\d+(\.\d{1,2})?$/.test(client.total)||Number(client.total)<=0)){
   fail('Se requieren los 20 clientes ficticios nuevos y sus facturas actuales, sin modificar');
  }
