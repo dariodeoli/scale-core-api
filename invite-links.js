@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {attributeActors} from './actor-identity.js';
 export const accessRoles=['owner','admin','management','finance','sales','production','editor','viewer'];
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
@@ -65,10 +66,10 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
   await c.query("select set_config('app.current_user',$1,true)",[String(user.id)]);
   const [ ,kind,key]=match,org=user.organization_id;let result;
   if(kind==='invite-links'&&req.method==='GET'&&!key){
-   const rows=(await c.query(`select l.id,l.role,l.mode,l.created_at,l.expires_at,l.revoked_at,l.used_at,l.click_count,l.account_count,l.token_ciphertext,u.email as created_by_email,
-    coalesce((select jsonb_agg(jsonb_build_object('email',j.email,'full_name',j.full_name,'joined_at',j.joined_at) order by j.joined_at) from (
-     select u2.email,r.full_name,r.decided_at as joined_at from agency_access_requests r join users u2 on u2.id=r.user_id where r.link_id=l.id and r.status='approved'
-     union all select u3.email,coalesce(p.full_name,u3.email),m.created_at from organization_members m join users u3 on u3.id=m.user_id left join agency_user_profiles p on p.organization_id=m.organization_id and p.user_id=m.user_id
+   const rows=(await c.query(`select l.id,l.created_by,l.role,l.mode,l.created_at,l.expires_at,l.revoked_at,l.used_at,l.click_count,l.account_count,l.token_ciphertext,u.email as created_by_email,
+    coalesce((select jsonb_agg(jsonb_build_object('user_id',j.user_id,'email',j.email,'full_name',j.full_name,'joined_at',j.joined_at) order by j.joined_at) from (
+     select u2.id as user_id,u2.email,r.full_name,r.decided_at as joined_at from agency_access_requests r join users u2 on u2.id=r.user_id where r.link_id=l.id and r.status='approved'
+     union all select u3.id,u3.email,coalesce(p.full_name,u3.email),m.created_at from organization_members m join users u3 on u3.id=m.user_id left join agency_user_profiles p on p.organization_id=m.organization_id and p.user_id=m.user_id
      where m.invite_link_id=l.id and not exists(select 1 from agency_access_requests ar where ar.link_id=l.id and ar.user_id=m.user_id and ar.status='approved')
     ) j),'[]'::jsonb) as joined_users
     from agency_invite_links l join users u on u.id=l.created_by where l.organization_id=$1 order by l.id desc limit 100`,[org])).rows;
@@ -81,12 +82,12 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
    const b=await body(req);if(!accessRoles.includes(b.role)||!['single','approval'].includes(b.mode))fail('Permiso o tipo de enlace inválido');
    if(b.role==='owner'&&user.role!=='owner')fail('Solo un dueño puede invitar dueños',403);
    const token=crypto.randomBytes(32).toString('base64url');
-   const link=(await c.query("insert into agency_invite_links(organization_id,token_hash,token_ciphertext,role,mode,created_by,expires_at) values($1,$2,$3,$4,$5,$6,now()+interval '7 days') returning id,expires_at",[org,hash(token),seal(token),b.role,b.mode,user.id])).rows[0];
+   const link=(await c.query("insert into agency_invite_links(organization_id,token_hash,token_ciphertext,role,mode,created_by,expires_at) values($1,$2,$3,$4,$5,$6,now()+interval '7 days') returning id,expires_at,created_by",[org,hash(token),seal(token),b.role,b.mode,user.id])).rows[0];
    result={...link,url:appUrl+'/invitacion?token='+token};
   }else if(kind==='invite-links'&&key&&req.method==='DELETE'){
    const r=await c.query("update agency_invite_links set revoked_at=now() where id=$1 and organization_id=$2 and ($3='owner' or role<>'owner') returning id",[key,org,user.role]);if(!r.rows.length)fail('Enlace no encontrado o sin permiso',404);result={ok:true};
   }else if(kind==='access-requests'&&req.method==='GET'&&!key){
-   const rows=(await c.query("select r.id,r.full_name,r.created_at,r.status,u.email,l.role,l.expires_at,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=l.organization_id and m.user_id=r.user_id and m.active=true and m.removed_at is null) as existing_member from agency_access_requests r join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id join users u on u.id=r.user_id where l.organization_id=$1 and r.status='pending' order by r.created_at limit 100",[org])).rows;
+   const rows=(await c.query("select r.id,r.user_id,r.full_name,r.created_at,r.status,u.email,l.role,l.expires_at,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=l.organization_id and m.user_id=r.user_id and m.active=true and m.removed_at is null) as existing_member from agency_access_requests r join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id join users u on u.id=r.user_id where l.organization_id=$1 and r.status='pending' order by r.created_at limit 100",[org])).rows;
    result={requests:rows.map(({link_valid,organization_active,existing_member,...row})=>({...row,...accessRequestState({...row,link_valid,organization_active,existing_member})}))};
   }else if(kind==='access-requests'&&key&&req.method==='PATCH'){
    const b=await body(req);if(!['approve','reject'].includes(b.action))fail('Acción inválida');
@@ -106,6 +107,11 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
    }
    await c.query('update agency_access_requests set status=$1,decided_at=now(),decided_by=$2 where id=$3',[b.action==='approve'?'approved':'rejected',user.id,key]);result={ok:true};
   }else fail('Método no permitido',405);
+  await attributeActors(c,org,[
+   {rows:result.links||(kind==='invite-links'&&req.method==='POST'?result:[]),userId:'created_by',fallback:['created_by_email']},
+   {rows:(result.links||[]).flatMap(link=>link.joined_users),userId:'user_id',fallback:['full_name','email']},
+   {rows:result.requests,userId:'user_id',fallback:['full_name','email']},
+  ]);
   await c.query('commit');send(res,200,result);return true;
  }catch(e){if(c)await c.query('rollback');send(res,e.status||500,{error:e.status?e.message:'No se pudo gestionar la invitación',...(!match&&e.status===410?{link_status:e.link_status||'unavailable'}:{})});return true;}finally{c?.release();}
 }

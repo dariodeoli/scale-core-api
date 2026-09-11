@@ -9,6 +9,7 @@ import pg from 'pg';
 import { operations } from './operations.js';
 import { suite } from './agency-suite.js';
 import { passwordAccess, throttle } from './password-access.js';
+import {attributeActors} from './actor-identity.js';
 import { financeControls } from './finance-controls.js';
 import { contentReview } from './content-review.js';
 import { budgetSections } from './budget-sections.js';
@@ -532,6 +533,7 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/agency/payments' && req.method === 'GET') {
       const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
       const r=await db.query('select p.*,i.number as invoice_number,c.name as client_name,a.name as account_name,a.account_type,a.currency,u.email as received_by_email from agency_payments p join agency_invoices i on i.id=p.invoice_id join agency_clients c on c.id=i.client_id join bank_accounts a on a.id=p.account_id left join users u on u.id=p.received_by_user_id where p.organization_id=$1 order by p.received_on desc,p.id desc',[user.organization_id]);
+      await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'received_by_user_id',fallback:['received_by_email']}]);
       return send(res,200,{payments:r.rows});
     }
     if (url.pathname === '/api/agency/payments' && req.method === 'POST') {
@@ -544,11 +546,13 @@ const server = http.createServer(async (req,res) => {
       const receiver=receivedByUserId === null || receivedByUserId === '' ? Number(user.id) : Number(receivedByUserId);
       if(!Number.isInteger(receiver) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,receiver])).rows[0]) return send(res,400,{error:'Persona que recibió el pago inválida'});
       const r=await db.query('insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference,received_by_user_id) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(invoiceId),Number(accountId),paid,receivedOn || new Date().toISOString().slice(0,10),reference || null,receiver]);
+      await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'received_by_user_id'}]);
       return send(res,201,{payment:r.rows[0]});
     }
     if (url.pathname === '/api/agency/transfers' && req.method === 'GET') {
       const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
       const r=await db.query('select t.*,f.name as from_account_name,d.name as to_account_name,u.email as created_by_email from account_transfers t join bank_accounts f on f.id=t.from_account_id join bank_accounts d on d.id=t.to_account_id left join users u on u.id=t.created_by_user_id where t.organization_id=$1 order by t.transferred_on desc,t.id desc',[user.organization_id]);
+      await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'created_by_user_id',fallback:['created_by_email']}]);
       return send(res,200,{transfers:r.rows});
     }
     if (url.pathname === '/api/agency/transfers' && req.method === 'POST') {
@@ -560,6 +564,7 @@ const server = http.createServer(async (req,res) => {
       const source=accounts.rows.find(account=>Number(account.id)===Number(fromAccountId));
       if(Number(source.balance)<transferAmount) return send(res,400,{error:'Saldo insuficiente en la cuenta de origen'});
       const r=await db.query('insert into account_transfers(organization_id,from_account_id,to_account_id,amount,transferred_on,reference,notes,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,Number(fromAccountId),Number(toAccountId),transferAmount,transferredOn || new Date().toISOString().slice(0,10),typeof reference === 'string' ? reference.trim() || null : null,typeof notes === 'string' ? notes.trim() || null : null,user.id]);
+      await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'created_by_user_id'}]);
       return send(res,201,{transfer:r.rows[0]});
     }
     const orderMatch = url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)$/);

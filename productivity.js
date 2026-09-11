@@ -1,3 +1,4 @@
+import {attributeActors} from './actor-identity.js';
 import {fail,text,id,optId,date,option,owned,link} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {profilePhoto} from './media-policy.js';
@@ -35,7 +36,7 @@ export async function productivity({req,res,url,db,session,body,send}){
     from agency_operation_audit a left join organization_person_identity i on i.user_id::text=a.actor and i.organization_id=a.organization_id
     where a.organization_id=$1 and ($2::text is null or a.actor=$2) and a.table_name in ('agency_work_orders','agency_projects','agency_order_comments','agency_project_comments','agency_internal_tasks') order by a.id desc limit $3 offset $4`,[org,actor,page.limit+1,page.offset])).rows,page);
   }else if(kind==='source-events'){
-   if(req.method==='GET'){const page=historyPage(url.searchParams);result=historyResult((await c.query('select id,source_url,source_author,body,occurred_at,null::text as actor_photo_url,null::bigint as actor_user_id,false as actor_verified from agency_source_events where organization_id=$1 order by occurred_at desc,id desc limit $2 offset $3',[org,page.limit+1,page.offset])).rows,page);}
+   if(req.method==='GET'){const page=historyPage(url.searchParams);result=historyResult((await c.query('select id,source_url,source_author,source_author as actor_name,body,occurred_at,null::text as actor_photo_url,null::bigint as actor_user_id,false as actor_verified from agency_source_events where organization_id=$1 order by occurred_at desc,id desc limit $2 offset $3',[org,page.limit+1,page.offset])).rows,page);}
    else if(req.method==='POST'){
     const b=await body(req);if(!Array.isArray(b.events)||b.events.length>100)fail('Máximo 100 eventos por importación');let created=0;
     for(const e of b.events){const at=new Date(e.occurred_at);if(!Number.isFinite(at.getTime()))fail('Fecha de origen inválida');created+=(await c.query('insert into agency_source_events(organization_id,source_key,source_url,source_author,body,occurred_at,imported_by) values($1,$2,$3,$4,$5,$6,$7) on conflict do nothing returning id',[org,text(e.source_key,160),link(e.source_url),text(e.source_author,120),text(e.body,4000),at.toISOString(),user.id])).rows.length;}result={created};
@@ -111,10 +112,15 @@ export async function productivity({req,res,url,db,session,body,send}){
    result={client,projects,orders,financeAllowed:finance.includes(user.role)};
    if(finance.includes(user.role)){
     result.invoices=(await c.query('select id,number,currency,total,paid_amount,due_on from agency_invoices where organization_id=$1 and client_id=$2 order by id desc limit 100',[org,key])).rows;
-    result.payments=(await c.query('select p.id,p.amount,p.received_on,a.name as account_name,a.currency,u.email as received_by_email from agency_payments p join agency_invoices i on i.id=p.invoice_id join bank_accounts a on a.id=p.account_id left join users u on u.id=p.received_by_user_id where p.organization_id=$1 and i.client_id=$2 order by p.id desc limit 100',[org,key])).rows;
+    result.payments=(await c.query('select p.id,p.amount,p.received_on,p.received_by_user_id,a.name as account_name,a.currency,u.email as received_by_email from agency_payments p join agency_invoices i on i.id=p.invoice_id join bank_accounts a on a.id=p.account_id left join users u on u.id=p.received_by_user_id where p.organization_id=$1 and i.client_id=$2 order by p.id desc limit 100',[org,key])).rows;
    }
    if([...finance,'management','sales'].includes(user.role))result.budgets=(await c.query(`select b.id,b.title,b.number,b.status,b.currency,b.total from agency_budgets b where b.organization_id=$1 and b.client_id=$2 and ${visibleRecord('b','budgets')} order by b.id desc limit 100`,[org,key])).rows;
   }else fail('Método no permitido',405);
+  await attributeActors(c,org,[
+   {rows:result.comment,userId:'author_user_id',fallback:['author_email']},
+   {rows:result.templates||result.template,userId:'created_by'},
+   {rows:result.payments,userId:'received_by_user_id',fallback:['received_by_email']},
+  ]);
   await c.query('commit');tx=false;send(res,status,result);return true;
  }catch(error){if(tx)await c.query('rollback');console.error(JSON.stringify({event:'productivity_error',path:url.pathname,status:error.status||500,message:error.status?error.message:'unexpected'}));send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación'});return true;}finally{c?.release();}
 }

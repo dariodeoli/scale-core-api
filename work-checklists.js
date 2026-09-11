@@ -1,4 +1,5 @@
 import {fail, owned, text} from './suite-validation.js';
+import {attributeActors} from './actor-identity.js';
 
 const readers = ['owner','admin','management','finance','sales','production','editor','viewer'];
 const writers = ['owner','admin','management','production','editor'];
@@ -12,7 +13,7 @@ function identifier(value, zero = false) {
 }
 async function snapshot(c, org, order) {
  const state = (await c.query('select version::text from agency_work_checklists where organization_id=$1 and work_order_id=$2', [org, order])).rows[0];
- const items = (await c.query('select id::text,text,completed from agency_work_checklist_items where organization_id=$1 and work_order_id=$2 order by id', [org, order])).rows;
+ const items = (await c.query('select id::text,text,completed,created_by_user_id from agency_work_checklist_items where organization_id=$1 and work_order_id=$2 order by id', [org, order])).rows;
  return {version: state?.version || '0', items, total: items.length, completed: items.filter(i => i.completed).length, max_items: maxItems};
 }
 export async function workChecklists({req, res, url, db, session, body, send}) {
@@ -74,6 +75,7 @@ export async function workChecklists({req, res, url, db, session, body, send}) {
    }
   }
   const result = await snapshot(c, org, order);
+  await attributeActors(c,org,[{rows:result.items,userId:'created_by_user_id'}]);
   await c.query('commit'); tx = false;
   send(res, status, result, {'Cache-Control':'no-store'});
  } catch (error) {

@@ -1,3 +1,4 @@
+import {attributeActors} from './actor-identity.js';
 import {fail,optId,owned} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 export async function presence({req,res,url,db,session,sessionKey,body,send}){
@@ -35,7 +36,7 @@ export async function presence({req,res,url,db,session,sessionKey,body,send}){
     group by p.project_id,p.user_id,up.full_name,u.email,up.photo_url order by p.project_id,name limit 2000`,[org,ids])).rows};
   }else if(kind==='usage'&&req.method==='GET'){
    const person=optId(url.searchParams.get('userId'));
-   if(person){result={records:(await c.query(`select first_seen_at,last_seen_at,active_seconds from agency_usage_sessions where organization_id=$1 and user_id=$2 order by first_seen_at desc limit 10`,[org,person])).rows};}
+   if(person){result={records:(await c.query(`select user_id,first_seen_at,last_seen_at,active_seconds from agency_usage_sessions where organization_id=$1 and user_id=$2 order by first_seen_at desc limit 10`,[org,person])).rows};}
    else result={people:(await c.query(`select u.id,coalesce(up.full_name,u.email) as name,u.email,
     (select max(last_seen_at) from agency_usage_sessions s where s.organization_id=m.organization_id and s.user_id=u.id) as last_seen_at,
     (select count(*)::int from agency_usage_sessions s where s.organization_id=m.organization_id and s.user_id=u.id and first_seen_at>now()-interval '30 days') as sessions,
@@ -44,6 +45,10 @@ export async function presence({req,res,url,db,session,sessionKey,body,send}){
     m.active and exists(select 1 from agency_presence_tabs p where p.organization_id=m.organization_id and p.user_id=u.id and p.last_seen_at>now()-interval '75 seconds' and p.is_active) as active
     from organization_members m join users u on u.id=m.user_id left join agency_user_profiles up on up.user_id=u.id and up.organization_id=m.organization_id where m.organization_id=$1 and m.removed_at is null order by name`,[org])).rows};
   }else fail('Método no permitido',405);
+  await attributeActors(c,org,[
+   {rows:result.people,userId:'id',fallback:['name','email']},
+   {rows:result.records,userId:'user_id'},
+  ]);
   send(res,200,result);return true;
  }catch(error){if(tx)await c.query('rollback');console.error(JSON.stringify({event:'presence_error',status:error.status||500}));send(res,error.status||500,{error:error.status?error.message:'No se pudo consultar la presencia'});return true;}finally{c?.release();}
 }

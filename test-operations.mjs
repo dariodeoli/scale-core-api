@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {identitySchema} from './scripts/test-identity-schema.mjs';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {operations} from './operations.js';
@@ -8,6 +9,7 @@ await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'))
 for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 for(const file of ['20260910_productivity.sql','20260910_profile_identity.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 for(const file of ['20260910_currencies.sql','20260910_company_currency.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
+await identitySchema(pg);
 const sql=(s,v)=>pg.query(s,v);
 const org=(await sql("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await sql("insert into organizations(slug,name) values('test-other','Other') returning id")).rows[0].id;

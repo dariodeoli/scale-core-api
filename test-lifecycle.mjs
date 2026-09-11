@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {identitySchema} from './scripts/test-identity-schema.mjs';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {recordLifecycle,archiveKinds,visibleRecord} from './record-lifecycle.js';
@@ -6,6 +7,7 @@ import {suite} from './agency-suite.js';
 import {collaboratorAccess} from './collaborator-access.js';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
+await identitySchema(pg);
 const query=(s,v)=>pg.query(s,v),db={query,connect:async()=>({query,release(){}})};
 const insert=async(s,v)=>(await query(s+' returning id',v)).rows[0].id;
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;

@@ -1,4 +1,5 @@
 import {fail,id,optId,date,owned} from './suite-validation.js';
+import {attributeActors} from './actor-identity.js';
 import {templateItems,monthDate} from './productivity.js';
 import {notificationEmail} from './notifications.js';
 import {visibleRecord} from './record-lifecycle.js';
@@ -19,6 +20,7 @@ export async function automationApi({req,res,url,db,session,body,send}){
    result={schedule:(await c.query('insert into agency_recurring_plans(organization_id,template_id,project_id,assigned_user_id,created_by,next_month) values($1,$2,$3,$4,$5,$6) on conflict(organization_id,template_id,project_id) do update set assigned_user_id=excluded.assigned_user_id,created_by=excluded.created_by,next_month=excluded.next_month,active=true returning *',[user.organization_id,template,project,person,user.id,month])).rows[0]};
   }else if(req.method==='PATCH'&&match[1]){const b=await body(req);if(typeof b.active!=='boolean')fail('Estado inválido');const r=await c.query('update agency_recurring_plans set active=$1 where id=$2 and organization_id=$3 returning id',[b.active,match[1],user.organization_id]);if(!r.rows.length)fail('Programación no encontrada',404);result={ok:true};}
   else fail('Método no permitido',405);
+  await attributeActors(c,user.organization_id,[{rows:result.schedules||result.schedule,userId:'created_by'}]);
   await c.query('commit');send(res,200,result);return true;
  }catch(e){if(c)await c.query('rollback');console.error(JSON.stringify({event:'schedule_error',status:e.status||500}));send(res,e.status||500,{error:e.status?e.message:'No se pudo guardar la programación'});return true;}finally{c?.release();}
 }

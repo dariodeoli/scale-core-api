@@ -1,3 +1,4 @@
+import {attributeActors} from './actor-identity.js';
 const administrators = ['owner','admin'];
 const production = [...administrators,'management','production'];
 const commercial = [...administrators,'management','finance','sales'];
@@ -41,8 +42,9 @@ export async function recordLifecycle({req,res,url,db,session,send}) {
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const org=user.organization_id;
   if(trash){
-   const queries=allowedKinds.map(([kind,v])=>`select '${kind}' as kind,r.id::text as id,r.${v.name} as name,a.removed_at from ${v.table} r join agency_archived_records a on a.organization_id=r.organization_id and a.record_id=r.id and a.kind='${kind}' where r.organization_id=$1`);
+   const queries=allowedKinds.map(([kind,v])=>`select '${kind}' as kind,r.id::text as id,r.${v.name} as name,a.removed_at,a.removed_by from ${v.table} r join agency_archived_records a on a.organization_id=r.organization_id and a.record_id=r.id and a.kind='${kind}' where r.organization_id=$1`);
    const records=(await c.query(queries.join(' union all ')+' order by removed_at desc',[org])).rows;
+   await attributeActors(c,org,[{rows:records,userId:'removed_by'}]);
    await c.query('commit');send(res,200,{records});return true;
   }
   const [,kind,rawKey,restore]=match,key=String(BigInt(rawKey));

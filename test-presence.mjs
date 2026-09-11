@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import {identitySchema} from './scripts/test-identity-schema.mjs';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {presence} from './presence.js';
 import {randomUUID} from 'node:crypto';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));for(const f of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_presence.sql'])await pg.exec(await fs.readFile('migrations/'+f,'utf8'));
+await identitySchema(pg);
 const query=(s,v)=>pg.query(s,v),db={connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('presence@example.invalid','unused') returning id")).rows[0].id;

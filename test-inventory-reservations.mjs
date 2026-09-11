@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import {identitySchema} from './scripts/test-identity-schema.mjs';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {inventoryReservations,inventoryTimestamp} from './inventory-reservations.js';
 
 const pg=new PGlite();await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_currencies.sql','20260910_company_currency.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
+await identitySchema(pg);
 const query=(sql,args)=>pg.query(sql,args);
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('inventory-other','Other') returning id")).rows[0].id;

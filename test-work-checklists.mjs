@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {identitySchema} from './scripts/test-identity-schema.mjs';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {workChecklists} from './work-checklists.js';
@@ -9,6 +10,7 @@ for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comme
  '20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls',
  '20260910_productivity','20260910_work_checklists'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_work_checklists.sql','utf8'));
+await identitySchema(pg);
 const query=(s,v)=>pg.query(s,v),db={connect:async()=>({query,release(){}})};
 const insert=async(s,v)=>(await query(s+' returning id',v)).rows[0].id;
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;

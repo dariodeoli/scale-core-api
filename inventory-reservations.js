@@ -1,3 +1,4 @@
+import {attributeActors} from './actor-identity.js';
 import {fail,text,amount,date,option} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {currencies} from './currencies.js';
@@ -233,6 +234,11 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
    else if(req.method==='POST'&&key&&['checkout','return','cancel'].includes(action))result=await transition(c,user,org,key,action,await body(req));
    else fail('Método no permitido',405);
   }else fail('Método no permitido',405);
+  await attributeActors(c,org,[
+   {rows:result.reservations||result.reservation,userId:'created_by_user_id'},
+   {rows:result.reservations||result.reservation,userId:'checked_out_by_user_id',prefix:'checkout_actor'},
+   {rows:result.reservations||result.reservation,userId:'returned_by_user_id',prefix:'return_actor'},
+  ]);
   await c.query('commit');transaction=false;send(res,status,result);
  }catch(error){
   if(transaction)await c.query('rollback');

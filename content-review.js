@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {attributeActors} from './actor-identity.js';
 import {fail,text,link,owned} from './suite-validation.js';
 const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
@@ -40,13 +41,16 @@ export async function contentReview({req,res,url,db,session,body,send}){
   }
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const order=await owned(c,'agency_work_orders',route[1],user.organization_id);let result;
-  if(req.method==='GET'&&!route[2])result={reviews:(await c.query('select id,title,status,expires_at,reviewer_name,feedback,responded_at,created_at from agency_content_reviews where work_order_id=$1 and organization_id=$2 order by id desc',[order.id,user.organization_id])).rows};
+  if(req.method==='GET'&&!route[2])result={reviews:(await c.query('select id,created_by_user_id,title,status,expires_at,reviewer_name,feedback,responded_at,created_at from agency_content_reviews where work_order_id=$1 and organization_id=$2 order by id desc',[order.id,user.organization_id])).rows};
   else if(req.method==='POST'&&route[2]){const r=await c.query("update agency_content_reviews set status='revoked' where id=$1 and work_order_id=$2 and organization_id=$3 and status='pending' returning id",[route[2],order.id,user.organization_id]);if(!r.rows.length)fail('No hay una revisión pendiente con ese ID',404);result={ok:true};}
   else if(req.method==='POST'){
    if(order.status!=='approved')fail('Completá primero las aprobaciones internas');const asset=link(order.drive_url);if(!asset)fail('Agregá el enlace de la pieza en sus detalles');
    const token=crypto.randomBytes(32).toString('hex');await c.query("update agency_content_reviews set status='revoked' where work_order_id=$1 and status='pending'",[order.id]);
-   const r=await c.query("insert into agency_content_reviews(organization_id,work_order_id,token_hash,title,asset_url,version_stamp,expires_at,created_by_user_id) values($1,$2,$3,$4,$5,$6,now()+interval '7 days',$7) returning id,expires_at",[user.organization_id,order.id,hash(token),order.title,asset,stamp(order),user.id]);result={review:r.rows[0],url:`https://app.scaleparaguay.com/review/${token}`};
+   const r=await c.query("insert into agency_content_reviews(organization_id,work_order_id,token_hash,title,asset_url,version_stamp,expires_at,created_by_user_id) values($1,$2,$3,$4,$5,$6,now()+interval '7 days',$7) returning id,expires_at,created_by_user_id",[user.organization_id,order.id,hash(token),order.title,asset,stamp(order),user.id]);result={review:r.rows[0],url:`https://app.scaleparaguay.com/review/${token}`};
   }else fail('Método no permitido',405);
+  await attributeActors(c,user.organization_id,[{rows:result.reviews||result.review,userId:'created_by_user_id'}]);
+  // Public reviewers supply a name, not a verified member identity.
+  for(const review of result.reviews||[])review.reviewer_actor={actor_name:review.reviewer_name||null,actor_photo_url:null,actor_user_id:null,actor_verified:false};
   await c.query('commit');tx=false;send(res,200,result);
  }catch(e){if(tx)await c.query('rollback');console.error(JSON.stringify({event:'content_review_error',status:e.status||500,code:e.code}));if(pub){res.writeHead(e.status||500,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(shell('No pudimos completar la revisión',`<p>${escape(e.status?e.message:'Intentá de nuevo en unos minutos.')}</p>`));}else send(res,e.status||500,{error:e.status?e.message:'No se pudo completar la revisión'});}finally{c?.release();}
  return true;

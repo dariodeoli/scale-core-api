@@ -1,4 +1,5 @@
 import {currencies} from './currencies.js';
+import {attributeActors} from './actor-identity.js';
 import {companyCurrency} from './forecast.js';
 import { collaboratorAccess } from './collaborator-access.js';
 import { profilePhoto } from './media-policy.js';
@@ -120,6 +121,10 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     if(commission) await c.query("update agency_commissions set status='paid',paid_on=$1 where id=$2 and organization_id=$3",[paid,commission,org]);status=201;
    } else fail('Método no permitido',405);
   }
+  await attributeActors(c,org,[
+   {rows:result.comments||result.comment,userId:'author_user_id',fallback:['author_email']},
+   {rows:[...(result.payouts||[]),result.payout,...(result.discounts||[]),result.discount],userId:'created_by_user_id',fallback:['created_by_email']},
+  ]);
   await c.query('commit');
   if(notifyEmail)result.access.emailSent=await sendInvitation(notifyEmail,user.organization_name||'tu empresa','viewer').catch(()=>false);
   send(res,status,result);
