@@ -1,6 +1,6 @@
 # Contador de visitantes — integración del agente principal
 
-Integración local completada en `server.js` y `app/scale-workspace.tsx`. Los pasos siguientes documentan el cableado aplicado. La comprobación de visitantes en los hosts desplegados sigue pendiente; la web de la agencia todavía necesita el snippet indicado más abajo.
+Integración implementada en `server.js` y `app/scale-workspace.tsx`. La web de la agencia ya incluye `assets/tracking/live-visitors.js` desde `index.html`, commit `scaleparaguay` `8357f390` (10-09-2026); su publicación y coincidencia del archivo servido quedaron verificadas en RELEASE-CHECKLIST.md. No volver a insertar el snippet ni duplicar la captura. Sigue pendiente la comprobación visual de visitantes reales en los hosts desplegados: pruebas aisladas, HTTP y CORS no sustituyen dos sesiones de navegador autorizadas.
 
 ## API
 
@@ -70,7 +70,7 @@ El componente importa su CSS con clases propias. No necesita cambios en CSS glob
 
 ## Snippet para scaleparaguay.com
 
-Insertar una sola vez antes de `</body>` en el repositorio de la web de la agencia. No ejecutado ni publicado desde esta tarea. No necesita librerías ni cambios visuales. Su configuración es independiente de la landing del sistema.
+Referencia del runtime ya instalado mediante un script externo antes de `</body>` en la web de la agencia. No insertarlo nuevamente. No necesita librerías ni cambios visuales. Su configuración es independiente de la landing del sistema; se conserva el ejemplo para las pruebas de paridad.
 
 ```html
 <script>

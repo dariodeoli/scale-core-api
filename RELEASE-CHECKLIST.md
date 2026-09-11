@@ -1,5 +1,39 @@
 # Scale OS — seguimiento de entregas
 
+## Estado consolidado después de Informes y precio fundador — 10-09-2026
+
+Esta sección distingue entregas verificadas de bloqueos y prevalece sobre los estados de preparación de las secciones históricas. Referencias publicadas: API `7239089308c21bc3d4c68394943ecacbc224c305` (11-09 01:14:51 UTC), interfaz de Informes `bfc5368a` (01:19:36 UTC), aviso fundador `82ea64b2025d9c55e382381b49a57d95f50c2803` (01:29:14 UTC). Despliegues finalizados y aplicaciones saludables; API/database ready y rutas privadas de informes rechazan consultas anónimas. Son fechas UTC; corresponden a la noche del 10-09 en Paraguay.
+
+### Implementado y publicado
+
+- Perfil compacto, guardado de foto/color, recorte y control de enlaces; identidad personal compartida entre agencias reales, demo aislada; avatares en actividad/historial y separación de salir/perfil.
+- Producción directa, navegación compacta/colapsable, desplazamiento horizontal del tablero y vertical de página, detalle editable, checklists, varios responsables y presencia por proyecto. Equipo agrupa actividad e historial paginado.
+- Clientes en lista/cuadrícula, estado del servicio, enlaces sociales, fotos/logos y consulta RUC; clasificación empresa/profesional, plan e inicio de relación para informes. Esto no acredita que se hayan completado todos los logos de clientes reales.
+- Inventario con categorías, ubicaciones, reservas/calendario, varios equipos y responsables, retiro y devolución completa. El estado registrado no equivale a rastreo físico automático.
+- Pipeline unificado con crecimiento y consultas de landing; contador de sesiones anónimas instalado en landing y web de agencia. El estado antiguo de LIVE-VISITORS-INTEGRATION.md se corrigió: no instalar nuevamente.
+- Informes por mes y moneda, clientes/retención/planes/tipos/antigüedad, facturas/cobros/ticket. Sin reconstruir estados anteriores de agencias reales; demo nueva con 20 clientes y siete meses relativos.
+- Landing, dominio comercial, identidad/SEO/footer, demo pública aislada, registro con Google, invitaciones de un uso y reutilizables con aprobación. Una solicitud pendiente no concede permisos.
+- Plan de lanzamiento US$10 o G.50.000 por **agencia**, todos los integrantes incluidos; 30 días de prueba, 48 horas de gracia y bloqueo operativo sin borrar datos. Aviso de tarifa preferencial fundadora publicado, sin promesa de congelar el importe. No se configuraron aumentos ni descuentos futuros automáticos.
+
+### Lo que todavía impide cerrar todo
+
+| Pendiente | Requisito para continuar | Límite conservado |
+| --- | --- | --- |
+| Stripe real | Cuenta/configuración autorizadas, precios USD/PYG y webhook; pruebas de cobro, rechazo y reactivación en modo test antes de habilitar | No cobrar ni activar pagos con solo un enlace; resolver antes de vencer las primeras pruebas comerciales |
+| Correo en spam | Remitente Scale verificado y resolver límite del proveedor; prueba de entrega autorizada | SPF/DKIM/DMARC previos no garantizan Recibidos; no contratar planes ni cambiar DNS por inferencia |
+| Navegador y móvil | Restablecer la comprobación de política administrativa y permiso del selector de archivos | No eludir mediante otro navegador, CDP o descarga/captura alternativa; faltan revisión visual, foto real y dos sesiones de presencia |
+| Trello y logos restantes | Acceso permitido al tablero y clientes o exportación aportada por Dario; confirmar identidad de cada marca | No afirmar movimientos recientes ni sobrescribir fotos/logos sin identificar la empresa correcta |
+| Reservas simultáneas | PostgreSQL aislado con varias conexiones y dos sesiones de prueba | PGlite valida reglas y transacciones, no acredita la concurrencia real ni prueba táctil física |
+| Respaldo externo/R2 y purga | Reanudar explícitamente lo aplazado, almacenamiento y destino de restauración, evidencia de restore y retención | R2 continúa aplazado; no activar limpieza ni borrado de demos |
+
+Tras el aviso «Desbloqueado» de Dario se volvió a comprobar el acceso: el inventario de pestañas respondió, pero abrir la pestaña existente de Scale OS fue rechazado nuevamente por imposibilidad de verificar la política administrativa. No se usó ningún acceso indirecto; el bloqueo visual no está resuelto.
+
+Correcciones de esta revisión: presentar Informes y la demo histórica en la landing; completar accesos de la guía a partir de la navegación canónica, conservando los ocho roles; corregir el 404 de `/informes` bajo el dominio público de demo; mejorar el contraste de bordes del formulario de contacto. Las rutas privadas mantienen autenticación y noindex. Verificación sobre export limpio: 61 resultados de pruebas aprobados y compilación de 41 rutas; sin cambios ajenos WEEM/Dadoo. Interfaz `daf8e5615e53bf1a0802c2f2baa0ff7a84f4c4f8`, despliegue `fzcxodkw70mtajacr7xs73ia` finalizado el 11-09 a las 01:45:04 UTC (noche del 10-09 en Paraguay), commit exacto confirmado. No son autorización para ampliar funciones ni para ejecutar los bloqueos externos de la tabla.
+
+Límites del alcance anterior que no se convierten en trabajo autorizado por este cierre: no hay conexión bancaria directa ni bandeja Meta/Manychat; la conciliación usa CSV y los contactos sociales son enlaces. Tampoco se inventa el autor de movimientos históricos sin evidencia. Ver las secciones históricas para detalle.
+
+Salud posterior de esta publicación: interfaz `running:healthy`; backend `running:healthy` y `/health` HTTP 200 con database `ready`. No sustituye inspección visual del navegador. Esta revisión no modifica runtime ni base de datos del backend: solo su documentación de entregas y del contador instalado.
+
 ## Informes mensuales de agencias — 10 de septiembre de 2026
 
 Solicitud de Dario: comparar clientes, facturación, ticket, planes, antigüedad y tipos de clientes; demo profesional con meses pasados. Apartado `/informes` separado, solo Dueño, Administración y Finanzas. La ficha del cliente aporta clasificación, plan de servicio y fecha de inicio; no se infieren de su nombre o RUC.
@@ -102,7 +136,7 @@ Versiones publicadas: API `6c44bd0` y frontend `9b8f75e`. La API se construye ah
 
 Cambios aditivos de base de datos. Si falla salud, autenticación o guardado, volver a las versiones anteriores del API y frontend desde Owncoding Hub; no eliminar tablas ni registros nuevos. Los cambios ajenos de WEEM/Dadoo quedan fuera de los commits de esta entrega.
 
-## Pendientes actuales
+## Pendientes históricos del alcance anterior
 
 - Conexión oficial de WhatsApp/Instagram, bandeja omnicanal, webhooks y automatizaciones tipo Manychat: requiere permisos y activos de Meta. No hay envíos automáticos habilitados.
 - Copias externas: falta un destino de almacenamiento autorizado y verificar su retención. La prueba de restauración ya pasó (ver ampliación).
