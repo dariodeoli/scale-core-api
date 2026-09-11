@@ -26,7 +26,13 @@ export async function claimInvite(c,linkId,profile){
  if(u.is_demo_guest)fail('Usá una cuenta de Google real',403);
  const existing=(await c.query('select active,removed_at from organization_members where organization_id=$1 and user_id=$2',[l.organization_id,u.id])).rows[0];
  // A link never changes the role or reactivates a previously removed/suspended member.
- if(existing){if(!existing.active||existing.removed_at)fail('Tu acceso está suspendido o retirado. Contactá al dueño.',403);return{userId:u.id,organizationId:l.organization_id};}
+ if(existing){
+  if(existing.active&&!existing.removed_at)return{userId:u.id,organizationId:l.organization_id};
+  if(l.mode!=='approval')fail('Tu acceso está suspendido o retirado. Contactá al dueño.',403);
+  const name=String(profile.name||email).slice(0,160);
+  await c.query('insert into agency_access_requests(link_id,user_id,full_name) values($1,$2,$3) on conflict(link_id,user_id) do update set status=\'pending\',full_name=excluded.full_name,decided_at=null,decided_by=null',[l.id,u.id,name]);
+  return{pending:true,userId:u.id,organizationId:l.organization_id};
+ }
  const name=String(profile.name||email).slice(0,160);
  if(l.mode==='approval'){
   await c.query('insert into agency_access_requests(link_id,user_id,full_name) values($1,$2,$3) on conflict(link_id,user_id) do nothing',[l.id,u.id,name]);
@@ -71,8 +77,8 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
    if(b.action==='approve'){
     if(accessRequestState(r).status==='unavailable')fail('La invitación ya no está disponible. Revisá la empresa y generá otro enlace.',409);
     const old=(await c.query('select user_id from organization_members where user_id=$1 and organization_id=$2',[r.user_id,org])).rows[0];
-    if(old)fail('Esta persona ya tiene un registro de acceso. Administralo desde Equipo.',409);
-    await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,r.user_id,r.role]);
+    if(old)await c.query('update organization_members set role=$1,active=true,removed_at=null where organization_id=$2 and user_id=$3',[r.role,org,r.user_id]);
+    else await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,r.user_id,r.role]);
     await c.query('insert into agency_user_profiles(organization_id,user_id,full_name) values($1,$2,$3) on conflict do nothing',[org,r.user_id,r.full_name]);
    }
    await c.query('update agency_access_requests set status=$1,decided_at=now(),decided_by=$2 where id=$3',[b.action==='approve'?'approved':'rejected',user.id,key]);result={ok:true};
