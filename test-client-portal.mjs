@@ -23,7 +23,7 @@ const orderA=(await query("insert into agency_work_orders(organization_id,projec
 const orderB=(await query("insert into agency_work_orders(organization_id,project_id,title,status) values($1,$2,'Entrega B','approved') returning id",[org,projectB])).rows[0].id;
 const publishedA=await call(`/api/agency/work-orders/${orderA}/client-portal-delivery`,{method:'POST',payload:{assetUrl:'https://drive.google.com/a',assetName:'Archivo A'}});assert.equal(publishedA.status,200,publishedA.error);
 assert.equal((await call(`/api/agency/work-orders/${orderB}/client-portal-delivery`,{method:'POST',payload:{assetUrl:'https://drive.google.com/b',assetName:'Archivo B'}})).status,200);
-const created=await call(`/api/agency/clients/${clientA}/client-portal-invites`,{method:'POST',payload:{email:'cliente@example.invalid'}});assert.equal(created.status,201);const inviteToken=new URL(created.url).searchParams.get('token');assert.ok(inviteToken);
+const created=await call(`/api/agency/clients/${clientA}/client-portal-invites`,{method:'POST',payload:{email:'cliente@example.invalid'}});assert.equal(created.status,201);assert.match(created.url,/^https:\/\/app\.scaleparaguay\.com\/cliente\/invitacion\?token=/);const inviteToken=new URL(created.url).searchParams.get('token');assert.ok(inviteToken);
 assert.equal((await call('/api/client-portal/invites/preview?token='+inviteToken,{actor:null})).status,200);
 assert.equal((await call('/api/client-portal/invites/accept',{method:'POST',actor:null,payload:{token:inviteToken,fullName:'Cliente QA',password:'cliente-seguro-123'}})).status,201);
 const accepted=await call('/api/client-portal/invites/accept',{method:'POST',actor:null,payload:{token:inviteToken,fullName:'Cliente QA',password:'cliente-seguro-123'}});assert.equal(accepted.status,410);
@@ -35,6 +35,8 @@ const deliveryId=list.deliveries[0].id;assert.equal((await call(`/api/client-por
 assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/comments`,{method:'POST',actor:null,cookie:sessionCookie,payload:{body:'Listo para publicar'}})).status,201);
 assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/decision`,{method:'POST',actor:null,cookie:sessionCookie,payload:{decision:'changes_requested'}})).status,400);
 assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/decision`,{method:'POST',actor:null,cookie:sessionCookie,payload:{decision:'changes_requested',comment:'Ajustar el cierre del video'}})).status,200);
+assert.equal((await query('select status from agency_work_orders where id=$1',[orderA])).rows[0].status,'approved','la decisión del cliente no modifica el estado interno');
+assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/comments`,{method:'POST',actor:null,cookie:sessionCookie,origin:'https://evil.example',payload:{body:'Intento externo'}})).status,403,'el portal rechaza escrituras desde otro origen');
 assert.equal((await call(`/api/agency/work-orders/${orderA}/client-portal-delivery`,{method:'PATCH',payload:{visible:false}})).status,200);
 assert.equal((await call('/api/client-portal/deliveries',{actor:null,cookie:sessionCookie})).deliveries.length,0,'revoked delivery disappears immediately');
 assert.equal(session.length,64);await pg.close();console.log('PASS: isolated client identities, client-scoped published deliveries, comments, decisions and revocation');
