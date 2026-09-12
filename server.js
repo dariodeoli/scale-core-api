@@ -40,6 +40,7 @@ import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
 import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
 import {trialDetails,registerTrial} from './trial-registration.js';
+import {platformAdmin,platformBootstrapEmails} from './platform-admin.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -49,6 +50,7 @@ const bootstrapEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const bootstrapPassword = process.env.ADMIN_PASSWORD || '';
 const scaleOsOwnerEmail = (process.env.SCALE_OS_OWNER_EMAIL || '').trim().toLowerCase();
 const scaleOsOwnerPassword = process.env.SCALE_OS_OWNER_PASSWORD || '';
+const platformAdminEmails = platformBootstrapEmails(process.env.SCALE_PLATFORM_ADMIN_EMAILS);
 const dadooOwnerEmail = (process.env.DADOO_OWNER_EMAIL || '').trim().toLowerCase();
 const dadooOwnerPassword = process.env.DADOO_OWNER_PASSWORD || '';
 const googleClientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
@@ -120,6 +122,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_assignment_notifications.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_comment_mentions.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_inventory_verifications.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260912_platform_admin.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -131,6 +134,7 @@ async function init() {
   await provisionOwner(bootstrapEmail, bootstrapPassword);
   await provisionOwner(scaleOsOwnerEmail, scaleOsOwnerPassword);
   await provisionOwnerForOrganization(dadooOwnerEmail, dadooOwnerPassword, 'dadoo-capital');
+  if(platformAdminEmails.length)await db.query('insert into platform_administrators(user_id) select id from users where email=any($1::text[]) on conflict(user_id) do nothing',[platformAdminEmails]);
 }
 async function provisionOwnerForOrganization(email, password, slug) {
   if (!email || !password) return;
@@ -186,6 +190,7 @@ const server = http.createServer(async (req,res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if(url.pathname.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
     if(await subscriptionBilling({req,res,url,db,session,body,send}))return;
+    if(await platformAdmin({req,res,url,db,session,body,send}))return;
     // Billing is separate from membership: suspended owners retain billing,
     // logout and company switching, but no private operational reads/writes.
     if(url.pathname.startsWith('/api/agency/')||url.pathname==='/api/metrics'||url.pathname==='/api/hub/overview'||(url.pathname==='/api/auth/organizations'&&req.method==='POST')){
