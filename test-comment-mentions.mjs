@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {PGlite} from '@electric-sql/pglite';
+import {identitySchema} from './scripts/test-identity-schema.mjs';
+import {operations} from './operations.js';
+import {productivity} from './productivity.js';
+
+const pg=new PGlite();
+await pg.exec(await fs.readFile('schema.sql','utf8'));
+for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
+await identitySchema(pg);
+for(const name of ['20260910_productivity','20260910_profile_identity','20260910_demo_sessions','20260910_notifications','20260910_project_assignees','20260911_assignment_notifications','20260912_comment_mentions'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
+const query=(sql,values)=>pg.query(sql,values),db={query,connect:async()=>({query,release(){}})};
+const insert=async(sql,values)=>(await query(sql+' returning id',values)).rows[0].id;
+const org=await insert("insert into organizations(slug,name) values('mention-a','Mention A')");
+const other=await insert("insert into organizations(slug,name) values('mention-b','Mention B')");
+const actor=await insert("insert into users(email,password_hash) values('actor@mentions.example.invalid','unused')");
+const recipient=await insert("insert into users(email,password_hash) values('recipient@mentions.example.invalid','unused')");
+const outsider=await insert("insert into users(email,password_hash) values('outside@mentions.example.invalid','unused')");
+for(const [scope,user] of [[org,actor],[org,recipient],[other,outsider]])await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'editor')",[scope,user]);
+const client=await insert("insert into agency_clients(organization_id,name) values($1,'Client')",[org]);
+const project=await insert("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Project')",[org,client]);
+const order=await insert("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Piece')",[org,project]);
+const session={id:actor,organization_id:org,role:'editor'};
+async function call(handler,path,payload,as=session){let response;await handler({req:{method:'POST',socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test'+path),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>response={status,...data}});return response;}
+
+let response=await call(operations,`/api/agency/projects/${project}/comments`,{body:'@Camila revisar',mentioned_user_ids:[String(recipient)]});
+assert.equal(response.status,201);
+assert.equal((await query('select count(*)::int n from agency_project_comment_mentions where organization_id=$1 and project_comment_id=$2 and mentioned_user_id=$3',[org,response.comment.id,recipient])).rows[0].n,1);
+assert.equal((await query("select count(*)::int n from agency_notifications where organization_id=$1 and user_id=$2 and kind='comment'",[org,recipient])).rows[0].n,1);
+response=await call(productivity,`/api/agency/productivity/orders/${order}/comments`,{body:'@Camila la pieza está lista',mentioned_user_ids:[recipient]});
+assert.equal(response.status,201);
+assert.equal((await query('select count(*)::int n from agency_order_comment_mentions where organization_id=$1 and order_comment_id=$2 and mentioned_user_id=$3',[org,response.comment.id,recipient])).rows[0].n,1);
+assert.equal((await query("select count(*)::int n from agency_notifications where organization_id=$1 and user_id=$2 and kind='comment'",[org,recipient])).rows[0].n,2);
+const commentsBefore=(await query('select count(*)::int n from agency_project_comments where organization_id=$1',[org])).rows[0].n;
+response=await call(operations,`/api/agency/projects/${project}/comments`,{body:'No permitido',mentioned_user_ids:[String(outsider)]});
+assert.equal(response.status,400);
+assert.equal((await query('select count(*)::int n from agency_project_comments where organization_id=$1',[org])).rows[0].n,commentsBefore,'invalid mentions roll back the comment');
+response=await call(productivity,`/api/agency/productivity/orders/${order}/comments`,{body:'Formato inválido',mentioned_user_ids:['bad-id']});
+assert.equal(response.status,400);
+assert.equal((await query('select count(*)::int n from agency_order_comments where organization_id=$1',[org])).rows[0].n,1);
+await pg.close();
+console.log('PASS: stable project/order comment mentions, recipient-scoped persistent notices, tenant validation and transactional rollback');

@@ -4,6 +4,7 @@ import {fail,text,id,optId,date,option,owned,link} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {profilePhoto} from './media-policy.js';
 import {historyPage,historyResult} from './history-page.js';
+import {saveCommentMentions} from './comment-mentions.js';
 const makers=['owner','admin','management','production','editor'];
 const managers=['owner','admin','management','production'];
 const finance=['owner','admin','finance'];
@@ -79,7 +80,9 @@ export async function productivity({req,res,url,db,session,body,send}){
    }
    else if(req.method==='POST'&&action==='comments'){
     const b=await body(req),content=text(b.body,2000);if(!content)fail('Escribí un comentario');
-    result={comment:(await c.query('insert into agency_order_comments(organization_id,work_order_id,author_user_id,body) values($1,$2,$3,$4) returning *',[org,key,user.id,content])).rows[0]};status=201;
+    const comment=(await c.query('insert into agency_order_comments(organization_id,work_order_id,author_user_id,body) values($1,$2,$3,$4) returning *',[org,key,user.id,content])).rows[0];
+    await saveCommentMentions(c,{organizationId:org,commentKind:'order',commentId:comment.id,mentionedUserIds:b.mentioned_user_ids,workOrderId:order.id,projectId:order.project_id,title:'Comentario en: '+order.title,body:content});
+    result={comment};status=201;
    }else if(req.method==='POST'&&action==='duplicate'){
     result={order:(await c.query("insert into agency_work_orders(organization_id,project_id,title,description,status,estimated_hours) values($1,$2,$3,$4,'to_record',$5) returning *",[org,order.project_id,text(order.title.slice(0,150)+' · copia',160),order.description,order.estimated_hours])).rows[0]};status=201;
    }else fail('Método no permitido',405);

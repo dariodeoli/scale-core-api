@@ -4,6 +4,7 @@ import {companyCurrency} from './forecast.js';
 import { collaboratorAccess } from './collaborator-access.js';
 import { profilePhoto } from './media-policy.js';
 import {visibleRecord,assertRecordAvailable} from './record-lifecycle.js';
+import {saveCommentMentions} from './comment-mentions.js';
 const financeRoles = ['owner','admin','finance'];
 function fail(message, status=400) { throw Object.assign(new Error(message),{status}); }
 const text = (value, max=2000) => typeof value==='string' && value.length<=max ? value.trim() : fail('Texto inválido');
@@ -61,7 +62,12 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
   } else if(commentMatch) {
    await belongs(c,'agency_projects',commentMatch[1],org);
    if(req.method==='GET') result={comments:(await c.query('select c.*,u.email as author_email from agency_project_comments c left join users u on u.id=c.author_user_id where c.organization_id=$1 and c.project_id=$2 order by c.created_at,c.id',[org,commentMatch[1]])).rows};
-   else if(req.method==='POST') {const b=text((await body(req)).body);if(!b) fail('Escribí un comentario');result={comment:(await c.query('insert into agency_project_comments(organization_id,project_id,author_user_id,body) values($1,$2,$3,$4) returning *',[org,commentMatch[1],user.id,b])).rows[0]};status=201;}
+   else if(req.method==='POST') {
+    const incoming=await body(req),commentBody=text(incoming.body);if(!commentBody) fail('Escribí un comentario');
+    const comment=(await c.query('insert into agency_project_comments(organization_id,project_id,author_user_id,body) values($1,$2,$3,$4) returning *',[org,commentMatch[1],user.id,commentBody])).rows[0];
+    await saveCommentMentions(c,{organizationId:org,commentKind:'project',commentId:comment.id,mentionedUserIds:incoming.mentioned_user_ids,projectId:commentMatch[1],title:'Nuevo comentario de proyecto',body:commentBody});
+    result={comment};status=201;
+   }
    else fail('Método no permitido',405);
   } else if(collaboratorMatch) {
    if(req.method==='GET') result={collaborators:(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows};
