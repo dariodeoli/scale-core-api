@@ -36,9 +36,13 @@ async function audit(db,user,action,targetType,targetId){
 }
 function page(url){return {limit:limit(url.searchParams.get('limit')),offset:integer(url.searchParams.get('offset'))};}
 function search(url){const value=(url.searchParams.get('q')||'').trim();return value.slice(0,100);}
-export async function platformAdmin({req,res,url,db,session,body,send}){
+export async function platformAdmin({req,res,url,db,session,body,send,bootstrapValue=''}){
  if(!url.pathname.startsWith('/api/platform/'))return false;
  try{
+  if(url.pathname==='/api/platform/bootstrap-status'&&req.method==='GET'){
+   const status=await platformBootstrapStatus(db,bootstrapValue);
+   send(res,200,status);return true;
+  }
   const user=await actor(db,session,req);
   if(url.pathname==='/api/platform/overview'&&req.method==='GET'){
    const [agencies,users,subscriptions,coupons]=(await Promise.all([
@@ -102,6 +106,29 @@ export async function platformAdmin({req,res,url,db,session,body,send}){
   fail('Ruta de administración global no encontrada.',404);
  }catch(error){send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación global.'});return true;}
 }
-export function platformBootstrapEmails(value){
- return [...new Set(String(value||'').split(',').map(email=>email.trim().toLowerCase()).filter(email=>/^\S+@\S+\.\S+$/.test(email)))];
+export function platformBootstrapEmail(value){
+ const email=String(value||'').trim().toLowerCase();
+ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)&&email.length<=254?email:null;
+}
+export async function platformBootstrapStatus(db,value){
+ const configured=String(value||'').trim().length>0;
+ const valid=Boolean(platformBootstrapEmail(value));
+ const initialized=(await db.query('select exists(select 1 from platform_administrators) as initialized')).rows[0]?.initialized===true;
+ return {configured,valid,initialized,state:initialized?'initialized':!configured?'not_configured':!valid?'invalid_configuration':'awaiting_eligible_user'};
+}
+export async function bootstrapInitialPlatformAdmin(db,value){
+ const email=platformBootstrapEmail(value);
+ const status=await platformBootstrapStatus(db,value);
+ if(status.initialized||!email)return {...status,activated:false};
+ const target=(await db.query(`select u.id from users u
+   where u.email=$1 and u.email_verified_at is not null and u.is_demo_guest=false
+   and exists(select 1 from organization_members m where m.user_id=u.id and m.active=true and m.removed_at is null)
+   limit 1`,[email])).rows[0];
+ if(!target)return {...status,activated:false,state:'awaiting_eligible_user'};
+ const created=await db.query(`insert into platform_administrators(user_id,created_by_user_id)
+   select $1,null where not exists(select 1 from platform_administrators)
+   on conflict(user_id) do nothing returning user_id`,[target.id]);
+ if(!created.rows[0])return {...await platformBootstrapStatus(db,value),activated:false};
+ await db.query("insert into platform_bootstrap_audit_log(target_user_id,action) values($1,'initial_admin_granted') on conflict(target_user_id,action) do nothing",[target.id]);
+ return {...await platformBootstrapStatus(db,value),activated:true,state:'activated'};
 }
