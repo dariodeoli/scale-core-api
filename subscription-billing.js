@@ -7,15 +7,25 @@ const orgId=value=>{if(!/^[1-9]\d{0,18}$/.test(String(value))||BigInt(value)>922
 const objectId=(value,prefix)=>{const id=typeof value==='object'&&value?value.id:value;if(typeof id!=='string'||!new RegExp(`^${prefix}_[A-Za-z0-9_]+$`).test(id))fail('Referencia de Stripe inválida');return id;};
 const iso=value=>value==null?null:new Date(value).toISOString();
 const demo=org=>Boolean(org.demo_owner_user_id||org.demo_source_id||org.slug==='scale-demo-controles-20260908');
+function verifiedWebhookAt(value){
+ // This is an operator attestation after Stripe has delivered a real signed test
+ // event to this exact endpoint. It is deliberately not inferred from a secret:
+ // merely having a webhook secret does not prove the route, proxy or raw body
+ // handling works in the deployed environment.
+ if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value))return null;
+ const time=Date.parse(value);return Number.isFinite(time)&&time<=Date.now()+300000?new Date(time).toISOString():null;
+}
 function config(){
  const env=process.env,key=env.STRIPE_SECRET_KEY||'',whsec=env.STRIPE_WEBHOOK_SECRET||'';
  let origin=null;
  try{const parsed=new URL(env.BILLING_APP_ORIGIN);if(parsed.protocol==='https:'&&!parsed.username&&!parsed.password&&parsed.pathname==='/'&&!parsed.search&&!parsed.hash)origin=parsed.origin;}catch{}
  const prices={USD:env.STRIPE_PRICE_USD,PYG:env.STRIPE_PRICE_PYG},product=env.STRIPE_PRODUCT_ID;
- const ready=env.STRIPE_BILLING_ENABLED==='true'&&/^sk_(test|live)_[A-Za-z0-9]+$/.test(key)&&/^whsec_[A-Za-z0-9]+$/.test(whsec)&&Object.values(prices).every(p=>/^price_[A-Za-z0-9]+$/.test(p||''))&&prices.USD!==prices.PYG&&/^prod_[A-Za-z0-9]+$/.test(product||'')&&Boolean(origin);
- return {ready,key,whsec,prices,product,origin,live:key.startsWith('sk_live_')};
+ const structurallyReady=/^sk_(test|live)_[A-Za-z0-9]+$/.test(key)&&/^whsec_[A-Za-z0-9]+$/.test(whsec)&&Object.values(prices).every(p=>/^price_[A-Za-z0-9]+$/.test(p||''))&&prices.USD!==prices.PYG&&/^prod_[A-Za-z0-9]+$/.test(product||'')&&Boolean(origin);
+ const verifiedAt=verifiedWebhookAt(env.STRIPE_WEBHOOK_VERIFIED_AT);
+ const readiness=env.STRIPE_BILLING_ENABLED!=='true'?'disabled':!structurallyReady?'configuration_pending':!verifiedAt?'webhook_pending':'ready';
+ return {ready:readiness==='ready',readiness,verifiedAt,key,whsec,prices,product,origin,live:key.startsWith('sk_live_')};
 }
-function configured(){const cfg=config();if(!cfg.ready)fail('Cobro por Stripe todavía no configurado',503,'BILLING_NOT_CONFIGURED');return cfg;}
+function configured(){const cfg=config();if(cfg.ready)return cfg;if(cfg.readiness==='webhook_pending')fail('Stripe requiere una prueba firmada del webhook antes de habilitar pagos',503,'BILLING_WEBHOOK_UNVERIFIED');fail('Cobro por Stripe todavía no configurado',503,'BILLING_NOT_CONFIGURED');}
 
 async function actor(db,user,owner=false){
  if(!user)fail('No autenticado',401,'BILLING_UNAUTHENTICATED');
@@ -49,11 +59,11 @@ export async function subscriptionState(db,user,now=new Date()){
   status=timestamp<new Date(row.trial_ends_at).getTime()?'trialing':row.paid_through_at&&timestamp<new Date(row.paid_through_at).getTime()?'active':timestamp<suspend?'grace':'suspended';
   remaining=Math.max(0,Math.ceil(((status==='trialing'?new Date(row.trial_ends_at).getTime():status==='active'?due:suspend)-timestamp)/DAY));
  }
- const canManage=!isDemo&&user.role==='owner'&&org.member_role==='owner',checkoutReady=Boolean(row&&!isDemo&&config().ready);
+ const billing=config(),canManage=!isDemo&&user.role==='owner'&&org.member_role==='owner',checkoutReady=Boolean(row&&!isDemo&&billing.ready);
  // Availability only: never expose provider IDs or infer a paid entitlement.
  const portalReady=Boolean(canManage&&checkoutReady&&row?.stripe_customer_id&&row?.stripe_subscription_id);
  return {status,hasAccess:status!=='suspended',currency,amount:plans[currency].amount,trialEndsAt:row?iso(row.trial_ends_at):null,dueAt:iso(due),suspendAt:iso(suspend),daysRemaining:remaining,
-  canManage,checkoutReady,portalReady};
+  canManage,checkoutReady,portalReady,billingReadiness:billing.readiness};
 }
 
 async function transaction(db,work){const c=await db.connect();try{await c.query('begin');const result=await work(c);await c.query('commit');return result;}catch(error){await c.query('rollback');throw error;}finally{c.release();}}
