@@ -44,7 +44,7 @@ import {subscriptionBilling,subscriptionState,startTrial} from './subscription-b
 import {trialDetails,registerTrial} from './trial-registration.js';
 import {platformAdmin,bootstrapInitialPlatformAdmin} from './platform-admin.js';
 import {createEmailDelivery,publicEmailDeliveryStatus} from './email-delivery.js';
-import {clientPortal} from './client-portal.js';
+import {clientPortal,clientPortalResetEmail} from './client-portal.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -83,6 +83,7 @@ async function sendInvitation(email, organizationName, role) {
 }
 async function sendReset(email,token){return emailDelivery.send({to:email,message:resetEmail({token,appUrl}),idempotencyKey:'reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function sendVerification(email,token){return emailDelivery.send({to:email,message:verificationEmail({token,appUrl}),idempotencyKey:'verify-'+crypto.createHash('sha256').update(token).digest('hex')});}
+async function sendClientPortalReset(email,token){return emailDelivery.send({to:email,message:clientPortalResetEmail({token}),idempotencyKey:'client-portal-reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function runOptionalMigration(filename,client=db) {
   try {
     await client.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
@@ -135,6 +136,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_studio_reservations.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal_google_oauth.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal_password_resets.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -221,8 +223,7 @@ const server = http.createServer(async (req,res) => {
     if(await inventoryReservations({req,res,url,db,session,body,send}))return;
     if(await workChecklists({req,res,url,db,session,body,send}))return;
     if(await publicExperience({req,res,url,db,session,body,send,cookie,parseCookies}))return;
-    if(await clientPortal({req,res,url,db,session,body,send}))return;
-    if(await clientPortal({req,res,url,db,session,body,send}))return;
+    if(await clientPortal({req,res,url,db,session,body,send,sendPasswordReset:sendClientPortalReset,emailAvailable:emailDelivery.status.available}))return;
     if(await inviteLinks({req,res,url,db,session,body,send,appUrl}))return;
     if(req.method!=='GET'){
       const actor=await session(req);

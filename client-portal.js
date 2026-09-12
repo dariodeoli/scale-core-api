@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import {throttle} from './password-access.js';
+import {throttle,validatePassword} from './password-access.js';
 import {externalLink} from './media-policy.js';
 import {owned} from './suite-validation.js';
 
@@ -23,6 +23,7 @@ const token=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:f
 const id=value=>/^\d+$/.test(String(value))&&Number(value)>0?String(value):fail('Identificador inválido');
 const text=(value,max=2000)=>typeof value==='string'&&value.trim().length>0&&value.trim().length<=max?value.trim():fail('Texto inválido');
 const email=value=>{const normalized=typeof value==='string'?value.trim().toLowerCase():'';if(!/^\S+@\S+\.\S+$/.test(normalized)||normalized.length>254)fail('Correo inválido');return normalized;};
+const htmlEscape=value=>String(value).replace(/[&<>\"']/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[character]));
 const portalCookie=(value,maxAge)=>`__Host-scale_client_session=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
 const readCookie=req=>Object.fromEntries((req.headers?.cookie||'').split(';').filter(Boolean).map(value=>{const at=value.indexOf('=');return[value.slice(0,at).trim(),decodeURIComponent(value.slice(at+1))];}));
 const sameOrigin=req=>{const origin=req.headers?.origin;if(origin&&!clientOrigins.has(origin))fail('Origen no permitido',403);};
@@ -54,10 +55,17 @@ async function validInvite(c,raw,{lock=false}={}){
  return invite;
 }
 function actor(user){if(!user||!clientRoles.includes(user.role))fail('Sin permiso para gestionar el portal de clientes',403);}
-export async function clientPortal({req,res,url,db,session,body,send}){
+export function clientPortalResetEmail({token}){
+ const resetUrl=`${clientOrigin}/recuperar?resetToken=${token}`;
+ const safeUrl=htmlEscape(resetUrl);
+ return {subject:'Restablecé tu contraseña del portal de cliente',text:`Recibimos una solicitud para restablecer la contraseña de tu Portal del Cliente de Scale OS. Abrí este enlace dentro de una hora: ${resetUrl}\n\nSi no lo solicitaste, podés ignorar este correo.`,html:`<h1>Restablecé tu contraseña</h1><p>Recibimos una solicitud para tu Portal del Cliente de Scale OS.</p><p><a href="${safeUrl}">Elegir una contraseña nueva</a></p><p>Este enlace vence en una hora. Si no lo solicitaste, podés ignorar este correo.</p>`};
+}
+export async function clientPortal({req,res,url,db,session,body,send,sendPasswordReset,emailAvailable=true}){
  const invitePreview=url.pathname==='/api/client-portal/invites/preview';
  const inviteAccept=url.pathname==='/api/client-portal/invites/accept';
- const login=url.pathname==='/api/client-portal/auth/login';
+  const login=url.pathname==='/api/client-portal/auth/login';
+ const passwordRequest=url.pathname==='/api/client-portal/auth/password/request';
+ const passwordReset=url.pathname==='/api/client-portal/auth/password/reset';
  const logout=url.pathname==='/api/client-portal/auth/logout';
  const me=url.pathname==='/api/client-portal/me';
  const deliveryMatch=url.pathname.match(/^\/api\/client-portal\/deliveries\/(\d+)(?:\/(comments|decision))?$/);
@@ -65,7 +73,7 @@ export async function clientPortal({req,res,url,db,session,body,send}){
  const internalInvite=url.pathname.match(/^\/api\/agency\/clients\/(\d+)\/client-portal-invites$/);
  const revokeInvite=url.pathname.match(/^\/api\/agency\/client-portal-invites\/(\d+)\/revoke$/);
  const internalDelivery=url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)\/client-portal-delivery$/);
- if(!invitePreview&&!inviteAccept&&!login&&!logout&&!me&&!deliveries&&!deliveryMatch&&!internalInvite&&!revokeInvite&&!internalDelivery)return false;
+ if(!invitePreview&&!inviteAccept&&!login&&!passwordRequest&&!passwordReset&&!logout&&!me&&!deliveries&&!deliveryMatch&&!internalInvite&&!revokeInvite&&!internalDelivery)return false;
  let c,transaction=false;
  try{
   if(internalInvite||revokeInvite||internalDelivery){
@@ -111,7 +119,7 @@ export async function clientPortal({req,res,url,db,session,body,send}){
    c=await db.connect();await c.query('begin');transaction=true;const invite=await validInvite(c,raw,{lock:true});
    let user=(await c.query('select * from client_portal_users where email_normalized=$1 for update',[invite.email_normalized])).rows[0];
    if(user){if(user.disabled_at||!await bcrypt.compare(b.password,user.password_hash))fail('Esta dirección ya tiene una cuenta. Ingresá con su contraseña.',409);}
-   else user=(await c.query('insert into client_portal_users(email,email_normalized,password_hash,full_name) values($1,$2,$3,$4) returning *',[invite.email_normalized,invite.email_normalized,await bcrypt.hash(b.password,12),text(b.fullName,120)])).rows[0];
+   else {validatePassword(b.password,invite.email_normalized);user=(await c.query('insert into client_portal_users(email,email_normalized,password_hash,full_name) values($1,$2,$3,$4) returning *',[invite.email_normalized,invite.email_normalized,await bcrypt.hash(b.password,12),text(b.fullName,120)])).rows[0];}
    await c.query('insert into client_portal_grants(organization_id,client_id,portal_user_id,granted_by_user_id) values($1,$2,$3,$4) on conflict(organization_id,client_id,portal_user_id) do update set active=true,revoked_at=null,revoked_by_user_id=null',[invite.organization_id,invite.client_id,user.id,invite.invited_by_user_id]);
    await c.query('update client_portal_invites set accepted_at=now() where id=$1',[invite.id]);const rawSession=crypto.randomBytes(32).toString('hex');
    await c.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[hash(rawSession),user.id]);
@@ -121,6 +129,32 @@ export async function clientPortal({req,res,url,db,session,body,send}){
    if(req.method!=='POST')fail('Método no permitido',405);const b=await body(req),address=email(b.email);if(!await throttle(db,'client-portal-login:'+address,10))fail('Demasiados intentos. Esperá 15 minutos.',429);
    const user=(await db.query('select u.* from client_portal_users u where u.email_normalized=$1 and u.disabled_at is null and exists(select 1 from client_portal_grants g join organizations o on o.id=g.organization_id join agency_clients c on c.id=g.client_id and c.organization_id=g.organization_id where g.portal_user_id=u.id and g.active and o.active and c.active)',[address])).rows[0];
    if(!user||typeof b.password!=='string'||!await bcrypt.compare(b.password,user.password_hash))fail('Credenciales inválidas',401);const raw=crypto.randomBytes(32).toString('hex');await db.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[hash(raw),user.id]);send(res,200,{ok:true},{'Set-Cookie':portalCookie(raw,604800)});return true;
+  }
+  if(passwordRequest){
+   if(req.method!=='POST')fail('Método no permitido',405);
+   if(!emailAvailable||typeof sendPasswordReset!=='function')fail('La recuperación por correo todavía no está disponible. Usá Google o contactá a quien te invitó.',503);
+   const b=await body(req),address=email(b.email);
+   if(await throttle(db,'client-portal-reset:'+address,3)){
+    const portalUser=(await db.query(`select u.id from client_portal_users u where u.email_normalized=$1 and u.disabled_at is null and exists(select 1 from client_portal_grants g join organizations o on o.id=g.organization_id join agency_clients c on c.id=g.client_id and c.organization_id=g.organization_id where g.portal_user_id=u.id and g.active and o.active and c.active)`,[address])).rows[0];
+    if(portalUser){
+     const raw=crypto.randomBytes(32).toString('hex');
+     await db.query('delete from client_portal_password_resets where portal_user_id=$1',[portalUser.id]);
+     await db.query("insert into client_portal_password_resets(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '1 hour')",[hash(raw),portalUser.id]);
+     await sendPasswordReset(address,raw).catch(()=>false);
+    }
+   }
+   send(res,202,{message:'Si ese correo tiene acceso al portal, recibirá un enlace para restablecer su contraseña.'});return true;
+  }
+  if(passwordReset){
+   if(req.method!=='POST')fail('Método no permitido',405);
+   const b=await body(req),raw=token(b.token),address=typeof b.email==='string'?b.email:'';validatePassword(b.password,address);
+   c=await db.connect();await c.query('begin');transaction=true;
+   const saved=(await c.query('delete from client_portal_password_resets where token_hash=$1 and expires_at>now() returning portal_user_id',[hash(raw)])).rows[0];
+   if(!saved)fail('El enlace venció o ya fue utilizado. Solicitá otro.',400);
+   await c.query('update client_portal_users set password_hash=$1,updated_at=now() where id=$2',[await bcrypt.hash(b.password,12),saved.portal_user_id]);
+   await c.query('delete from client_portal_sessions where portal_user_id=$1',[saved.portal_user_id]);
+   await c.query('delete from client_portal_password_resets where portal_user_id=$1',[saved.portal_user_id]);
+   await c.query('commit');transaction=false;send(res,200,{ok:true});return true;
   }
   const user=await portalSession(db,req);if(!user)fail('Ingresá al portal de cliente',401);
   if(logout){if(req.method!=='POST')fail('Método no permitido',405);await db.query('delete from client_portal_sessions where token_hash=$1',[user.token_hash]);send(res,200,{ok:true},{'Set-Cookie':portalCookie('',0)});return true;}
