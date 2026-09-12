@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {PGlite} from '@electric-sql/pglite';
+import {clientPortal} from './client-portal.js';
+
+const pg=new PGlite();
+for(const file of ['schema.sql','migrations/20260908_treasury_ledger.sql','migrations/20260908_people_commissions_comments.sql','migrations/20260908_operations_complete.sql','migrations/20260908_referral_discounts.sql','migrations/20260908_collaborator_profiles.sql','migrations/20260908_agency_suite.sql','migrations/20260908_daily_controls.sql','migrations/20260912_client_portal.sql'])await pg.exec(await fs.readFile(file,'utf8'));
+const query=(sql,params)=>pg.query(sql,params),db={query,connect:async()=>({query,release(){}})};
+const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
+const owner=(await query("insert into users(email,password_hash) values('portal-owner@example.invalid','unused') returning id")).rows[0].id;
+await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org,owner]);
+const employee={id:owner,organization_id:org,role:'owner'};
+async function call(path,{method='GET',payload={},actor=employee,cookie='',origin}={}){
+ let result={};const req={method,headers:{cookie,...(origin?{origin}:{})},socket:{remoteAddress:'127.0.0.1'}};
+ const args={req,res:{writeHead(status,headers){result={status,headers};},end(content){result.content=content;}},url:new URL('https://test'+path),db,session:async()=>actor,body:async()=>payload,send:(_,status,data,headers={})=>{result={status,...data,headers};}};
+ assert.equal(await clientPortal(args),true);return result;
+}
+const clientA=(await query("insert into agency_clients(organization_id,name) values($1,'Cliente A') returning id",[org])).rows[0].id;
+const clientB=(await query("insert into agency_clients(organization_id,name) values($1,'Cliente B') returning id",[org])).rows[0].id;
+const projectA=(await query("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Proyecto A') returning id",[org,clientA])).rows[0].id;
+const projectB=(await query("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Proyecto B') returning id",[org,clientB])).rows[0].id;
+const orderA=(await query("insert into agency_work_orders(organization_id,project_id,title,status) values($1,$2,'Entrega A','approved') returning id",[org,projectA])).rows[0].id;
+const orderB=(await query("insert into agency_work_orders(organization_id,project_id,title,status) values($1,$2,'Entrega B','approved') returning id",[org,projectB])).rows[0].id;
+const publishedA=await call(`/api/agency/work-orders/${orderA}/client-portal-delivery`,{method:'POST',payload:{assetUrl:'https://drive.google.com/a',assetName:'Archivo A'}});assert.equal(publishedA.status,200,publishedA.error);
+assert.equal((await call(`/api/agency/work-orders/${orderB}/client-portal-delivery`,{method:'POST',payload:{assetUrl:'https://drive.google.com/b',assetName:'Archivo B'}})).status,200);
+const created=await call(`/api/agency/clients/${clientA}/client-portal-invites`,{method:'POST',payload:{email:'cliente@example.invalid'}});assert.equal(created.status,201);const inviteToken=new URL(created.url).searchParams.get('token');assert.ok(inviteToken);
+assert.equal((await call('/api/client-portal/invites/preview?token='+inviteToken,{actor:null})).status,200);
+assert.equal((await call('/api/client-portal/invites/accept',{method:'POST',actor:null,payload:{token:inviteToken,fullName:'Cliente QA',password:'cliente-seguro-123'}})).status,201);
+const accepted=await call('/api/client-portal/invites/accept',{method:'POST',actor:null,payload:{token:inviteToken,fullName:'Cliente QA',password:'cliente-seguro-123'}});assert.equal(accepted.status,410);
+const session=(await query('select token_hash from client_portal_sessions')).rows[0].token_hash; // raw token is returned only in Set-Cookie; obtain it from prior response below instead.
+const login=await call('/api/client-portal/auth/login',{method:'POST',actor:null,payload:{email:'cliente@example.invalid',password:'cliente-seguro-123'}});assert.equal(login.status,200);const sessionCookie=login.headers['Set-Cookie'];assert.match(sessionCookie,/__Host-scale_client_session=/);
+const list=await call('/api/client-portal/deliveries',{actor:null,cookie:sessionCookie});assert.equal(list.status,200);assert.equal(list.deliveries.length,1);assert.equal(list.deliveries[0].title,'Entrega A');
+assert.equal((await call(`/api/client-portal/deliveries/${orderB}`,{actor:null,cookie:sessionCookie})).status,404,'work-order IDs are not portal delivery IDs');
+const deliveryId=list.deliveries[0].id;assert.equal((await call(`/api/client-portal/deliveries/999999`,{actor:null,cookie:sessionCookie})).status,404);
+assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/comments`,{method:'POST',actor:null,cookie:sessionCookie,payload:{body:'Listo para publicar'}})).status,201);
+assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/decision`,{method:'POST',actor:null,cookie:sessionCookie,payload:{decision:'changes_requested'}})).status,400);
+assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/decision`,{method:'POST',actor:null,cookie:sessionCookie,payload:{decision:'changes_requested',comment:'Ajustar el cierre del video'}})).status,200);
+assert.equal((await call(`/api/agency/work-orders/${orderA}/client-portal-delivery`,{method:'PATCH',payload:{visible:false}})).status,200);
+assert.equal((await call('/api/client-portal/deliveries',{actor:null,cookie:sessionCookie})).deliveries.length,0,'revoked delivery disappears immediately');
+assert.equal(session.length,64);await pg.close();console.log('PASS: isolated client identities, client-scoped published deliveries, comments, decisions and revocation');
