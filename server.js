@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import pg from 'pg';
 import { operations } from './operations.js';
+import {normalizeUrgency} from './urgency.js';
 import { suite } from './agency-suite.js';
 import { passwordAccess, throttle } from './password-access.js';
 import {loginOrganization,defaultOrganizationId,setDefaultOrganization} from './default-organization.js';
@@ -115,6 +116,8 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_google_profile_photo.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_default_login_organization.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_weekly_reports.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260912_urgency.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260911_assignment_notifications.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -424,12 +427,12 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','sales','production'])) return send(res,403,{error:'Sin permiso'});
-      const {name='',clientId,driveUrl:rawDriveUrl=null}=await body(req);
+      const {name='',clientId,driveUrl:rawDriveUrl=null,urgency=null}=await body(req);
       const driveUrl=externalLink(rawDriveUrl);
       if (typeof name !== 'string' || name.trim().length < 2 || !Number.isInteger(Number(clientId))) return send(res,400,{error:'Proyecto inválido'});
       const client=await db.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[Number(clientId),user.organization_id]);
       if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
-      const r=await auditedQuery(user,req,'insert into agency_projects(name,client_id,drive_url,organization_id) values($1,$2,$3,$4) returning *',[name.trim(),Number(clientId),driveUrl||null,user.organization_id]);
+      const r=await auditedQuery(user,req,'insert into agency_projects(name,client_id,drive_url,organization_id,urgency) values($1,$2,$3,$4,$5) returning *',[name.trim(),Number(clientId),driveUrl||null,user.organization_id,normalizeUrgency(urgency)]);
       return send(res,201,{project:r.rows[0]});
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'GET') {
@@ -440,13 +443,13 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','production','editor'])) return send(res,403,{error:'Sin permiso'});
-      const {title='',projectId,status='to_record',description=null,driveUrl:rawDriveUrl=null}=await body(req);
+      const {title='',projectId,status='to_record',description=null,driveUrl:rawDriveUrl=null,urgency=null}=await body(req);
       const driveUrl=externalLink(rawDriveUrl);
       const allowedStatuses=['blocked','to_record','recorded','editing','review'];
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(projectId)) || !allowedStatuses.includes(status)) return send(res,400,{error:'Orden inválida'});
       const project=await db.query(`select p.id from agency_projects p join agency_clients c on c.id=p.client_id where p.id=$1 and p.organization_id=$2 and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')}`,[Number(projectId),user.organization_id]);
       if(!project.rows[0]) return send(res,404,{error:'Proyecto no encontrado'});
-      const r=await auditedQuery(user,req,'insert into agency_work_orders(title,project_id,status,description,drive_url,organization_id) values($1,$2,$3,$4,$5,$6) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null,user.organization_id]);
+      const r=await auditedQuery(user,req,'insert into agency_work_orders(title,project_id,status,description,drive_url,organization_id,urgency) values($1,$2,$3,$4,$5,$6,$7) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null,user.organization_id,normalizeUrgency(urgency)]);
       return send(res,201,{workOrder:r.rows[0]});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'GET') {

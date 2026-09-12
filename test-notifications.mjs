@@ -7,6 +7,7 @@ import {runMonthly,enqueueDue,deliverNotifications,automationApi} from './automa
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_notifications.sql','20260910_notifications.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 await identitySchema(pg);
+for(const file of ['20260910_project_assignees.sql','20260911_assignment_notifications.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const c={query:(s,v)=>pg.query(s,v),release:()=>{}},db={...c,connect:async()=>c};
 const org=(await c.query("select id from organizations where slug='scale'")).rows[0].id;
 const ids=[];for(let i=0;i<3;i++){const u=(await c.query("insert into users(email,password_hash) values($1,'none') returning id",['notification'+i+'@example.com'])).rows[0].id;ids.push(u);await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,$3)",[org,u,i===0?'owner':'editor']);}

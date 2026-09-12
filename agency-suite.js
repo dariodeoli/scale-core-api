@@ -1,4 +1,5 @@
 import {currencies} from './currencies.js';
+import {patchUrgency} from './urgency.js';
 import {companyCurrency} from './forecast.js';
 import crypto from 'node:crypto';
 import {fail,text,id,optId,option,amount,date,email,link,items,owned} from './suite-validation.js';
@@ -89,6 +90,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
      const expected=new Date(incoming.expected_updated_at).getTime();
      if(!Number.isFinite(expected)||expected!==new Date(old.updated_at).getTime())fail('Los detalles cambiaron. Cerrá y volvé a abrir para revisar antes de guardar.',409);
     }
+    await patchUrgency(c,user,kind,old,incoming);
     if(kind==='clients'&&Object.hasOwn(old,'lifecycle_status')){
      const state=option(incoming.lifecycle_status??(Object.hasOwn(incoming,'active')?(incoming.active===false?'inactive':'active'):old.lifecycle_status),['active','paused','cancelled','expired','inactive']);
      b.active=state==='active';
