@@ -4,6 +4,17 @@ export function normalizeRuc(value){
  if(!/^\d{3,12}(?:-\d)?$/.test(clean))fail('Ingresá un RUC numérico, con o sin guion y dígito verificador');
  return clean;
 }
+export function rucDigits(value){
+ const raw=String(value??'').trim();
+ return raw?normalizeRuc(raw).replace('-',''):null;
+}
+export async function assertUniqueClientRuc(c,organizationId,taxId,exceptClientId=null){
+ const digits=rucDigits(taxId);if(!digits)return;
+ const params=exceptClientId?[organizationId,digits,exceptClientId]:[organizationId,digits];
+ const excluded=exceptClientId?' and id<>$3':'';
+ const found=await c.query(`select id,name from agency_clients where organization_id=$1 and regexp_replace(coalesce(tax_id,''),'[^0-9]','','g')=$2${excluded} limit 1`,params);
+ if(found.rows.length)fail('Ya existe un cliente con este RUC en tu empresa. Buscalo antes de crear otro.',409);
+}
 export function rucRecord(value,requested){
  if(!value||typeof value!=='object'||typeof value.name!=='string'||!value.name.trim())fail('El proveedor no devolvió una ficha válida',502);
  const full=normalizeRuc(value.fullRuc||`${value.ruc}-${value.dv}`);
@@ -24,8 +35,7 @@ export async function rucLookup({req,res,url,db,session,body,send,fetcher=fetch}
    if(!ruc.includes('-'))fail('Confirmá el RUC completo con su dígito verificador');
    const name=text(b.name,120),legal=text(b.legal_name,160);if(name.length<2||legal.length<2)fail('Revisá nombre y razón social');
    await c.query('select id from organizations where id=$1 for update',[user.organization_id]);
-   const duplicate=await c.query("select id from agency_clients where organization_id=$1 and regexp_replace(coalesce(tax_id,''),'[^0-9]','','g')=$2 limit 1",[user.organization_id,ruc.replace('-','')]);
-   if(duplicate.rows.length)fail('Ya existe un cliente con este RUC en tu empresa. Buscalo antes de crear otro.',409);
+   await assertUniqueClientRuc(c,user.organization_id,ruc);
    await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
    const client=(await c.query('insert into agency_clients(organization_id,name,legal_name,tax_id) values($1,$2,$3,$4) returning *',[user.organization_id,name,legal,ruc])).rows[0];
    await c.query('commit');tx=false;send(res,201,{client});return true;

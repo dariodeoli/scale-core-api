@@ -11,6 +11,7 @@ import {clientColor,clientLogo} from './client-identity.js';
 import {clientLinks} from './client-links.js';
 import {setRecordAssignees} from './project-assignees.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
+import {assertUniqueClientRuc} from './ruc-lookup.js';
 const admin=['owner','admin'], commercial=[...admin,'management','finance','sales'], production=[...admin,'management','production'];
 const roles=[...admin,'management','finance','sales','production','editor','viewer'];
 const stages=['lead','contacted','proposal','negotiation','won','lost'];
@@ -96,7 +97,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
      b.active=state==='active';
      await c.query('update agency_clients set lifecycle_status=$1 where id=$2 and organization_id=$3',[state,key,org]);
     }
-    if(kind==='clients'){const name=text(b.name,120);if(name.length<2)fail('Ingresá el nombre');const logo=b.logo_url===old.logo_url?old.logo_url:await clientLogo(b.logo_url),color=clientColor(b.color_key??'violet');result={record:(await c.query('update agency_clients set name=$1,email=$2,phone=$3,notes=$4,legal_name=$5,tax_id=$6,active=$7,logo_url=$8,color_key=$9,social_links=$11,updated_at=now() where id=$10 returning *',[name,email(b.email),text(b.phone||'',50),text(b.notes||''),text(b.legal_name||'',160),text(b.tax_id||'',60),b.active!==false,logo,color,key,JSON.stringify(clientLinks(b.social_links))])).rows[0]};}
+    if(kind==='clients'){const name=text(b.name,120);if(name.length<2)fail('Ingresá el nombre');const taxId=text(b.tax_id||'',60);await assertUniqueClientRuc(c,org,taxId,key);const logo=b.logo_url===old.logo_url?old.logo_url:await clientLogo(b.logo_url),color=clientColor(b.color_key??'violet');result={record:(await c.query('update agency_clients set name=$1,email=$2,phone=$3,notes=$4,legal_name=$5,tax_id=$6,active=$7,logo_url=$8,color_key=$9,social_links=$11,updated_at=now() where id=$10 returning *',[name,email(b.email),text(b.phone||'',50),text(b.notes||''),text(b.legal_name||'',160),taxId,b.active!==false,logo,color,key,JSON.stringify(clientLinks(b.social_links))])).rows[0]};}
     if(kind==='projects'){const name=text(b.name,160),levels=Number(b.approval_levels);if(name.length<2||![1,2,3].includes(levels))fail('Proyecto inválido');const {links,primary}=patchDriveLinks(old,incoming);result={record:(await c.query('update agency_projects set name=$1,drive_url=$2,drive_links=$3,status=$4,start_date=$5,due_date=$6,approval_levels=$7,updated_at=now() where id=$8 returning *',[name,primary,JSON.stringify(links||[]),option(b.status,['active','paused','completed','cancelled']),date(b.start_date),date(b.due_date),levels,key])).rows[0]};}
     if(kind==='work-orders'){
      const state=option(b.status,['blocked','to_record','recorded','editing','review','approved','published']);let step=old.approval_step;

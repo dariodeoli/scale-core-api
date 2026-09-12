@@ -33,7 +33,7 @@ import {rememberGooglePhoto} from './google-profile-photo.js';
 import {liveVisitors,startLiveVisitorCleanup} from './live-visitors.js';
 import { productivity } from './productivity.js';
 import {weeklyReports} from './weekly-reports.js';
-import {rucLookup} from './ruc-lookup.js';
+import {rucLookup,assertUniqueClientRuc} from './ruc-lookup.js';
 import {presence} from './presence.js';
 import {demoOrganization,privateDemoEntry} from './demo-session.js';
 import {inviteLinks,resolveInvite,claimInvite,accessRequestState} from './invite-links.js';
@@ -458,11 +458,17 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'POST') {
       const user = await session(req); if (!can(user,['owner','admin','management','sales'])) return send(res,403,{error:'Sin permiso'});
-      const {name='',email=null,phone=null,notes=null,logo_url=null,color_key='violet'}=await body(req);
+      const {name='',email=null,phone=null,notes=null,logo_url=null,color_key='violet',tax_id='',legal_name=''}=await body(req);
       if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 120) return send(res,400,{error:'Nombre inválido'});
       const logo=await clientLogo(logo_url),color=clientColor(color_key);
-      const r=await auditedQuery(user,req,'insert into agency_clients(name,email,phone,notes,organization_id,logo_url,color_key) values($1,$2,$3,$4,$5,$6,$7) returning *',[name.trim(),email||null,phone||null,notes||null,user.organization_id,logo,color]);
-      return send(res,201,{client:r.rows[0]});
+      const client=await db.connect();
+      try{
+       await client.query('begin');await client.query('select id from organizations where id=$1 for update',[user.organization_id]);
+       await assertUniqueClientRuc(client,user.organization_id,tax_id);
+       await client.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
+       const r=await client.query('insert into agency_clients(name,email,phone,notes,organization_id,logo_url,color_key,tax_id,legal_name) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *',[name.trim(),email||null,phone||null,notes||null,user.organization_id,logo,color,String(tax_id||'').trim()||null,String(legal_name||'').trim()||null]);
+       await client.query('commit');return send(res,201,{client:r.rows[0]});
+      }catch(error){await client.query('rollback');return send(res,error.status||500,{error:error.status?error.message:'No se pudo crear el cliente'});}finally{client.release();}
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});

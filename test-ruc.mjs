@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
-import {rucLookup,normalizeRuc,rucRecord} from './ruc-lookup.js';
+import {rucLookup,normalizeRuc,rucRecord,assertUniqueClientRuc} from './ruc-lookup.js';
 assert.equal(normalizeRuc('80.168.807 - 8'),'80168807-8');assert.equal(normalizeRuc('1234567'),'1234567');assert.throws(()=>normalizeRuc('https://evil.example'));
 const record={name:'Empresa de prueba',ruc:'80168807',dv:'8',fullRuc:'80168807-8',state:'ACTIVO'};
 assert.equal(rucRecord(record,'80168807').tax_id,'80168807-8');assert.throws(()=>rucRecord(record,'1234567'));
@@ -22,5 +22,7 @@ const payload={ruc:'80168807-8',name:'Cliente de prueba',legal_name:'Empresa de 
 assert.equal((await call('clients/from-ruc',payload)).status,201);
 assert.equal((await call('clients/from-ruc',payload)).status,409);
 assert.equal((await call('clients/from-ruc',{...payload,ruc:'80168807'})).status,400);
+await assert.rejects(()=>assertUniqueClientRuc({query},org,'80.168.807-8'),error=>error.status===409);
+await assert.doesNotReject(()=>assertUniqueClientRuc({query},org,'80168807-8',1));
 assert.equal((await query('select count(*)::int as n from agency_clients where organization_id=$1',[org])).rows[0].n,1);
 await pg.close();console.log('PASS: RUC normalization, exact identity, role/demo boundary, free quota, confirmation and duplicate protection (provider mocked)');
