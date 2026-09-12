@@ -15,18 +15,23 @@ function secureAppUrl(value){
  }catch{return null;}
 }
 
-export function emailDeliveryStatus({apiKey,from,appUrl}={}){
- const providerConfigured=typeof apiKey==='string'&&apiKey.trim().length>=8;
+export function emailDeliveryStatus(options={}){
+ const {apiKey,from,appUrl,weemRelayUrl:rawRelayUrl,weemRelayToken:rawRelayToken}=options;
+ const weemRelayUrl=secureAppUrl(rawRelayUrl);
+ const weemRelayToken=typeof rawRelayToken==='string'&&rawRelayToken.trim().length>=16;
+ const relayConfigured=!!weemRelayUrl&&weemRelayToken;
+ const relayAttempted=!!weemRelayUrl||typeof rawRelayToken==='string'&&rawRelayToken.trim().length>0;
+ const providerConfigured=relayConfigured||(typeof apiKey==='string'&&apiKey.trim().length>=8&&!relayAttempted);
  const sender=senderAddress(from);
  const safeAppUrl=secureAppUrl(appUrl);
  const missing=[];
  if(!providerConfigured)missing.push('provider');
- if(!sender)missing.push('sender');
+ if(!relayConfigured&&!sender)missing.push('sender');
  if(!safeAppUrl)missing.push('application_url');
  return {
   available:missing.length===0,
-  provider:'resend',
-  sender,
+  provider:relayConfigured?'weem':'resend',
+  sender:relayConfigured?'Scale OS vía WEEM':sender,
   appUrl:safeAppUrl,
   missing,
   message:missing.length===0
@@ -38,10 +43,22 @@ export function emailDeliveryStatus({apiKey,from,appUrl}={}){
 // This function intentionally reports only provider acceptance. It never
 // claims inbox delivery, and it never includes credentials in logs or output.
 export function createEmailDelivery({apiKey,from,appUrl,fetcher=fetch}={}){
- const status=emailDeliveryStatus({apiKey,from,appUrl});
+ const options=arguments[0]||{};
+ const status=emailDeliveryStatus(options);
+ const relayUrl=secureAppUrl(options.weemRelayUrl);
+ const relayToken=typeof options.weemRelayToken==='string'?options.weemRelayToken.trim():'';
  async function send({to,message,idempotencyKey}){
   if(!status.available)return false;
   try{
+   if(status.provider==='weem'){
+    const headers={'X-WEEM-RELAY-TOKEN':relayToken,'Content-Type':'application/json'};
+    if(idempotencyKey)headers['Idempotency-Key']=idempotencyKey;
+    const response=await fetcher(relayUrl,{
+     method:'POST',signal:AbortSignal.timeout(10000),headers,
+     body:JSON.stringify({project:'scale-os',to:[to],...message}),
+    });
+    return response.ok;
+   }
    const headers={Authorization:`Bearer ${apiKey.trim()}`,'Content-Type':'application/json'};
    if(idempotencyKey)headers['Idempotency-Key']=idempotencyKey;
    const response=await fetcher('https://api.resend.com/emails',{

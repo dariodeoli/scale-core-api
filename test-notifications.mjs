@@ -28,7 +28,7 @@ async function call(handler,path,user,method='GET',payload={}){let result;await 
 const user={id:recipient,organization_id:org,role:'editor'};
 const inbox=await call(notifications,'/api/agency/notifications',user);assert.equal(inbox.status,200);assert.equal(inbox.unread,4);
 const denied=await call(notifications,'/api/agency/notifications/'+inbox.notifications[0].id,{...user,id:other},'PATCH',{});assert.equal(denied.status,404);
-let calls=0;const mail={apiKey:'fake',from:'Test <test@example.com>',appUrl:'https://example.com',fetcher:async()=>{calls++;return{ok:true};}};
+let calls=0;const mail={status:{available:true,appUrl:'https://example.com'},send:async()=>{calls++;return true;}};
 await deliverNotifications(db,mail);assert.equal(calls,0,'Email opt-in is required');
 await call(notifications,'/api/agency/notifications/preferences',user,'PATCH',{email_enabled:true});
 await c.query("select enqueue_agency_notification($1,$2,'assignment','Test','Safe',$3,$4,'email-test')",[org,recipient,order,project]);

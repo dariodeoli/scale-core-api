@@ -41,8 +41,8 @@ export async function enqueueDue(c){
  await c.query("select set_config('app.current_user','system:due-reminders',true)");
  await c.query(`select enqueue_agency_notification(o.organization_id,o.assigned_user_id,'due','Entrega pendiente: '||o.title,'La pieza vence hoy o está atrasada. Revisá el estado y la fecha.',o.id,o.project_id,'due:'||o.id||':'||o.due_date||':'||to_char(now() at time zone 'America/Asuncion','YYYY-MM-DD')) from agency_work_orders o join agency_projects p on p.id=o.project_id where o.status not in ('approved','published') and o.due_date<=(now() at time zone 'America/Asuncion')::date and o.assigned_user_id is not null and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} order by o.id limit 1000`);
 }
-export async function deliverNotifications(db,{apiKey,from,appUrl,fetcher=fetch}){
- if(!apiKey)return 0;let sent=0;
+export async function deliverNotifications(db,mail){
+ if(!mail?.status?.available||typeof mail.send!=='function')return 0;let sent=0;
  for(let i=0;i<20;i++){
   const c=await db.connect();try{
    await c.query('begin');await c.query("select set_config('app.current_user','system:notifications',true),set_config('app.current_ip','notification-worker',true)");
@@ -52,8 +52,8 @@ export async function deliverNotifications(db,{apiKey,from,appUrl,fetcher=fetch}
     await c.query("update agency_notifications set email_status='skipped' where id=$1",[n.id]);await c.query('commit');continue;
    }
    try{
-    const r=await fetcher('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:'Bearer '+apiKey,'Content-Type':'application/json','Idempotency-Key':'scale-notification-'+n.id},body:JSON.stringify({from,to:[n.email],...notificationEmail(n,appUrl)})});
-    if(!r.ok)throw Error('Provider rejected');
+    const accepted=await mail.send({to:n.email,message:notificationEmail(n,mail.status.appUrl),idempotencyKey:'scale-notification-'+n.id});
+    if(!accepted)throw Error('Provider rejected');
     await c.query("update agency_notifications set email_status='sent',email_attempts=email_attempts+1 where id=$1",[n.id]);sent++;
    }catch{
     await c.query("update agency_notifications set email_attempts=email_attempts+1,email_status=case when email_attempts>=4 then 'failed' else 'pending' end,next_attempt_at=now()+interval '5 minutes'*power(2,email_attempts) where id=$1",[n.id]);

@@ -66,7 +66,7 @@ assert.equal((await call(notifications,'notifications/'+key,asOne,'PATCH',{resol
 assert.equal((await call(notifications,'notifications/read-all',asOne,'PATCH',{resolved:true})).status,400);
 assert.equal((await call(notifications,'notifications/'+key,null,'PATCH',{})).status,401);
 let emailCalls=0;
-await deliverNotifications(db,{apiKey:'fixture',from:'fixture@example.com',appUrl:'https://example.com',fetcher:async()=>{emailCalls++;return{ok:true};}});
+await deliverNotifications(db,{status:{available:true,appUrl:'https://example.com'},send:async()=>{emailCalls++;return true;}});
 assert.equal(emailCalls,0,'Existing worker requires explicit email opt-in; no actual network');
 // Filter in SQL before cursor/limit, with global counters across every page.
 await query(`insert into agency_notifications(organization_id,user_id,kind,title,body,dedupe_key,read_at,resolved_at)
