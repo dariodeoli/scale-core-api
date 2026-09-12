@@ -23,6 +23,7 @@ const otherClient=(await query("insert into agency_clients(organization_id,name)
 const otherProject=(await query("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Other project') returning id",[other,otherClient])).rows[0].id;
 const legacy=(await query("insert into agency_inventory(organization_id,name,category,value,currency) values($1,'Old card','Memoria',0,'USD') returning id",[org])).rows[0].id;
 const migration=await fs.readFile(new URL('./migrations/20260910_inventory_reservations.sql',import.meta.url),'utf8');await pg.exec(migration);await pg.exec(migration);
+const verificationMigration=await fs.readFile(new URL('./migrations/20260912_inventory_verifications.sql',import.meta.url),'utf8');await pg.exec(verificationMigration);await pg.exec(verificationMigration);
 assert((await query('select category_id from agency_inventory where id=$1',[legacy])).rows[0].category_id);
 await query("insert into agency_settings(organization_id,default_currency) values($1,'EUR')",[org]);
 // PGlite has one connection. Queue leased transactions, as a size-1 pg Pool does.
@@ -49,10 +50,13 @@ let category=(await call('inventory-categories','POST',{name:'Memorias y almacen
 assert(category);assert.equal((await call('inventory-categories','POST',{name:' memorias y almacenamiento '})).status,409);
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'Nope'},producer)).status,403);
 let item=(await call('inventory','POST',{name:'Memoria SD 128 GB',category_id:category.id,storage_shelf:'Estante A',storage_row:'2'})).record;
-assert.equal(item.currency,'EUR');const card=String(item.id);
+assert.equal(item.currency,'EUR');const card=String(item.id);assert.equal(item.inventory_code,`INV-${card.padStart(4,'0')}`);
 let mic=(await call('inventory','POST',{name:'DJI Mic',category:'Audio',value:100,currency:'USD'})).record;const micId=String(mic.id);
 assert.equal(mic.currency,'USD');
 assert.equal((await call(`inventory/${card}`,'PATCH',{name:'Memoria SD'})).record.currency,'EUR');
+let verified=await call(`inventory/${card}/verify`,'POST',{result:'difference',differences:'Ubicación física: estante B',note:'Control mensual',adjustment:{storage_shelf:'Estante B',storage_row:'4',status:'available'}},management);
+assert.equal(verified.status,200);assert.equal(verified.record.last_verification_result,'difference');assert.equal(verified.record.storage_shelf,'Estante B');
+let trace=await call(`inventory/${card}`);assert.equal(trace.verifications.length,1);assert.equal(trace.verifications[0].adjusted,true);assert.equal(trace.verifications[0].verified_by_user_id,management.id);
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'Memorias'})).status,200);
 assert.equal((await call(`inventory/${card}`)).record.category,'Memorias');
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{active:false})).status,200);

@@ -62,7 +62,8 @@ async function catalog(c,org){
   live.id as active_reservation_id,live.title as production_name,p.name as project_name,
   live.custodian_user_id as current_custodian_user_id,coalesce(nullif(up.full_name,''),u.email) as current_custodian_name,
   live.return_user_id,coalesce(nullif(rp.full_name,''),ru.email) as return_user_name,live.ends_at as expected_return_at,
-  case when live.id is not null then 'checked_out' when i.status='in_use' then 'legacy_in_use' else 'storage' end as location_type
+  case when live.id is not null then 'checked_out' when i.status='in_use' then 'legacy_in_use' else 'storage' end as location_type,
+  coalesce(nullif(vp.full_name,''),vu.email) as last_verifier_name,vp.photo_url as last_verifier_photo_url
   from agency_inventory i left join agency_inventory_categories cat on cat.id=i.category_id and cat.organization_id=i.organization_id
   left join agency_inventory_reservation_items ri on ri.inventory_id=i.id and ri.organization_id=i.organization_id and ri.status='checked_out'
   left join agency_inventory_reservations live on live.id=ri.reservation_id and live.organization_id=i.organization_id
@@ -71,13 +72,15 @@ async function catalog(c,org){
   left join agency_user_profiles up on up.user_id=u.id and up.organization_id=i.organization_id
   left join users ru on ru.id=live.return_user_id
   left join agency_user_profiles rp on rp.user_id=ru.id and rp.organization_id=i.organization_id
+  left join users vu on vu.id=i.last_verified_by_user_id
+  left join agency_user_profiles vp on vp.user_id=vu.id and vp.organization_id=i.organization_id
   where i.organization_id=$1 and ${visibleRecord('i','inventory')} order by i.name,i.id`,[org])).rows;
 }
 async function listReservations(c,org,from,to,key=null){
  return (await c.query(`select r.*,p.name as project_name,
   coalesce(nullif(rp.full_name,''),ru.email) as return_user_name,
   coalesce(nullif(cp.full_name,''),cu.email) as custodian_name,
-  coalesce((select jsonb_agg(jsonb_build_object('id',i.id::text,'name',i.name,'storage_shelf',i.storage_shelf,'storage_row',i.storage_row) order by i.name)
+  coalesce((select jsonb_agg(jsonb_build_object('id',i.id::text,'name',i.name,'inventory_code',i.inventory_code,'storage_shelf',i.storage_shelf,'storage_row',i.storage_row) order by i.name)
    from agency_inventory_reservation_items ri join agency_inventory i on i.id=ri.inventory_id and i.organization_id=ri.organization_id where ri.reservation_id=r.id and ri.organization_id=r.organization_id),'[]') as items,
   coalesce((select jsonb_agg(jsonb_build_object('id',m.user_id::text,'name',coalesce(nullif(up.full_name,''),u.email)) order by m.user_id)
    from agency_inventory_reservation_members m join users u on u.id=m.user_id left join agency_user_profiles up on up.user_id=m.user_id and up.organization_id=m.organization_id where m.reservation_id=r.id and m.organization_id=r.organization_id),'[]') as responsible_members
@@ -133,7 +136,8 @@ async function transition(c,user,org,key,action,payload){
   const ids=(await c.query('select inventory_id::text as id from agency_inventory_reservation_items where reservation_id=$1 and organization_id=$2',[key,org])).rows.map(r=>r.id);
   const rows=await equipment(c,org,ids);
   if(!ids.length||rows.some(r=>r.status!=='available'))fail('Hay equipos sin devolver o no disponibles. Registrá su devolución antes de retirarlos.',409);
-  await c.query("update agency_inventory_reservations set status='checked_out',custodian_user_id=$1,checked_out_at=now(),checked_out_by_user_id=$2,version=version+1,updated_at=now() where id=$3 and organization_id=$4",[custodian,user.id,key,org]);
+  const note=text(payload.note||'',2000);
+  await c.query("update agency_inventory_reservations set status='checked_out',custodian_user_id=$1,checked_out_at=now(),checked_out_by_user_id=$2,checkout_note=$3,version=version+1,updated_at=now() where id=$4 and organization_id=$5",[custodian,user.id,note,key,org]);
   await c.query("update agency_inventory set status='in_use',custodian_user_id=$1 where organization_id=$2 and id=any($3::bigint[])",[custodian,org,ids]);
  }else if(action==='return'){
   if(row.status!=='checked_out')fail('Primero registrá el retiro',409);
@@ -148,7 +152,8 @@ async function transition(c,user,org,key,action,payload){
    text(location.storage_row||'',80);option(location.status||'available',['available','maintenance']);
   }
   // Returns remain possible when a project ended or an assignee was suspended.
-  await c.query("update agency_inventory_reservations set status='returned',returned_at=now(),returned_by_user_id=$1,version=version+1,updated_at=now() where id=$2 and organization_id=$3",[user.id,key,org]);
+  const note=text(payload.note||'',2000);
+  await c.query("update agency_inventory_reservations set status='returned',returned_at=now(),returned_by_user_id=$1,return_note=$2,version=version+1,updated_at=now() where id=$3 and organization_id=$4",[user.id,note,key,org]);
   for(const location of locations)await c.query('update agency_inventory set status=$1,custodian_user_id=null,storage_shelf=$2,storage_row=$3 where id=$4 and organization_id=$5',[location.status||'available',text(location.storage_shelf,100),text(location.storage_row||'',80),location.inventory_id,org]);
  }else{
   if(row.status!=='reserved')fail('Una reserva retirada se cierra registrando la devolución',409);
@@ -179,13 +184,43 @@ async function saveItem(c,org,key,payload){
   if(open.length&&status!==old.status)fail('Cerrá o cancelá las reservas antes de cambiar el estado del equipo',409);
   if(open.some(r=>r.status==='checked_out')&&(custodian!==optionalId(old.custodian_user_id)||shelf!==old.storage_shelf||storageRow!==old.storage_row))fail('La ubicación y el custodio se cambian al registrar la devolución',409);
  }
- const values=[name,category.name,text(merged.serial_number||'',120),custodian,amount(merged.value??0),option(merged.currency===undefined?await companyCurrency(c,org):merged.currency,currencies),status,date(merged.acquired_on),text(merged.notes||''),category.id,shelf,storageRow,org];
- const result=key?await c.query('update agency_inventory set name=$1,category=$2,serial_number=$3,custodian_user_id=$4,value=$5,currency=$6,status=$7,acquired_on=$8,notes=$9,category_id=$10,storage_shelf=$11,storage_row=$12 where organization_id=$13 and id=$14 returning *',[...values,key]):await c.query('insert into agency_inventory(name,category,serial_number,custodian_user_id,value,currency,status,acquired_on,notes,category_id,storage_shelf,storage_row,organization_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning *',values);
+ const code=text(merged.inventory_code||'',60);
+ const values=[name,category.name,text(merged.serial_number||'',120),custodian,amount(merged.value??0),option(merged.currency===undefined?await companyCurrency(c,org):merged.currency,currencies),status,date(merged.acquired_on),text(merged.notes||''),category.id,shelf,storageRow,code,org];
+ const result=key?await c.query('update agency_inventory set name=$1,category=$2,serial_number=$3,custodian_user_id=$4,value=$5,currency=$6,status=$7,acquired_on=$8,notes=$9,category_id=$10,storage_shelf=$11,storage_row=$12,inventory_code=$13 where organization_id=$14 and id=$15 returning *',[...values,key]):await c.query('insert into agency_inventory(name,category,serial_number,custodian_user_id,value,currency,status,acquired_on,notes,category_id,storage_shelf,storage_row,inventory_code,organization_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning *',values);
  return result.rows[0];
 }
 
+async function verifyItem(c,user,org,key,payload){
+ const item=(await equipment(c,org,[key]))[0];
+ const result=option(payload.result,['confirmed','difference','missing']);
+ const differences=text(payload.differences||'',2000),note=text(payload.note||'',2000);
+ if(['difference','missing'].includes(result)&&!differences)fail('Describí la diferencia encontrada');
+ const adjustment=payload.adjustment;
+ if(adjustment!==undefined&&(typeof adjustment!=='object'||!adjustment||Array.isArray(adjustment)))fail('El ajuste de inventario es inválido');
+ const open=(await c.query("select 1 from agency_inventory_reservation_items where organization_id=$1 and inventory_id=$2 and status in ('reserved','checked_out') limit 1",[org,key])).rows.length>0;
+ if(adjustment&&open)fail('No se ajusta un equipo con reserva abierta; registrá retiro, devolución o cancelación primero.',409);
+ let after=item,adjusted=false;
+ if(adjustment){
+  const status=adjustment.status===undefined?item.status:option(adjustment.status,['available','maintenance','retired']);
+  const shelf=adjustment.storage_shelf===undefined?item.storage_shelf:text(adjustment.storage_shelf,100);
+  const row=adjustment.storage_row===undefined?item.storage_row:text(adjustment.storage_row,80);
+  adjusted=status!==item.status||shelf!==item.storage_shelf||row!==item.storage_row;
+  if(adjusted)after=(await c.query('update agency_inventory set status=$1,storage_shelf=$2,storage_row=$3,custodian_user_id=null where id=$4 and organization_id=$5 returning *',[status,shelf,row,key,org])).rows[0];
+ }
+ const verified=(await c.query('update agency_inventory set last_verified_at=now(),last_verified_by_user_id=$1,last_verification_result=$2,last_verification_differences=$3 where id=$4 and organization_id=$5 returning *',[user.id,result,differences,key,org])).rows[0];
+ await c.query('insert into agency_inventory_verifications(organization_id,inventory_id,verified_by_user_id,result,differences,note,adjusted,before_state,after_state) values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)',[org,key,user.id,result,differences,note,adjusted,JSON.stringify(item),JSON.stringify({...after,...verified})]);
+ return verified;
+}
+
+async function verificationHistory(c,org,key){
+ return (await c.query(`select v.*,coalesce(nullif(p.full_name,''),u.email) as verifier_name,p.photo_url as verifier_photo_url
+  from agency_inventory_verifications v join users u on u.id=v.verified_by_user_id
+  left join agency_user_profiles p on p.user_id=u.id and p.organization_id=v.organization_id
+  where v.organization_id=$1 and v.inventory_id=$2 order by v.verified_at desc,v.id desc limit 30`,[org,key])).rows;
+}
+
 export async function inventoryReservations({req,res,url,db,session,body,send}){
- const route=url.pathname.match(/^\/api\/agency\/(inventory|inventory-categories|inventory-reservations|inventory-context)(?:\/(\d+))?(?:\/(checkout|return|cancel|restore))?$/);
+ const route=url.pathname.match(/^\/api\/agency\/(inventory|inventory-categories|inventory-reservations|inventory-context)(?:\/(\d+))?(?:\/(checkout|return|cancel|restore|verify))?$/);
  if(!route)return false;
  let c,transaction=false;
  try{
@@ -214,8 +249,9 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
     result={category:row};status=key?200:201;
    }else fail('Método no permitido',405);
   }else if(kind==='inventory'){
-   if(req.method==='GET'&&!action){const records=await catalog(c,org);if(key){const record=records.find(r=>String(r.id)===key);if(!record)fail('Equipo no encontrado',404);result={record};}else result={records};}
+   if(req.method==='GET'&&!action){const records=await catalog(c,org);if(key){const record=records.find(r=>String(r.id)===key);if(!record)fail('Equipo no encontrado',404);result={record,verifications:await verificationHistory(c,org,key)};}else result={records};}
    else if(!action&&(req.method==='POST'&&!key||req.method==='PATCH'&&key)){result={record:await saveItem(c,org,key,await body(req))};status=key?200:201;}
+   else if(key&&req.method==='POST'&&action==='verify'){result={record:await verifyItem(c,user,org,key,await body(req))};}
    else if(key&&(req.method==='DELETE'&&!action||req.method==='POST'&&action==='restore')){
     const item=(await c.query('select id from agency_inventory where organization_id=$1 and id=$2 for update',[org,key])).rows[0];if(!item)fail('Equipo no encontrado',404);
     if(action==='restore')await c.query("delete from agency_archived_records where organization_id=$1 and kind='inventory' and record_id=$2",[org,key]);
