@@ -23,6 +23,7 @@ async function call(path,payload){
   req:{method:'POST'},res:{},url:new URL('https://admin.scaleparaguay.com'+path),db,
   body:async()=>payload,send:(_,status,data,headers={})=>{response={status,data,headers};},
   sendVerification:async(email,token)=>{sent.push({email,token});return true;},
+  emailAvailable:true,
   cookie:(name,value)=>`${name}=${value}`,id:()=>`test-session-${++session}`,
  });
  return response;
@@ -30,6 +31,8 @@ async function call(path,payload){
 const password='PruebaSegura!2026';
 try{
  const baseline=(await rows('select count(*)::int as count from users'))[0].count;
+ const unavailable=await emailPasswordAuth({req:{method:'POST'},res:{},url:new URL('https://admin.scaleparaguay.com/api/auth/password/register'),db,body:async()=>({email:'disabled@example.invalid',password,company:'Disabled email',currency:'USD',consent:true}),send:(_,status,data)=>{assert.equal(status,503);assert.match(data.error,/todavía no está disponible/);},sendVerification:async()=>{throw Error('must not send')},emailAvailable:false,cookie:()=>'',id:()=>''});
+ assert.equal(unavailable,true);assert.equal((await rows("select count(*)::int as count from users where email='disabled@example.invalid'"))[0].count,0);
  const weak=await call('/api/auth/password/register',{email:'weak@example.invalid',password:'weakpassword',company:'Agencia segura',currency:'USD',consent:true});
  assert.equal(weak.status,400);assert.equal((await rows('select count(*)::int as count from users'))[0].count,baseline);
 

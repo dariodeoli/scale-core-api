@@ -43,6 +43,7 @@ import {automationApi,startAutomation} from './automation.js';
 import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
 import {trialDetails,registerTrial} from './trial-registration.js';
 import {platformAdmin,platformBootstrapEmails} from './platform-admin.js';
+import {createEmailDelivery,publicEmailDeliveryStatus} from './email-delivery.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -60,7 +61,8 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
 const googleRedirectUri = (process.env.GOOGLE_REDIRECT_URI || 'https://admin.scaleparaguay.com/api/auth/google/callback').trim();
 const appUrl = (process.env.APP_URL || 'https://app.scaleparaguay.com').replace(/\/$/, '');
 const resendApiKey = process.env.RESEND_API_KEY || '';
-const invitationFrom = process.env.EMAIL_FROM || 'Scale OS <invitaciones@owncoding.dev>';
+const invitationFrom = process.env.EMAIL_FROM || '';
+const emailDelivery=createEmailDelivery({apiKey:resendApiKey,from:invitationFrom,appUrl});
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
 const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com', 'https://dadoocapital.com', 'https://www.dadoocapital.com', 'https://admin.dadoocapital.com']);
 const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer'];
@@ -73,12 +75,10 @@ const parseCookies = (req) => Object.fromEntries((req.headers.cookie || '').spli
 const body = async (req) => { let s=''; for await (const c of req) {s += c;if(s.length>1048576)throw Object.assign(new Error('Solicitud demasiado grande'),{status:413});} return s ? JSON.parse(s) : {}; };
 const id = () => crypto.randomBytes(32).toString('hex');
 async function sendInvitation(email, organizationName, role) {
-  if (!resendApiKey) return false;
-  const response = await fetch('https://api.resend.com/emails', { method:'POST', signal:AbortSignal.timeout(10000), headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({from:invitationFrom,to:[email],...invitationEmail({email,organizationName,role,appUrl})}) });
-  return response.ok;
+  return emailDelivery.send({to:email,message:invitationEmail({email,organizationName,role,appUrl})});
 }
-async function sendReset(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json','Idempotency-Key':'reset-'+crypto.createHash('sha256').update(token).digest('hex')},body:JSON.stringify({from:invitationFrom,to:[email],...resetEmail({token,appUrl})})});return response.ok;}
-async function sendVerification(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json','Idempotency-Key':'verify-'+crypto.createHash('sha256').update(token).digest('hex')},body:JSON.stringify({from:invitationFrom,to:[email],...verificationEmail({token,appUrl})})});return response.ok;}
+async function sendReset(email,token){return emailDelivery.send({to:email,message:resetEmail({token,appUrl}),idempotencyKey:'reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
+async function sendVerification(email,token){return emailDelivery.send({to:email,message:verificationEmail({token,appUrl}),idempotencyKey:'verify-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function runOptionalMigration(filename,client=db) {
   try {
     await client.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
@@ -222,8 +222,9 @@ const server = http.createServer(async (req,res) => {
     if(url.pathname.startsWith('/api/agency/members')&&req.method!=='GET'){const actor=await session(req);if(actor?.demo_owner_user_id)return send(res,403,{error:'El Demo no envía invitaciones ni cambia accesos reales. Usá Equipo en tu agencia.'});}
     if(await reports({req,res,url,db,session,body,send}))return;
     if(await recordLifecycle({req,res,url,db,session,send}))return;
-    if(await emailPasswordAuth({req,res,url,db,body,send,sendVerification,cookie,id}))return;
-    if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
+    if(url.pathname==='/api/auth/email-status'&&req.method==='GET')return send(res,200,{email:publicEmailDeliveryStatus(emailDelivery.status)});
+    if(await emailPasswordAuth({req,res,url,db,body,send,sendVerification,emailAvailable:emailDelivery.status.available,cookie,id}))return;
+    if(await passwordAccess({req,res,url,db,body,send,sendReset,emailAvailable:emailDelivery.status.available}))return;
     if(await financeControls({req,res,url,db,session,body,send}))return;
     if(await contentReview({req,res,url,db,session,body,send}))return;
     if(await productivity({req,res,url,db,session,body,send}))return;
@@ -621,6 +622,6 @@ const server = http.createServer(async (req,res) => {
 server.listen(port, () => {
   console.log(`Scale Core API listening on ${port}`);
   init()
-    .then(() => { databaseReady = true; startAutomation(db,{apiKey:resendApiKey,from:invitationFrom,appUrl}); server.once('close',startLiveVisitorCleanup(db));server.once('close',startMaintenance(db));console.log('Scale database ready'); })
+    .then(() => { databaseReady = true; startAutomation(db,emailDelivery.status.available?{apiKey:resendApiKey,from:invitationFrom,appUrl}:{apiKey:'',from:'',appUrl}); server.once('close',startLiveVisitorCleanup(db));server.once('close',startMaintenance(db));console.log(JSON.stringify({event:'email_delivery_readiness',available:emailDelivery.status.available,missing:emailDelivery.status.missing}));console.log('Scale database ready'); })
     .catch((error) => { console.error('Database initialization failed', error); });
 });

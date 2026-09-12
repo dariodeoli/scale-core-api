@@ -12,13 +12,14 @@ export function validatePassword(value,email=''){
 export async function throttle(db,key,max=8){
  const row=(await db.query("insert into auth_throttles(key,count,expires_at) values($1,1,now()+interval '15 minutes') on conflict(key) do update set count=case when auth_throttles.expires_at<now() then 1 else auth_throttles.count+1 end,expires_at=case when auth_throttles.expires_at<now() then now()+interval '15 minutes' else auth_throttles.expires_at end returning count",[hash(key)])).rows[0];return row.count<=max;
 }
-export async function passwordAccess({req,res,url,db,body,send,sendReset}){
+export async function passwordAccess({req,res,url,db,body,send,sendReset,emailAvailable=true}){
  if(!['/api/auth/password/request','/api/auth/password/reset'].includes(url.pathname))return false;
  if(req.method!=='POST'){send(res,405,{error:'Método no permitido'});return true;}
  let c;
  try{
   const b=await body(req);
   if(url.pathname.endsWith('/request')){
+   if(!emailAvailable){send(res,503,{error:'La recuperación por correo todavía no está disponible. Usá Google o contactá al administrador.'});return true;}
    const email=typeof b.email==='string'?b.email.trim().toLowerCase():'';
    const limited=await throttle(db,'reset:'+email,3);
    if(limited&&!email.endsWith('@demo.example.invalid')&&/^\S+@\S+\.\S+$/.test(email)){
