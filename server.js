@@ -42,9 +42,9 @@ import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
 import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
 import {trialDetails,registerTrial} from './trial-registration.js';
-<<<<<<< HEAD
 import {platformAdmin,bootstrapInitialPlatformAdmin} from './platform-admin.js';
 import {createEmailDelivery,publicEmailDeliveryStatus} from './email-delivery.js';
+import {clientPortal} from './client-portal.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -68,6 +68,7 @@ const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
 const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://app.scaleparaguay.com', 'https://dadoocapital.com', 'https://www.dadoocapital.com', 'https://admin.dadoocapital.com']);
 const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer'];
 allowedOrigins.add('https://sistema.scaleparaguay.com');
+allowedOrigins.add('https://cliente.scaleparaguay.com');
 let databaseReady = false;
 
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
@@ -130,6 +131,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_platform_admin_bootstrap.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_email_password_auth.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_studio_reservations.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -216,6 +218,8 @@ const server = http.createServer(async (req,res) => {
     if(await inventoryReservations({req,res,url,db,session,body,send}))return;
     if(await workChecklists({req,res,url,db,session,body,send}))return;
     if(await publicExperience({req,res,url,db,session,body,send,cookie,parseCookies}))return;
+    if(await clientPortal({req,res,url,db,session,body,send}))return;
+    if(await clientPortal({req,res,url,db,session,body,send}))return;
     if(await inviteLinks({req,res,url,db,session,body,send,appUrl}))return;
     if(req.method!=='GET'){
       const actor=await session(req);
