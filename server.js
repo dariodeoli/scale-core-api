@@ -132,6 +132,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_email_password_auth.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_studio_reservations.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal_google_oauth.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -260,6 +261,13 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/providers' && req.method === 'GET') {
       return send(res,200,{google:Boolean(googleClientId && googleClientSecret)});
     }
+    if (url.pathname === '/api/client-portal/auth/google/start' && req.method === 'GET') {
+      if (!googleClientId || !googleClientSecret) return send(res,503,{error:'Google OAuth aún no está configurado'});
+      const state=id();
+      await db.query("insert into oauth_states(state,organization_slug,redirect_uri,expires_at,client_portal_login) values($1,$2,$3,now()+interval '10 minutes',true)",[state,'',googleRedirectUri]);
+      const params=new URLSearchParams({client_id:googleClientId,redirect_uri:googleRedirectUri,response_type:'code',scope:'openid email profile',state,prompt:'select_account'});
+      res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)});return res.end();
+    }
     if (url.pathname === '/api/auth/google/start' && req.method === 'GET') {
       if (!googleClientId || !googleClientSecret) return send(res,503,{error:'Google OAuth aún no está configurado'});
       const trial=trialDetails(url.searchParams);
@@ -277,7 +285,7 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/google/callback' && req.method === 'GET') {
       const state = url.searchParams.get('state') || ''; const code = url.searchParams.get('code') || '';
       if (!state || parseCookies(req).scale_oauth_state !== state) {res.writeHead(302,{Location:`${appUrl}/?authError=La%20sesión%20de%20Google%20venció.%20Intentá%20nuevamente.`});return res.end();}
-      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri,invite_link_id,trial_company,trial_currency',[state]);
+      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri,invite_link_id,trial_company,trial_currency,client_portal_login',[state]);
       if (!saved.rows[0]) return send(res,400,{error:'Sesión de Google inválida o vencida'});
       // Only a consumed, cookie-bound state selects the internal recovery route.
       // Never use callback redirect/next/error_description (or redirect_uri) as a destination.
@@ -300,6 +308,12 @@ const server = http.createServer(async (req,res) => {
       }catch{return oauthFailure('No se pudo completar la conexión con Google.');}
       const email = String(profile.email || '').trim().toLowerCase();
       if (!email || profile.email_verified !== true) return oauthFailure('Google no confirmó un correo verificado.');
+      if(saved.rows[0].client_portal_login){
+        const portalUser=(await db.query(`select u.id from client_portal_users u where u.email_normalized=$1 and u.disabled_at is null and exists(select 1 from client_portal_grants g join organizations o on o.id=g.organization_id join agency_clients c on c.id=g.client_id and c.organization_id=g.organization_id where g.portal_user_id=u.id and g.active and o.active and c.active)`,[email])).rows[0];
+        if(!portalUser){res.writeHead(302,{Location:`${appUrl}/cliente/ingresar?error=${encodeURIComponent('Este correo todavía no tiene acceso al portal. Aceptá primero la invitación recibida.')}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();}
+        const portalToken=id();await db.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[crypto.createHash('sha256').update(portalToken).digest('hex'),portalUser.id]);
+        res.writeHead(302,{Location:`${appUrl}/cliente/entregas`,'Set-Cookie':`__Host-scale_client_session=${portalToken}; Max-Age=604800; Path=/; HttpOnly; Secure; SameSite=Lax`});return res.end();
+      }
       if(saved.rows[0].trial_company){
         const c=await db.connect();let account;
         try{await c.query('begin');account=await registerTrial(c,profile,{name:saved.rows[0].trial_company,currency:saved.rows[0].trial_currency});await rememberGooglePhoto(c,account.userId,profile);if(profile.picture||profile.name)await ensurePersonalIdentityInTransaction(c,account.userId,account.organizationId);await c.query('commit');}
