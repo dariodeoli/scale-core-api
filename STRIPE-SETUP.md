@@ -24,7 +24,7 @@ import {startTrial, subscriptionState, subscriptionBilling} from './subscription
   `/auth/me`, lecturas ni un backfill de empresas existentes.
 - `await subscriptionState(db, user, now?)`: consulta membresía vigente y devuelve
   exactamente `{status, hasAccess, currency, amount, trialEndsAt, dueAt,
-  suspendAt, daysRemaining, canManage, checkoutReady, portalReady}`. `now` es Date o valor
+  suspendAt, daysRemaining, canManage, checkoutReady, portalReady, billingReadiness}`. `now` es Date o valor
   admitido por Date, para pruebas. No hace llamadas a Stripe.
 - `await subscriptionBilling({req,res,url,db,session,body,send})`: devuelve
   `false` si no reconoce la ruta; `true` después de responder. Solo `db.connect`
@@ -69,11 +69,15 @@ gracia debe ser persistente; **no se envían notificaciones ni emails propios**.
 - `daysRemaining`: techo de días hasta fin de prueba, fin de período pagado o
   fin de gracia según estado; cero si suspendido. No es una nueva duración.
 - `canManage` informa owner actual, salvo demos; no otorga permisos en la agencia.
-- `checkoutReady` significa que la configuración requerida está completa para
-  una empresa administrada. No prueba cuenta/precios habilitados: se verifican
-  contra Stripe al pulsar. Sin credenciales, la prueba local conserva sus fechas;
+- `checkoutReady` solo es `true` cuando la configuración es estructuralmente
+  válida **y** se registró una comprobación firmada del webhook de ese entorno.
+  No prueba cuenta/precios habilitados: se verifican contra Stripe al pulsar. Sin credenciales, la prueba local conserva sus fechas;
   no activar comercialmente un gate que termine bloqueando a usuarios sin un
   canal de pago validado. Coordinar esa decisión con main antes de habilitarlo.
+- `billingReadiness` no expone secretos ni IDs: `disabled`,
+  `configuration_pending`, `webhook_pending` o `ready`. La UI debe usarlo solo
+  para explicar por qué no muestra/activa un pago; el servidor sigue siendo la
+  autoridad para autorizar checkout y portal.
 - `portalReady` es un booleano: requiere owner de sesión y membresía vigente,
   configuración habilitada y ambos vínculos locales (customer y suscripción).
   No expone IDs, no consulta Stripe ni confirma pago o acceso. Permite mostrar el
@@ -106,6 +110,7 @@ El módulo permanece deshabilitado salvo configuración completa:
 | `STRIPE_PRICE_USD` | Precio recurrente de USD 10: `unit_amount=1000`. |
 | `STRIPE_PRICE_PYG` | Precio recurrente de PYG 50.000: `unit_amount=50000`, sin multiplicar por 100. |
 | `BILLING_APP_ORIGIN` | Origen HTTPS propio, sin ruta, query, credenciales ni fragmento. No se toma de Host ni del cliente. |
+| `STRIPE_WEBHOOK_VERIFIED_AT` | Instante UTC ISO-8601 (`YYYY-MM-DDTHH:mm:ssZ`) que un operador registra **solo después** de recibir en este endpoint una entrega firmada real de Stripe en el mismo modo (test/live). No es un secreto ni reemplaza la firma por evento. |
 
 Ambos precios deben ser por unidad, quantity 1, uso licensed, intervalo month,
 interval_count 1, mismo producto y modo test/live que el secreto. Checkout exige

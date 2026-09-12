@@ -6,7 +6,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {startTrial,subscriptionState,subscriptionBilling} from './subscription-billing.js';
 
 const pg=new PGlite(),originalFetch=globalThis.fetch,originalNow=Date.now;
-const settings={STRIPE_BILLING_ENABLED:'true',STRIPE_SECRET_KEY:'sk_test_fixture',STRIPE_WEBHOOK_SECRET:'whsec_fixture',STRIPE_PRICE_USD:'price_usd',STRIPE_PRICE_PYG:'price_pyg',STRIPE_PRODUCT_ID:'prod_scale',BILLING_APP_ORIGIN:'https://billing-fixture.invalid'};
+const settings={STRIPE_BILLING_ENABLED:'true',STRIPE_SECRET_KEY:'sk_test_fixture',STRIPE_WEBHOOK_SECRET:'whsec_fixture',STRIPE_PRICE_USD:'price_usd',STRIPE_PRICE_PYG:'price_pyg',STRIPE_PRODUCT_ID:'prod_scale',BILLING_APP_ORIGIN:'https://billing-fixture.invalid',STRIPE_WEBHOOK_VERIFIED_AT:'2026-09-12T00:00:00Z'};
 const originalEnv=Object.fromEntries(Object.keys(settings).map(key=>[key,process.env[key]]));
 let clock=Date.now(),calls=0,sequence=0;Date.now=()=>clock;
 // Every outbound request is replaced before any test action; no real credentials,
@@ -84,7 +84,7 @@ try{
  const uid=(await query("insert into users(email,password_hash) values('subscription-owner@example.invalid','unused') returning id")).rows[0].id;
  async function tenant(label){const id=(await query('insert into organizations(slug,name) values($1,$2) returning id',[`billing-${label}`,`Fixture ${label}`])).rows[0].id;await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[id,uid]);return {id:uid,organization_id:id,role:'owner'};}
  const owner=await tenant('usd'),other=await tenant('pyg'),existing=await tenant('existing'),demoUser=await tenant('demo'),near=await tenant('near'),rollback=await tenant('rollback'),uncertain=await tenant('uncertain'),badUrl=await tenant('url');
- assert.equal((await state(existing)).status,'unmanaged');assert.equal((await state(existing)).hasAccess,true);assert.equal((await state(existing)).checkoutReady,false);
+ assert.equal((await state(existing)).status,'unmanaged');assert.equal((await state(existing)).hasAccess,true);assert.equal((await state(existing)).checkoutReady,false);assert.equal((await state(existing)).billingReadiness,'disabled');
  assert.equal((await query('select count(*)::int as n from organization_subscriptions')).rows[0].n,0,'migration never enrolls existing tenants');
  await query('update organizations set demo_owner_user_id=$1 where id=$2',[uid,demoUser.organization_id]);
  assert.equal(await startTrial(db,demoUser.organization_id),null);assert.equal((await state(demoUser)).status,'demo');assert.equal((await state(demoUser)).canManage,false);
@@ -104,13 +104,17 @@ try{
  for(const role of ['admin','management','finance','sales','production','editor','viewer']){
   const id=(await query('insert into users(email,password_hash) values($1,$2) returning id',[`billing-${role}@example.invalid`,'unused'])).rows[0].id;
   await query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[owner.organization_id,id,role]);const member={id,organization_id:owner.organization_id,role};actors.push(member);
-  const read=await call('/api/billing/subscription','GET',{},member);assert.equal(read.status,200);assert.equal(read.data.canManage,false);assert.equal(read.data.portalReady,false);assert.equal(Object.keys(read.data).length,11);
+  const read=await call('/api/billing/subscription','GET',{},member);assert.equal(read.status,200);assert.equal(read.data.canManage,false);assert.equal(read.data.portalReady,false);assert.equal(read.data.billingReadiness,'disabled');assert.equal(Object.keys(read.data).length,12);
   assert.equal((await post(member)).status,403);assert.equal((await call('/api/billing/portal','POST',{},member)).status,403);
  }
  assert.equal((await state({...actors[0],organization_id:other.organization_id}).catch(e=>e.status)),403,'tenant membership is not transferable');
  assert.equal((await post({...actors[0],role:'owner'})).status,403,'stale/elevated session role cannot bypass current membership');
- Object.assign(process.env,settings);globalThis.fetch=mockStripe;
+ Object.assign(process.env,settings);delete process.env.STRIPE_WEBHOOK_VERIFIED_AT;globalThis.fetch=mockStripe;
+ assert.equal((await state(owner)).checkoutReady,false);assert.equal((await state(owner)).billingReadiness,'webhook_pending');
+ assert.equal((await post(owner)).data.code,'BILLING_WEBHOOK_UNVERIFIED');assert.equal(wire.length,0,'unverified webhook cannot contact Stripe or create checkout');
+ process.env.STRIPE_WEBHOOK_VERIFIED_AT=settings.STRIPE_WEBHOOK_VERIFIED_AT;
  assert.equal((await state(owner)).checkoutReady,true);
+ assert.equal((await state(owner)).billingReadiness,'ready');
  assert.equal((await state(owner)).portalReady,false,'an unlinked trial has no portal');
  assert.equal((await state(existing)).portalReady,false);assert.equal((await state(demoUser)).portalReady,false);
  const beforeUnlinkedPortal=wire.length;
