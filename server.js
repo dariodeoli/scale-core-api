@@ -474,12 +474,12 @@ const server = http.createServer(async (req,res) => {
       return send(res,201,{workOrder:r.rows[0]});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'GET') {
-      const user = await session(req); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!user) return send(res,401,{error:'No autenticado'}); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
       const r = await db.query('select u.id,u.email,m.role,m.active,m.created_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 and m.removed_at is null order by m.created_at asc',[user.organization_id]);
       return send(res,200,{members:r.rows});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'POST') {
-      const user = await session(req); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!user) return send(res,401,{error:'No autenticado'}); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
       const {email='',password='',role='viewer'} = await body(req); const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
       if (!/^\S+@\S+\.\S+$/.test(normalizedEmail) || (password && (typeof password !== 'string' || password.length < 12)) || !memberRoles.includes(role) || (role === 'owner' && user.role !== 'owner')) return send(res,400,{error:'Datos de invitación inválidos'});
       const client = await db.connect();
