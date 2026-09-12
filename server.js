@@ -10,6 +10,7 @@ import { operations } from './operations.js';
 import {normalizeUrgency} from './urgency.js';
 import { suite } from './agency-suite.js';
 import { passwordAccess, throttle } from './password-access.js';
+import {emailPasswordAuth} from './email-password-auth.js';
 import {loginOrganization,defaultOrganizationId,setDefaultOrganization} from './default-organization.js';
 import {attributeActors} from './actor-identity.js';
 import { financeControls } from './finance-controls.js';
@@ -18,7 +19,7 @@ import { budgetSections } from './budget-sections.js';
 import { externalLink } from './media-policy.js';
 import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
-import { invitationEmail,resetEmail } from './invitation-email.js';
+import { invitationEmail,resetEmail,verificationEmail } from './invitation-email.js';
 import {financialForecast} from './forecast.js';
 import {reports} from './reports.js';
 import {projectAssignees} from './project-assignees.js';
@@ -74,6 +75,7 @@ async function sendInvitation(email, organizationName, role) {
   return response.ok;
 }
 async function sendReset(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json','Idempotency-Key':'reset-'+crypto.createHash('sha256').update(token).digest('hex')},body:JSON.stringify({from:invitationFrom,to:[email],...resetEmail({token,appUrl})})});return response.ok;}
+async function sendVerification(email,token){if(!resendApiKey)return false;const response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(10000),headers:{Authorization:`Bearer ${resendApiKey}`,'Content-Type':'application/json','Idempotency-Key':'verify-'+crypto.createHash('sha256').update(token).digest('hex')},body:JSON.stringify({from:invitationFrom,to:[email],...verificationEmail({token,appUrl})})});return response.ok;}
 async function runOptionalMigration(filename,client=db) {
   try {
     await client.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
@@ -120,12 +122,13 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_assignment_notifications.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_comment_mentions.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_inventory_verifications.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260912_email_password_auth.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
-    const user = await db.query('insert into users(email,password_hash) values($1,$2) on conflict(email) do update set email=excluded.email returning id', [email, hash]);
+    const user = await db.query('insert into users(email,password_hash,email_verified_at) values($1,$2,now()) on conflict(email) do update set email=excluded.email,email_verified_at=coalesce(users.email_verified_at,now()) returning id', [email, hash]);
     await db.query("insert into organization_members(organization_id,user_id,role) select id,$1,'owner' from organizations where slug='scale' on conflict(organization_id,user_id) do nothing", [user.rows[0].id]);
   }
   await provisionOwner(bootstrapEmail, bootstrapPassword);
@@ -135,7 +138,7 @@ async function init() {
 async function provisionOwnerForOrganization(email, password, slug) {
   if (!email || !password) return;
   const hash = await bcrypt.hash(password, 12);
-  const user = await db.query('insert into users(email,password_hash) values($1,$2) on conflict(email) do update set password_hash=excluded.password_hash returning id', [email, hash]);
+  const user = await db.query('insert into users(email,password_hash,email_verified_at) values($1,$2,now()) on conflict(email) do update set password_hash=excluded.password_hash,email_verified_at=coalesce(users.email_verified_at,now()) returning id', [email, hash]);
   await db.query("insert into organization_members(organization_id,user_id,role) select id,$1,'owner' from organizations where slug=$2 on conflict(organization_id,user_id) do update set role='owner'", [user.rows[0].id, slug]);
 }
 async function session(req) {
@@ -212,6 +215,7 @@ const server = http.createServer(async (req,res) => {
     if(url.pathname.startsWith('/api/agency/members')&&req.method!=='GET'){const actor=await session(req);if(actor?.demo_owner_user_id)return send(res,403,{error:'El Demo no envía invitaciones ni cambia accesos reales. Usá Equipo en tu agencia.'});}
     if(await reports({req,res,url,db,session,body,send}))return;
     if(await recordLifecycle({req,res,url,db,session,send}))return;
+    if(await emailPasswordAuth({req,res,url,db,body,send,sendVerification,cookie,id}))return;
     if(await passwordAccess({req,res,url,db,body,send,sendReset}))return;
     if(await financeControls({req,res,url,db,session,body,send}))return;
     if(await contentReview({req,res,url,db,session,body,send}))return;
@@ -231,8 +235,8 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
       const { email='', password='' } = await body(req); const e=email.trim().toLowerCase();
       if(!await throttle(db,'login:'+e,30))return send(res,429,{error:'Demasiados intentos. Esperá 15 minutos.'});
-      const r=await db.query('select id,password_hash from users where email=$1',[e]);
-      if (!r.rows[0] || !(await bcrypt.compare(password,r.rows[0].password_hash))) return send(res,401,{error:'Credenciales inválidas'});
+      const r=await db.query('select id,password_hash,email_verified_at,is_demo_guest from users where email=$1',[e]);
+      if (!r.rows[0]||!r.rows[0].email_verified_at||r.rows[0].is_demo_guest||!(await bcrypt.compare(password,r.rows[0].password_hash))) return send(res,401,{error:'Credenciales inválidas'});
       r.rows[0].organization_id=(await loginOrganization(db,{userId:r.rows[0].id}))?.organization_id;
       if (!r.rows[0].organization_id) return send(res,403,{error:'Usuario sin organización asignada'});
       const token=id(); await db.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[token,r.rows[0].id,r.rows[0].organization_id]);
