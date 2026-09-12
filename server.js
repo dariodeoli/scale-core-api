@@ -25,6 +25,7 @@ import {projectAssignees} from './project-assignees.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {startMaintenance} from './maintenance.js';
 import {inventoryReservations} from './inventory-reservations.js';
+import {studioReservations} from './studio-reservations.js';
 import {workChecklists} from './work-checklists.js';
 import {ensurePersonalIdentity,ensurePersonalIdentityInTransaction} from './identity-session.js';
 import {rememberGooglePhoto} from './google-profile-photo.js';
@@ -120,6 +121,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_assignment_notifications.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_comment_mentions.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_inventory_verifications.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260912_studio_reservations.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -221,6 +223,7 @@ const server = http.createServer(async (req,res) => {
     if(await presence({req,res,url,db,session,body,send,sessionKey:req=>crypto.createHash('sha256').update(parseCookies(req).scale_session||'').digest('hex')}))return;
     if(await notifications({req,res,url,db,session,body,send}))return;
     if(await automationApi({req,res,url,db,session,body,send}))return;
+    if(await studioReservations({req,res,url,db,session,body,send}))return;
     if(await suite({req,res,url,db,session,body,send,sendInvitation}))return;
     if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {
