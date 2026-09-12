@@ -120,6 +120,12 @@ async function runCases(){
  const a=await tenant('pg-fixture-a'),b=await tenant('pg-fixture-b');
  const item=async(name,tenant=a)=>ok(await call('inventory','POST',{name,category:'Concurrency fixture',storage_shelf:'Initial'},tenant.actor),201).record.id;
  const camera=await item('Camera fixture'),audio=await item('Audio fixture'),adjacent=await item('Adjacent fixture'),foreign=await item('Tenant B fixture',b);
+ const code=ok(await call(`inventory/${camera}`,'GET',{},a.actor)).record.inventory_code;
+ assert.match(code,/^INV-\d{4,}$/,'every physical unit receives a printable inventory code');
+ const verification=ok(await call(`inventory/${camera}/verify`,'POST',{result:'difference',differences:'Encontrado en estante verificado',note:'Conteo físico',adjustment:{storage_shelf:'Verified shelf',storage_row:'A-1',status:'available'}},a.actor));
+ assert.equal(verification.record.last_verification_result,'difference');assert.equal(verification.record.storage_shelf,'Verified shelf');
+ const verificationTrace=ok(await call(`inventory/${camera}`,'GET',{},a.actor));
+ assert.equal(verificationTrace.verifications.length,1);assert.equal(verificationTrace.verifications[0].adjusted,true);assert.equal(verificationTrace.verifications[0].verified_by_user_id,a.actor.id);
  const now=Date.now(),iso=offset=>new Date(now+offset).toISOString();
  const payload=(ids,tenant=a,extra={})=>({title:'Local PostgreSQL fixture',project_id:tenant.project,inventory_ids:ids,responsible_user_ids:[tenant.actor.id],return_user_id:tenant.actor.id,starts_at:iso(-300000),ends_at:iso(3600000),...extra});
  const shared=payload([camera,audio]);
