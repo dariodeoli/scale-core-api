@@ -94,6 +94,18 @@ begin
    where w.id=new.work_order_id and w.organization_id=new.organization_id and p.organization_id=new.organization_id)
   then raise exception 'Client portal delivery must belong to organization' using errcode='23514'; end if;
  end if;
+ if tg_table_name in ('client_portal_delivery_comments','client_portal_delivery_decisions') then
+  -- A portal response may only be stored against a delivery from the same
+  -- organization and a client grant matching that delivery's project client.
+  if not exists(
+   select 1 from client_portal_deliveries d
+   join agency_work_orders w on w.id=d.work_order_id and w.organization_id=d.organization_id
+   join agency_projects p on p.id=w.project_id and p.organization_id=w.organization_id
+   join client_portal_grants g on g.organization_id=d.organization_id and g.client_id=p.client_id
+   where d.id=new.delivery_id and d.organization_id=new.organization_id
+    and g.portal_user_id=new.portal_user_id and g.active
+  ) then raise exception 'Client portal response is outside the granted client scope' using errcode='23514'; end if;
+ end if;
  return new;
 end $$;
 do $$ declare t text; begin
