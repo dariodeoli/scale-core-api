@@ -42,7 +42,6 @@ import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
 import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
 import {trialDetails,registerTrial} from './trial-registration.js';
-<<<<<<< HEAD
 import {clientPortal} from './client-portal.js';
 import {platformAdmin,platformBootstrapEmails} from './platform-admin.js';
 
