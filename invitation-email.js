@@ -27,3 +27,15 @@ export function resetEmail({token,appUrl}){
  const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main style="font:16px/1.6 Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><p>Scale OS</p><h1>Tu contraseña</h1><p>${instructions}</p><p><a href="${escape(url.href)}">Establecer contraseña</a></p><p style="font-size:13px;overflow-wrap:anywhere">Si el botón no abre, copiá esta dirección en tu navegador:<br>${escape(url.href)}</p><hr><p style="font-size:12px">Scale OS · Gestión de agencias<br>Notificación de acceso enviada por Owncoding.</p></main></body></html>`;
  return{subject,text,html};
 }
+
+export function verificationEmail({token,appUrl}){
+ if(typeof token!=='string'||!/^[a-f0-9]{64}$/.test(token))throw new Error('Invalid verification token');
+ const url=appLink(appUrl);
+ url.pathname=url.pathname.replace(/\/$/,'')+'/verificar-correo';
+ url.search='';url.hash='';url.searchParams.set('verifyToken',token);
+ const subject='Verificá tu correo de Scale OS';
+ const instructions='Este enlace es de un solo uso y vence en 24 horas. Hasta verificarlo no se activa una prueba ni se solicita acceso a una empresa.';
+ const text=`Verificá tu correo de Scale OS\n\n${instructions}\n\nVerificar correo: ${url.href}\n\nScale OS · Gestión de agencias`;
+ const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main style="font:16px/1.6 Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><p>Scale OS</p><h1>Verificá tu correo</h1><p>${instructions}</p><p><a href="${escape(url.href)}">Verificar correo</a></p><p style="font-size:13px;overflow-wrap:anywhere">Si el botón no abre, copiá esta dirección en tu navegador:<br>${escape(url.href)}</p></main></body></html>`;
+ return{subject,text,html};
+}

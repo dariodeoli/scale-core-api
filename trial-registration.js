@@ -3,9 +3,12 @@ import {startTrial} from './subscription-billing.js';
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 export function trialDetails(params){
  if(params.get('signup')!=='1')return null;
- const name=(params.get('company')||'').trim(),currency=params.get('currency');
- if(name.length<2||name.length>160||/[\u0000-\u001f\u007f]/.test(name)||!['USD','PYG'].includes(currency)||params.get('consent')!=='1')fail('Completá el nombre de tu agencia, la moneda y aceptá las condiciones de la prueba.');
- if(params.has('invite'))fail('Usá la invitación o el registro de una agencia nueva, no ambos.');
+ return trialDetailsFromInput({company:params.get('company'),currency:params.get('currency'),consent:params.get('consent')==='1',invite:params.get('invite')});
+}
+export function trialDetailsFromInput(input={}){
+ const name=(typeof input.company==='string'?input.company:'').trim(),currency=input.currency;
+ if(name.length<2||name.length>160||/[\u0000-\u001f\u007f]/.test(name)||!['USD','PYG'].includes(currency)||input.consent!==true)fail('Completá el nombre de tu agencia, la moneda y aceptá las condiciones de la prueba.');
+ if(input.invite)fail('Usá la invitación o el registro de una agencia nueva, no ambos.');
  return {name,currency};
 }
 // The Google callback owns the transaction. Profile must have been verified by
