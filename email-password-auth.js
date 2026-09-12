@@ -35,12 +35,12 @@ async function createUnverifiedUser(client,{email,password}){
 }
 
 async function queueVerification(sendVerification,email,token){
- // Delivery failures must not change access state. The user can request a new
- // link; callers intentionally receive the same neutral acknowledgement.
- await sendVerification(email,token).catch(()=>false);
+ // Delivery failures never activate access. Callers are told to retry instead
+ // of being promised a message that was not accepted by the provider.
+ return Boolean(await sendVerification(email,token).catch(()=>false));
 }
 
-export async function emailPasswordAuth({req,res,url,db,body,send,sendVerification,cookie,id}){
+export async function emailPasswordAuth({req,res,url,db,body,send,sendVerification,emailAvailable=true,cookie,id}){
  const path=url.pathname;
  if(!['/api/auth/password/register','/api/auth/password/invitations/register','/api/auth/password/verification/request','/api/auth/password/verify'].includes(path))return false;
  if(req.method!=='POST'){send(res,405,{error:'Método no permitido'});return true;}
@@ -48,6 +48,7 @@ export async function emailPasswordAuth({req,res,url,db,body,send,sendVerificati
  try{
   const input=await body(req);
   if(path==='/api/auth/password/register'){
+   if(!emailAvailable)fail('El registro con correo todavía no está disponible. Usá Google o contactá al administrador.',503);
    const email=emailOf(input.email),password=String(input.password||'');
    validatePassword(password,email);
    const trial=trialDetailsFromInput(input);
@@ -56,10 +57,13 @@ export async function emailPasswordAuth({req,res,url,db,body,send,sendVerificati
    const user=await createUnverifiedUser(client,{email,password});
    const token=await issueVerification(client,{userId:user.id,purpose:'trial',payload:{company:trial.name,currency:trial.currency,full_name:nameOf(input.full_name)}});
    await client.query('commit');client.release();client=null;
-   await queueVerification(sendVerification,email,token);
+   if(!await queueVerification(sendVerification,email,token)){
+    send(res,503,{error:'No pudimos enviar el correo de verificación. Volvé a solicitarlo en unos minutos.'});return true;
+   }
    send(res,202,{message:'Revisá tu correo para verificar tu cuenta y activar la prueba de 30 días.'});return true;
   }
   if(path==='/api/auth/password/invitations/register'){
+   if(!emailAvailable)fail('El registro con correo todavía no está disponible. Usá Google o contactá al administrador.',503);
    const email=emailOf(input.email),password=String(input.password||''),token=String(input.token||'');
    validatePassword(password,email);
    // Validate before any user write. The verification endpoint validates again
@@ -70,10 +74,13 @@ export async function emailPasswordAuth({req,res,url,db,body,send,sendVerificati
    const user=await createUnverifiedUser(client,{email,password});
    const verify=await issueVerification(client,{userId:user.id,purpose:'invite',inviteLinkId:invite.id,payload:{full_name:nameOf(input.full_name)||email}});
    await client.query('commit');client.release();client=null;
-   await queueVerification(sendVerification,email,verify);
+   if(!await queueVerification(sendVerification,email,verify)){
+    send(res,503,{error:'No pudimos enviar el correo de verificación. Volvé a solicitarlo en unos minutos.'});return true;
+   }
    send(res,202,{message:'Revisá tu correo para verificar tu cuenta. Recién entonces se solicitará o habilitará el acceso de esta invitación.'});return true;
   }
   if(path==='/api/auth/password/verification/request'){
+   if(!emailAvailable)fail('La verificación por correo todavía no está disponible. Usá Google o contactá al administrador.',503);
    const email=emailOf(input.email);
    const allowed=await throttle(db,'verification-resend:'+email,3);
    if(allowed){
@@ -85,7 +92,9 @@ export async function emailPasswordAuth({req,res,url,db,body,send,sendVerificati
     let token=null;
     if(pending)token=await issueVerification(client,{userId:pending.id,purpose:pending.purpose,inviteLinkId:pending.invite_link_id,payload:pending.payload||{}});
     await client.query('commit');client.release();client=null;
-    if(token)await queueVerification(sendVerification,email,token);
+    if(token&&!await queueVerification(sendVerification,email,token)){
+     send(res,503,{error:'No pudimos enviar el correo de verificación. Volvé a solicitarlo en unos minutos.'});return true;
+    }
    }
    send(res,202,{message:'Si hay una cuenta pendiente para ese correo, enviamos un nuevo enlace de verificación.'});return true;
   }

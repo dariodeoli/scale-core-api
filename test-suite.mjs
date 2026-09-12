@@ -74,6 +74,6 @@ assert.equal((await call(`/api/agency/budgets/${budget}/revoke`,'POST')).status,
 const escaped=budgetDocument({number:'T',title:'<script>alert(1)</script>',organization_name:'Test',client_name:'Client',currency:'USD',subtotal:10,total:11,tax_rate:.1},[]);assert.ok(!escaped.includes('<script>'));assert.ok(escaped.includes('&lt;script&gt;'));
 r=await call('/api/auth/password/request','POST',{email:'unknown@example.invalid'});assert.equal(r.status,202);assert.equal(sent,0);
 assert.equal((await call('/api/auth/password/request','POST',{email:'suite-owner@example.invalid'})).status,202);assert.equal(sent,1);assert.equal(resetToken.length,64);
-assert.equal((await call('/api/auth/password/reset','POST',{token:resetToken,password:'new-test-password-1234'})).status,200);
-assert.equal((await call('/api/auth/password/reset','POST',{token:resetToken,password:'new-test-password-1234'})).status,400);
+assert.equal((await call('/api/auth/password/reset','POST',{token:resetToken,password:'NuevaClave!2026'})).status,200);
+assert.equal((await call('/api/auth/password/reset','POST',{token:resetToken,password:'NuevaClave!2026'})).status,400);
 await pg.close();console.log('PASS: approvals, member suspension, tenant isolation, pipeline conversion, plans, inventory, dashboard permissions, public quotes, invoice idempotency, audit and password reset');
