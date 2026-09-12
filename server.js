@@ -237,7 +237,7 @@ const server = http.createServer(async (req,res) => {
     if(url.pathname==='/api/auth/email-status'&&req.method==='GET')return send(res,200,{email:publicEmailDeliveryStatus(emailDelivery.status)});
     if(await emailPasswordAuth({req,res,url,db,body,send,sendVerification,emailAvailable:emailDelivery.status.available,cookie,id}))return;
     if(await passwordAccess({req,res,url,db,body,send,sendReset,emailAvailable:emailDelivery.status.available}))return;
-    if(await accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie}))return;
+    if(await accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie,throttle}))return;
     if(await financeControls({req,res,url,db,session,body,send}))return;
     if(await contentReview({req,res,url,db,session,body,send}))return;
     if(await productivity({req,res,url,db,session,body,send}))return;

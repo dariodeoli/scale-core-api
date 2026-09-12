@@ -5,13 +5,15 @@ const RECOVERY_DAYS=30;
 
 function fail(message,status=400){throw Object.assign(new Error(message),{status});}
 
-export async function accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie}){
+export async function accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie,throttle}){
  if(!url.pathname.startsWith('/api/auth/account'))return false;
+ const limit=throttle||(async()=>true);
  if(url.pathname==='/api/auth/account/closure/cancel'&&req.method==='POST'){
   try{
    const value=await body(req);
    const email=typeof value?.email==='string'?value.email.trim().toLowerCase():'';
    if(!email||typeof value?.password!=='string'||!value.password)fail('Ingresá tu correo y contraseña actual para cancelar el cierre.');
+   if(!await limit(db,'account-closure-cancel:'+email,5))fail('Demasiados intentos. Esperá 15 minutos.',429);
    const account=(await db.query('select id,password_hash from users where email=$1',[email])).rows[0];
    if(!account||!await bcrypt.compare(value.password,account.password_hash))fail('No pudimos confirmar tus credenciales.',401);
    const changed=(await db.query(`update account_closure_requests set cancelled_at=now() where user_id=$1 and cancelled_at is null and recoverable_until>now() returning user_id`,[account.id])).rows[0];
@@ -43,6 +45,7 @@ export async function accountSecurity({req,res,url,db,session,body,send,parseCoo
   if(url.pathname==='/api/auth/account/closure'&&req.method==='POST'){
    if(user.demo_owner_user_id)fail('La cuenta de demostración no se puede cerrar desde el demo.',403);
    const value=await body(req);
+   if(!await limit(db,'account-closure:'+user.id,5))fail('Demasiados intentos. Esperá 15 minutos.',429);
    if(value?.confirmation!==CLOSE_CONFIRMATION)fail(`Escribí “${CLOSE_CONFIRMATION}” para confirmar el cierre.`);
    if(typeof value?.password!=='string'||!value.password)fail('Ingresá tu contraseña actual para confirmar el cierre.');
    const account=(await db.query('select password_hash from users where id=$1',[user.id])).rows[0];
