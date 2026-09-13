@@ -61,7 +61,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
    }else fail('Método no permitido',405);
   } else if(commentMatch) {
    await belongs(c,'agency_projects',commentMatch[1],org);
-   if(req.method==='GET') result={comments:(await c.query('select c.*,u.email as author_email from agency_project_comments c left join users u on u.id=c.author_user_id where c.organization_id=$1 and c.project_id=$2 order by c.created_at,c.id',[org,commentMatch[1]])).rows};
+   if(req.method==='GET') result={comments:(await c.query(`select c.*,u.email as author_email,coalesce((select jsonb_agg(m.mentioned_user_id::text order by m.mentioned_user_id) from agency_project_comment_mentions m where m.organization_id=c.organization_id and m.project_comment_id=c.id),'[]'::jsonb) as mentioned_user_ids from agency_project_comments c left join users u on u.id=c.author_user_id where c.organization_id=$1 and c.project_id=$2 order by c.created_at,c.id`,[org,commentMatch[1]])).rows};
    else if(req.method==='POST') {
     const incoming=await body(req),commentBody=text(incoming.body);if(!commentBody) fail('Escribí un comentario');
     const comment=(await c.query('insert into agency_project_comments(organization_id,project_id,author_user_id,body) values($1,$2,$3,$4) returning *',[org,commentMatch[1],user.id,commentBody])).rows[0];

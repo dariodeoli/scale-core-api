@@ -18,13 +18,14 @@ const actor=await insert("insert into users(email,password_hash) values('actor@m
 const recipient=await insert("insert into users(email,password_hash) values('recipient@mentions.example.invalid','unused')");
 const outsider=await insert("insert into users(email,password_hash) values('outside@mentions.example.invalid','unused')");
 for(const [scope,user] of [[org,actor],[org,recipient],[other,outsider]])await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'editor')",[scope,user]);
+await query("insert into agency_user_profiles(organization_id,user_id,full_name) values($1,$2,'Actor'),($1,$3,'Camila'),($1,$4,'Fuera')",[org,actor,recipient,outsider]);
 const client=await insert("insert into agency_clients(organization_id,name) values($1,'Client')",[org]);
 const project=await insert("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Project')",[org,client]);
 const order=await insert("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Piece')",[org,project]);
 const session={id:actor,organization_id:org,role:'editor'};
 async function call(handler,path,payload,as=session){let response;await handler({req:{method:'POST',socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test'+path),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>response={status,...data}});return response;}
 
-let response=await call(operations,`/api/agency/projects/${project}/comments`,{body:'@Camila revisar',mentioned_user_ids:[String(recipient)]});
+let response=await call(operations,`/api/agency/projects/${project}/comments`,{body:'@Camila revisar'});
 assert.equal(response.status,201);
 assert.equal((await query('select count(*)::int n from agency_project_comment_mentions where organization_id=$1 and project_comment_id=$2 and mentioned_user_id=$3',[org,response.comment.id,recipient])).rows[0].n,1);
 assert.equal((await query("select count(*)::int n from agency_notifications where organization_id=$1 and user_id=$2 and kind='comment'",[org,recipient])).rows[0].n,1);
@@ -33,7 +34,7 @@ assert.equal(response.status,201);
 assert.equal((await query('select count(*)::int n from agency_order_comment_mentions where organization_id=$1 and order_comment_id=$2 and mentioned_user_id=$3',[org,response.comment.id,recipient])).rows[0].n,1);
 assert.equal((await query("select count(*)::int n from agency_notifications where organization_id=$1 and user_id=$2 and kind='comment'",[org,recipient])).rows[0].n,2);
 const commentsBefore=(await query('select count(*)::int n from agency_project_comments where organization_id=$1',[org])).rows[0].n;
-response=await call(operations,`/api/agency/projects/${project}/comments`,{body:'No permitido',mentioned_user_ids:[String(outsider)]});
+response=await call(operations,`/api/agency/projects/${project}/comments`,{body:'@Camila No permitido',mentioned_user_ids:[String(outsider)]});
 assert.equal(response.status,400);
 assert.equal((await query('select count(*)::int n from agency_project_comments where organization_id=$1',[org])).rows[0].n,commentsBefore,'invalid mentions roll back the comment');
 response=await call(productivity,`/api/agency/productivity/orders/${order}/comments`,{body:'Formato inválido',mentioned_user_ids:['bad-id']});

@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {PGlite} from '@electric-sql/pglite';
+import {workOrderLinks} from './work-order-links.js';
+
+const pg=new PGlite();
+await pg.exec(await fs.readFile('schema.sql','utf8'));
+for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls','20260910_productivity','20260910_client_lifecycle','20260913_ruc_collaboration'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
+const query=(sql,values)=>pg.query(sql,values),db={query,connect:async()=>({query,release(){}})};
+const insert=async(sql,values)=>(await query(sql+' returning id',values)).rows[0].id;
+const org=await insert("insert into organizations(slug,name) values('links-a','Links A')");
+const other=await insert("insert into organizations(slug,name) values('links-b','Links B')");
+const editor=await insert("insert into users(email,password_hash) values('links-editor@example.invalid','unused')");
+const viewer=await insert("insert into users(email,password_hash) values('links-viewer@example.invalid','unused')");
+await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'editor'),($1,$3,'viewer')",[org,editor,viewer]);
+const client=await insert("insert into agency_clients(organization_id,name) values($1,'Client')",[org]);
+const project=await insert("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Project')",[org,client]);
+const order=await insert("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Order')",[org,project]);
+const user={id:editor,organization_id:org,role:'editor'};
+async function call(path,as=user,method='GET',payload={}){let response;await workOrderLinks({req:{method,socket:{}},res:{},url:new URL('https://test/api/agency/'+path),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>response={status,...data}});return response;}
+let response=await call(`work-orders/${order}/links`,user,'POST',{label:'Brief',url:'https://drive.example/brief'});assert.equal(response.status,201);const link=response.link;
+response=await call(`work-orders/${order}/links`);assert.equal(response.status,200);assert.deepEqual(response.links.map(row=>row.label),['Brief']);
+response=await call(`work-orders/${order}/links`,user,'POST',{label:'Nuevo brief',url:'https://drive.example/brief'});assert.equal(response.status,201);assert.equal(response.link.id,link.id,'same URL updates metadata instead of embedding a duplicate in text');
+assert.equal((await call(`work-orders/${order}/links`,{...user,id:viewer,role:'viewer'},'POST',{label:'No',url:'https://drive.example/no'})).status,403);
+assert.equal((await call(`work-orders/${order}/links/${link.id}`,{...user,organization_id:other},'DELETE')).status,404);
+assert.equal((await call(`work-orders/${order}/links/${link.id}`,user,'DELETE')).status,200);
+assert.equal((await call(`work-orders/${order}/links`)).links.length,0);
+await pg.close();console.log('PASS: work-order named links are relational, HTTPS-only, role-gated, and tenant-scoped');

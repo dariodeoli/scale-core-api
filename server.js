@@ -33,7 +33,8 @@ import {rememberGooglePhoto} from './google-profile-photo.js';
 import {liveVisitors,startLiveVisitorCleanup} from './live-visitors.js';
 import { productivity } from './productivity.js';
 import {weeklyReports} from './weekly-reports.js';
-import {rucLookup,assertUniqueClientRuc} from './ruc-lookup.js';
+import {rucLookup,assertUniqueClientRuc,rucLookupConfig,createRucProvider} from './ruc-lookup.js';
+import {workOrderLinks} from './work-order-links.js';
 import {presence} from './presence.js';
 import {demoOrganization,privateDemoEntry} from './demo-session.js';
 import {inviteLinks,resolveInvite,claimInvite,accessRequestState} from './invite-links.js';
@@ -52,6 +53,8 @@ const port = Number(process.env.PORT || 3000);
 const db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const release=JSON.parse(await fs.readFile(path.join(root,'release-version.json'),'utf8'));
+const rucConfig=rucLookupConfig();
+const rucProvider=createRucProvider({baseUrl:rucConfig.providerUrl,timeoutMs:rucConfig.timeoutMs});
 const bootstrapEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const bootstrapPassword = process.env.ADMIN_PASSWORD || '';
 const scaleOsOwnerEmail = (process.env.SCALE_OS_OWNER_EMAIL || '').trim().toLowerCase();
@@ -141,6 +144,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal_password_resets.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260913_client_portal_vertical_slice.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260913_inventory_advanced_traceability.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260913_ruc_collaboration.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_account_security.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
@@ -245,7 +249,8 @@ const server = http.createServer(async (req,res) => {
     if(await contentReview({req,res,url,db,session,body,send}))return;
     if(await productivity({req,res,url,db,session,body,send}))return;
     if(await weeklyReports({req,res,url,db,session,body,send}))return;
-    if(await rucLookup({req,res,url,db,session,body,send}))return;
+    if(await rucLookup({req,res,url,db,session,body,send,provider:rucProvider,config:rucConfig}))return;
+    if(await workOrderLinks({req,res,url,db,session,body,send}))return;
     if(await presence({req,res,url,db,session,body,send,sessionKey:req=>crypto.createHash('sha256').update(parseCookies(req).scale_session||'').digest('hex')}))return;
     if(await notifications({req,res,url,db,session,body,send}))return;
     if(await automationApi({req,res,url,db,session,body,send}))return;
