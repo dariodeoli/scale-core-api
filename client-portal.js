@@ -16,6 +16,8 @@ try{
  clientOrigin=parsed.toString().replace(/\/$/,'');
 }catch{throw Error('CLIENT_PORTAL_ORIGIN debe ser un origen HTTPS permitido de Scale');}
 const clientOrigins=new Set(['https://app.scaleparaguay.com','https://cliente.scaleparaguay.com',new URL(clientOrigin).origin]);
+export const clientPortalOrigin=clientOrigin;
+export const clientPortalUrl=path=>`${clientOrigin}/${String(path).replace(/^\/+/, '')}`;
 const clientRoles=['owner','admin','management','production'];
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
@@ -60,6 +62,28 @@ export function clientPortalResetEmail({token}){
  const safeUrl=htmlEscape(resetUrl);
  return {subject:'Restablecé tu contraseña del portal de cliente',text:`Recibimos una solicitud para restablecer la contraseña de tu Portal del Cliente de Scale OS. Abrí este enlace dentro de una hora: ${resetUrl}\n\nSi no lo solicitaste, podés ignorar este correo.`,html:`<h1>Restablecé tu contraseña</h1><p>Recibimos una solicitud para tu Portal del Cliente de Scale OS.</p><p><a href="${safeUrl}">Elegir una contraseña nueva</a></p><p>Este enlace vence en una hora. Si no lo solicitaste, podés ignorar este correo.</p>`};
 }
+export async function clientPortalGoogleInvite(db,raw){return validInvite(db,raw);}
+export async function acceptClientPortalGoogleInvite({db,inviteId,email:googleEmail,fullName}){
+ const c=await db.connect();let transaction=false;
+ try{
+  await c.query('begin');transaction=true;
+  const invite=(await c.query(`select i.*,c.active as client_active,o.active as organization_active
+   from client_portal_invites i join agency_clients c on c.id=i.client_id and c.organization_id=i.organization_id
+   join organizations o on o.id=i.organization_id where i.id=$1 for update`,[inviteId])).rows[0];
+  if(!invite||invite.revoked_at||invite.accepted_at||!invite.client_active||!invite.organization_active||new Date(invite.expires_at)<=new Date())fail('Esta invitación venció o fue desactivada.',410);
+  if(invite.email_normalized!==email(googleEmail))fail('El correo de Google debe coincidir con el correo invitado.',403);
+  let user=(await c.query('select * from client_portal_users where email_normalized=$1 for update',[invite.email_normalized])).rows[0];
+  if(user){
+   if(user.disabled_at)fail('Esta cuenta del portal está desactivada.',403);
+   if(String(user.organization_id)!==String(invite.organization_id)||String(user.client_id)!==String(invite.client_id))fail('Esta dirección ya está vinculada a otro cliente.',409);
+  }else user=(await c.query('insert into client_portal_users(organization_id,client_id,email,email_normalized,password_hash,full_name) values($1,$2,$3,$4,null,$5) returning *',[invite.organization_id,invite.client_id,invite.email_normalized,invite.email_normalized,text(fullName||invite.email_normalized,120)])).rows[0];
+  await c.query('insert into client_portal_grants(organization_id,client_id,portal_user_id,granted_by_user_id) values($1,$2,$3,$4) on conflict(organization_id,client_id,portal_user_id) do update set active=true,revoked_at=null,revoked_by_user_id=null',[invite.organization_id,invite.client_id,user.id,invite.invited_by_user_id]);
+  await c.query('update client_portal_invites set accepted_at=now() where id=$1',[invite.id]);
+  const rawSession=crypto.randomBytes(32).toString('hex');
+  await c.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[hash(rawSession),user.id]);
+  await c.query('commit');transaction=false;return {rawSession};
+ }catch(error){if(transaction)await c.query('rollback');throw error;}finally{c.release();}
+}
 export async function clientPortal({req,res,url,db,session,body,send,sendPasswordReset,emailAvailable=true}){
  const invitePreview=url.pathname==='/api/client-portal/invites/preview';
  const inviteAccept=url.pathname==='/api/client-portal/invites/accept';
@@ -68,7 +92,7 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
  const passwordReset=url.pathname==='/api/client-portal/auth/password/reset';
  const logout=url.pathname==='/api/client-portal/auth/logout';
  const me=url.pathname==='/api/client-portal/me';
- const deliveryMatch=url.pathname.match(/^\/api\/client-portal\/deliveries\/(\d+)(?:\/(comments|decision))?$/);
+ const deliveryMatch=url.pathname.match(/^\/api\/client-portal\/deliveries\/(\d+)(?:\/(comments|decision|download))?$/);
  const deliveries=url.pathname==='/api/client-portal/deliveries';
  const internalInvite=url.pathname.match(/^\/api\/agency\/clients\/(\d+)\/client-portal-invites$/);
  const revokeInvite=url.pathname.match(/^\/api\/agency\/client-portal-invites\/(\d+)\/revoke$/);
@@ -118,8 +142,10 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
    if(typeof b.password!=='string'||b.password.length<12||b.password.length>128)fail('Usá una contraseña de 12 a 128 caracteres');
    c=await db.connect();await c.query('begin');transaction=true;const invite=await validInvite(c,raw,{lock:true});
    let user=(await c.query('select * from client_portal_users where email_normalized=$1 for update',[invite.email_normalized])).rows[0];
-   if(user){if(user.disabled_at||!await bcrypt.compare(b.password,user.password_hash))fail('Esta dirección ya tiene una cuenta. Ingresá con su contraseña.',409);}
-   else {validatePassword(b.password,invite.email_normalized);user=(await c.query('insert into client_portal_users(email,email_normalized,password_hash,full_name) values($1,$2,$3,$4) returning *',[invite.email_normalized,invite.email_normalized,await bcrypt.hash(b.password,12),text(b.fullName,120)])).rows[0];}
+   if(user){
+    if(user.disabled_at||String(user.organization_id)!==String(invite.organization_id)||String(user.client_id)!==String(invite.client_id))fail('Esta dirección ya está vinculada a otro cliente.',409);
+    if(!user.password_hash||!await bcrypt.compare(b.password,user.password_hash))fail('Esta dirección ya tiene una cuenta. Ingresá con su contraseña o usá Google.',409);
+   }else {validatePassword(b.password,invite.email_normalized);user=(await c.query('insert into client_portal_users(organization_id,client_id,email,email_normalized,password_hash,full_name) values($1,$2,$3,$4,$5,$6) returning *',[invite.organization_id,invite.client_id,invite.email_normalized,invite.email_normalized,await bcrypt.hash(b.password,12),text(b.fullName,120)])).rows[0];}
    await c.query('insert into client_portal_grants(organization_id,client_id,portal_user_id,granted_by_user_id) values($1,$2,$3,$4) on conflict(organization_id,client_id,portal_user_id) do update set active=true,revoked_at=null,revoked_by_user_id=null',[invite.organization_id,invite.client_id,user.id,invite.invited_by_user_id]);
    await c.query('update client_portal_invites set accepted_at=now() where id=$1',[invite.id]);const rawSession=crypto.randomBytes(32).toString('hex');
    await c.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[hash(rawSession),user.id]);
@@ -128,7 +154,7 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   if(login){
    if(req.method!=='POST')fail('Método no permitido',405);const b=await body(req),address=email(b.email);if(!await throttle(db,'client-portal-login:'+address,10))fail('Demasiados intentos. Esperá 15 minutos.',429);
    const user=(await db.query('select u.* from client_portal_users u where u.email_normalized=$1 and u.disabled_at is null and exists(select 1 from client_portal_grants g join organizations o on o.id=g.organization_id join agency_clients c on c.id=g.client_id and c.organization_id=g.organization_id where g.portal_user_id=u.id and g.active and o.active and c.active)',[address])).rows[0];
-   if(!user||typeof b.password!=='string'||!await bcrypt.compare(b.password,user.password_hash))fail('Credenciales inválidas',401);const raw=crypto.randomBytes(32).toString('hex');await db.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[hash(raw),user.id]);send(res,200,{ok:true},{'Set-Cookie':portalCookie(raw,604800)});return true;
+   if(!user||!user.password_hash||typeof b.password!=='string'||!await bcrypt.compare(b.password,user.password_hash))fail('Credenciales inválidas',401);const raw=crypto.randomBytes(32).toString('hex');await db.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[hash(raw),user.id]);send(res,200,{ok:true},{'Set-Cookie':portalCookie(raw,604800)});return true;
   }
   if(passwordRequest){
    if(req.method!=='POST')fail('Método no permitido',405);
@@ -158,7 +184,7 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   }
   const user=await portalSession(db,req);if(!user)fail('Ingresá al portal de cliente',401);
   if(logout){if(req.method!=='POST')fail('Método no permitido',405);await db.query('delete from client_portal_sessions where token_hash=$1',[user.token_hash]);send(res,200,{ok:true},{'Set-Cookie':portalCookie('',0)});return true;}
-  if(me){if(req.method!=='GET')fail('Método no permitido',405);const clients=(await db.query('select distinct o.name as organization_name,c.name as client_name from client_portal_grants g join organizations o on o.id=g.organization_id join agency_clients c on c.id=g.client_id and c.organization_id=g.organization_id where g.portal_user_id=$1 and g.active and o.active and c.active order by o.name,c.name',[user.id])).rows;send(res,200,{user:{fullName:user.full_name,email:user.email},clients});return true;}
+  if(me){if(req.method!=='GET')fail('Método no permitido',405);const client=(await db.query('select o.name as organization_name,c.name as client_name from client_portal_users u join organizations o on o.id=u.organization_id join agency_clients c on c.id=u.client_id and c.organization_id=u.organization_id where u.id=$1 and o.active and c.active',[user.id])).rows[0]||null;send(res,200,{user:{fullName:user.full_name,email:user.email},client});return true;}
   if(deliveries){if(req.method!=='GET')fail('Método no permitido',405);const rows=(await db.query(`select distinct d.id,d.title,d.summary,d.asset_name,d.version,d.published_at,w.title as work_order_title,p.name as project_name,c.name as client_name
    from client_portal_deliveries d join agency_work_orders w on w.id=d.work_order_id and w.organization_id=d.organization_id join agency_projects p on p.id=w.project_id and p.organization_id=d.organization_id join agency_clients c on c.id=p.client_id and c.organization_id=d.organization_id join organizations o on o.id=d.organization_id join client_portal_grants g on g.organization_id=d.organization_id and g.client_id=p.client_id and g.portal_user_id=$1 and g.active
    where d.visible and d.asset_url is not null and w.status in ('approved','published') and c.active and o.active order by d.published_at desc,d.id desc`,[user.id])).rows;send(res,200,{deliveries:rows});return true;}
@@ -166,7 +192,13 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   if(!deliveryMatch[2]){
    if(req.method!=='GET')fail('Método no permitido',405);const comments=(await c.query('select c.id,c.body,c.created_at,u.full_name as author_name from client_portal_delivery_comments c join client_portal_users u on u.id=c.portal_user_id where c.delivery_id=$1 and c.organization_id=$2 order by c.created_at,c.id',[delivery.id,delivery.organization_id])).rows;
    const decision=(await c.query('select decision,created_at,updated_at from client_portal_delivery_decisions where delivery_id=$1 and portal_user_id=$2 and version=$3',[delivery.id,user.id,delivery.version])).rows[0]||null;
-   await c.query('commit');transaction=false;send(res,200,{delivery,comments,decision});return true;
+   const {asset_url,...publicDelivery}=delivery;
+   await c.query('commit');transaction=false;send(res,200,{delivery:publicDelivery,comments,decision});return true;
+  }
+  if(deliveryMatch[2]==='download'){
+   if(req.method!=='GET')fail('Método no permitido',405);
+   await c.query('insert into client_portal_delivery_downloads(organization_id,delivery_id,portal_user_id,request_ip) values($1,$2,$3,$4)',[delivery.organization_id,delivery.id,user.id,req.socket.remoteAddress||'']);
+   await c.query('commit');transaction=false;res.writeHead(302,{Location:delivery.asset_url,'Referrer-Policy':'no-referrer'});res.end();return true;
   }
   if(req.method!=='POST')fail('Método no permitido',405);const b=await body(req);
   if(deliveryMatch[2]==='comments'){

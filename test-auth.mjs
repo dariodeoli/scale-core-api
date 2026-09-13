@@ -13,7 +13,7 @@ const query=(s,v)=>db.query(s,v);
 await db.exec(await fs.readFile(new URL('./migrations/20260911_default_login_organization.sql',import.meta.url),'utf8'));
 await db.exec(await fs.readFile(new URL('./migrations/20260911_google_profile_photo.sql',import.meta.url),'utf8'));
 for(const f of ['20260911_subscriptions.sql','20260911_trial_registration.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
-for(const f of ['20260910_client_lifecycle.sql','20260911_agency_reports.sql','20260911_invite_link_metrics.sql','20260911_invite_link_details.sql','20260912_account_security.sql','20260912_client_portal.sql','20260912_client_portal_google_oauth.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
+for(const f of ['20260910_client_lifecycle.sql','20260911_agency_reports.sql','20260911_invite_link_metrics.sql','20260911_invite_link_details.sql','20260912_account_security.sql','20260912_client_portal.sql','20260912_client_portal_google_oauth.sql','20260913_client_portal_vertical_slice.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const org=(await query("insert into organizations(slug,name) values('other','Another agency') returning id")).rows[0].id;
 const scale=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('member@example.invalid','unused') returning id")).rows[0].id;
@@ -96,4 +96,11 @@ const approvedIdentity=JSON.parse((await request('/api/auth/me',{cookie:pendingC
 assert.equal(approvedIdentity.full_name,'Pending Test');assert.equal(Object.hasOwn(approvedIdentity,'has_personal_identity'),false);
 assert.equal((await request('/api/agency/clients',{cookie:pendingCookie})).status,200);
 assert.equal((await request('/api/agency/accounts',{cookie:pendingCookie})).status,403);
+// A client invitation remains bound to its opaque OAuth state. The raw invite
+// token is accepted only at start and is never placed in the callback URL.
+const portalInviteToken='a'.repeat(64);
+await query("insert into client_portal_invites(organization_id,client_id,email_normalized,token_hash,expires_at,invited_by_user_id) values($1,$2,$3,$4,now()+interval '1 hour',$5)",[scale,client,'portal-google@example.invalid',(await import('node:crypto')).createHash('sha256').update(portalInviteToken).digest('hex'),owner]);
+profile={email:'portal-google@example.invalid',name:'Portal Google',email_verified:true};
+r=await request('/api/client-portal/auth/google/start?token='+portalInviteToken);assert.equal(r.status,302);const portalState=new URL(r.headers.Location).searchParams.get('state');assert.ok(portalState);const portalCookie=r.headers['Set-Cookie'].split(';')[0];assert.equal((await query('select client_portal_invite_id from oauth_states where state=$1',[portalState])).rows.length,1);
+r=await request('/api/auth/google/callback?'+new URLSearchParams({state:portalState,code:'mock'}),{cookie:portalCookie});assert.equal(r.status,302);assert.equal(r.headers.Location,'https://app.scaleparaguay.com/cliente/entregas');assert.match(r.headers['Set-Cookie'],/^__Host-scale_client_session=/);const portalUser=(await query('select organization_id,client_id,password_hash from client_portal_users where email_normalized=$1',['portal-google@example.invalid'])).rows[0];assert.deepEqual({organization_id:String(portalUser.organization_id),client_id:String(portalUser.client_id),password_hash:portalUser.password_hash},{organization_id:String(scale),client_id:String(client),password_hash:null});assert.equal((await query('select count(*)::int as count from client_portal_invites where token_hash=$1 and accepted_at is not null',[(await import('node:crypto')).createHash('sha256').update(portalInviteToken).digest('hex')])).rows[0].count,1);
 await db.close();console.log('PASS: Google state/membership, single-use handoff, multiagency roles, revocation, explicit reinvitation, no outbound emails, operational archive lists/summary/restore');
