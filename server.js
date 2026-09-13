@@ -51,6 +51,7 @@ const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
 const db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
 const root = path.dirname(fileURLToPath(import.meta.url));
+const release=JSON.parse(await fs.readFile(path.join(root,'release-version.json'),'utf8'));
 const bootstrapEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
 const bootstrapPassword = process.env.ADMIN_PASSWORD || '';
 const scaleOsOwnerEmail = (process.env.SCALE_OS_OWNER_EMAIL || '').trim().toLowerCase();
@@ -253,7 +254,7 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(302, { Location: 'https://app.scaleparaguay.com' });
       return res.end();
     }
-    if (url.pathname === '/health') return send(res,databaseReady ? 200 : 503,{ok:databaseReady,database:databaseReady ? 'ready' : 'initializing'});
+    if (url.pathname === '/health') return send(res,databaseReady ? 200 : 503,{ok:databaseReady,database:databaseReady ? 'ready' : 'initializing',release});
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
       const { email='', password='' } = await body(req); const e=email.trim().toLowerCase();
       if(!await throttle(db,'login:'+e,30))return send(res,429,{error:'Demasiados intentos. Esperá 15 minutos.'});

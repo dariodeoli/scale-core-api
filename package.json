@@ -1,9 +1,11 @@
 {
   "name": "scale-core-api",
+  "version": "1.0.32",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test:release": "node test-suite.mjs && node test-operations.mjs && node --experimental-vm-modules test-auth.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
