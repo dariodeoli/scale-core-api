@@ -79,7 +79,7 @@ function invoice(sub,{start=Math.floor(clock/1000),end=start+30*86400,status='pa
 try{
  for(const key of Object.keys(settings))delete process.env[key];
  await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
- for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260910_demo_sessions.sql','20260911_subscriptions.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
+ for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260910_demo_sessions.sql','20260911_subscriptions.sql','20260912_platform_admin.sql','20260913_platform_admin_vertical_slice.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
  await pg.exec(await fs.readFile(new URL('./migrations/20260911_subscriptions.sql',import.meta.url),'utf8'));
  const uid=(await query("insert into users(email,password_hash) values('subscription-owner@example.invalid','unused') returning id")).rows[0].id;
  async function tenant(label){const id=(await query('insert into organizations(slug,name) values($1,$2) returning id',[`billing-${label}`,`Fixture ${label}`])).rows[0].id;await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[id,uid]);return {id:uid,organization_id:id,role:'owner'};}
@@ -96,6 +96,10 @@ try{
  const trialEnd=new Date(trial.trial_ends_at).getTime();assert.equal(trialEnd-new Date(trial.trial_started_at).getTime(),30*DAY);
  for(const [at,expected,access] of [[trialEnd-1,'trialing',true],[trialEnd,'grace',true],[trialEnd+2*DAY-1,'grace',true],[trialEnd+2*DAY,'suspended',false]]){const s=await state(owner,at);assert.equal(s.status,expected);assert.equal(s.hasAccess,access);assert.equal(s.suspendAt,new Date(trialEnd+2*DAY).toISOString());}
  assert.equal((await state(owner,trialEnd)).daysRemaining,2);assert.equal((await state(owner,trialEnd+2*DAY)).daysRemaining,0);
+ await query("insert into platform_subscription_states(organization_id,state,reason,updated_by_user_id) values($1,'active','Manual support extension',$2)",[owner.organization_id,uid]);
+ const manuallyActive=await state(owner,trialEnd+2*DAY);assert.equal(manuallyActive.status,'active');assert.equal(manuallyActive.hasAccess,true);assert.equal(manuallyActive.platformOverride,true);assert.equal(manuallyActive.daysRemaining,null);
+ await query("update platform_subscription_states set state='suspended',expires_at=now()+interval '1 hour' where organization_id=$1",[owner.organization_id]);
+ assert.equal((await state(owner)).status,'suspended');
  await assert.rejects(startTrial(db,existing.organization_id,'EUR'));
  assert.equal((await call('/api/billing/subscription')).status,401);
  assert.equal((await post(owner)).status,503);assert.equal((await state(owner)).checkoutReady,false);
@@ -104,7 +108,7 @@ try{
  for(const role of ['admin','management','finance','sales','production','editor','viewer']){
   const id=(await query('insert into users(email,password_hash) values($1,$2) returning id',[`billing-${role}@example.invalid`,'unused'])).rows[0].id;
   await query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[owner.organization_id,id,role]);const member={id,organization_id:owner.organization_id,role};actors.push(member);
-  const read=await call('/api/billing/subscription','GET',{},member);assert.equal(read.status,200);assert.equal(read.data.canManage,false);assert.equal(read.data.portalReady,false);assert.equal(read.data.billingReadiness,'disabled');assert.equal(Object.keys(read.data).length,12);
+  const read=await call('/api/billing/subscription','GET',{},member);assert.equal(read.status,200);assert.equal(read.data.canManage,false);assert.equal(read.data.portalReady,false);assert.equal(read.data.billingReadiness,'disabled');assert.equal(Object.keys(read.data).length,13);
   assert.equal((await post(member)).status,403);assert.equal((await call('/api/billing/portal','POST',{},member)).status,403);
  }
  assert.equal((await state({...actors[0],organization_id:other.organization_id}).catch(e=>e.status)),403,'tenant membership is not transferable');
@@ -171,7 +175,7 @@ try{
  assert.equal((await state({...actors[0],role:'owner'})).portalReady,false,'stale owner role cannot override actual membership');
  // Read-only partial-binding doubles: neither provider ID alone is sufficient.
  for(const missing of ['stripe_customer_id','stripe_subscription_id']){
-  const partialDb={query:async(sql,args)=>{const result=await query(sql,args);return sql==='select * from organization_subscriptions where organization_id=$1'?{...result,rows:result.rows.map(row=>({...row,[missing]:null}))}:result;}};
+  const partialDb={query:async(sql,args)=>{const result=await query(sql,args);return sql.includes('from organization_subscriptions s left join platform_subscription_states')?{...result,rows:result.rows.map(row=>({...row,[missing]:null}))}:result;}};
   assert.equal((await subscriptionState(partialDb,owner,new Date(clock))).portalReady,false);
  }
  assert.equal(wire.length,beforePortalRead,'availability reads do not contact Stripe');

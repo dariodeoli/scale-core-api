@@ -51,19 +51,22 @@ export async function startTrial(db,organizationId,currency='USD'){
 
 export async function subscriptionState(db,user,now=new Date()){
  const org=await actor(db,user),isDemo=demo(org);
- const row=isDemo?null:(await db.query('select * from organization_subscriptions where organization_id=$1',[org.id])).rows[0];
+ const row=isDemo?null:(await db.query(`select s.*,ps.state as platform_state,ps.expires_at as platform_state_expires_at
+  from organization_subscriptions s left join platform_subscription_states ps on ps.organization_id=s.organization_id where s.organization_id=$1`,[org.id])).rows[0];
  const currency=row?.currency||'USD',timestamp=new Date(now).getTime();if(!Number.isFinite(timestamp))fail('Fecha inválida');
  let status=isDemo?'demo':'unmanaged',due=null,suspend=null,remaining=null;
  if(row){
   due=new Date(row.due_at).getTime();suspend=due+GRACE;
   status=timestamp<new Date(row.trial_ends_at).getTime()?'trialing':row.paid_through_at&&timestamp<new Date(row.paid_through_at).getTime()?'active':timestamp<suspend?'grace':'suspended';
   remaining=Math.max(0,Math.ceil(((status==='trialing'?new Date(row.trial_ends_at).getTime():status==='active'?due:suspend)-timestamp)/DAY));
+  const overrideActive=row.platform_state&&(!row.platform_state_expires_at||timestamp<new Date(row.platform_state_expires_at).getTime());
+  if(overrideActive){status=row.platform_state;remaining=null;}
  }
  const billing=config(),canManage=!isDemo&&user.role==='owner'&&org.member_role==='owner',checkoutReady=Boolean(row&&!isDemo&&billing.ready);
  // Availability only: never expose provider IDs or infer a paid entitlement.
  const portalReady=Boolean(canManage&&checkoutReady&&row?.stripe_customer_id&&row?.stripe_subscription_id);
  return {status,hasAccess:status!=='suspended',currency,amount:plans[currency].amount,trialEndsAt:row?iso(row.trial_ends_at):null,dueAt:iso(due),suspendAt:iso(suspend),daysRemaining:remaining,
-  canManage,checkoutReady,portalReady,billingReadiness:billing.readiness};
+  canManage,checkoutReady,portalReady,billingReadiness:billing.readiness,platformOverride:Boolean(row?.platform_state&&(!row.platform_state_expires_at||timestamp<new Date(row.platform_state_expires_at).getTime()))};
 }
 
 async function transaction(db,work){const c=await db.connect();try{await c.query('begin');const result=await work(c);await c.query('commit');return result;}catch(error){await c.query('rollback');throw error;}finally{c.release();}}

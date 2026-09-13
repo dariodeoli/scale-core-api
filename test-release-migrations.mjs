@@ -14,7 +14,7 @@ const end=server.indexOf("await migration.query('commit')",start);
 assert(start>=0&&end>start,'Server migration transaction must be identifiable');
 const files=[...server.slice(start,end).matchAll(/(2026\d{4}_[a-z0-9_]+\.sql)/g)].map(m=>m[1]).filter(f=>f!=='20260908_dadoo_hub.sql');
 assert.equal(files.length,new Set(files).size,'Unexpected duplicate migration registration');
-for(const required of ['20260910_global_identity.sql','20260910_company_currency.sql','20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql','20260913_ruc_collaboration.sql'])assert(files.includes(required),`${required} missing from server init`);
+for(const required of ['20260910_global_identity.sql','20260910_company_currency.sql','20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql','20260913_ruc_collaboration.sql','20260913_platform_admin_vertical_slice.sql'])assert(files.includes(required),`${required} missing from server init`);
 const pg=new PGlite();
 const query=(s,v)=>pg.query(s,v),db={connect:async()=>({query,release(){}})};
 const insert=async(s,v)=>(await query(s+' returning id',v)).rows[0].id;
@@ -54,7 +54,7 @@ try{
  const order=await insert("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Release order')",[a,project]);
  const assigned=await call(projectAssignees,`work-orders/${order}/assignees`,self,'PATCH',{assigned_user_ids:[String(uid)],expected_version:'0'});
  assert.deepEqual(assigned.assigned_user_ids,[String(uid)]);
- for(const relation of ['organization_person_identity','agency_record_assignees','agency_project_assignees','agency_work_order_assignees','agency_inventory_categories','agency_inventory_reservations','agency_inventory_reservation_members','agency_inventory_reservation_items','agency_inventory_verifications','agency_inventory_trace','agency_work_checklists','agency_work_checklist_items','agency_ruc_lookup_cache','agency_work_order_links']){
+ for(const relation of ['organization_person_identity','agency_record_assignees','agency_project_assignees','agency_work_order_assignees','agency_inventory_categories','agency_inventory_reservations','agency_inventory_reservation_members','agency_inventory_reservation_items','agency_inventory_verifications','agency_inventory_trace','agency_work_checklists','agency_work_checklist_items','agency_ruc_lookup_cache','agency_work_order_links','platform_subscription_states']){
   assert.equal((await query('select to_regclass($1)::text as name',[relation])).rows[0].name,relation,`Missing release relation ${relation}`);
  }
  // Re-run the exact server transaction with populated identities and assignments.

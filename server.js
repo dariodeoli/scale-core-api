@@ -137,6 +137,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_inventory_verifications.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_platform_admin.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_platform_admin_bootstrap.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260913_platform_admin_vertical_slice.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_email_password_auth.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_studio_reservations.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal.sql'),'utf8'));

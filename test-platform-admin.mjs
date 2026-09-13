@@ -7,7 +7,7 @@ await pg.exec(`
  create table users(id bigint primary key,email text not null,created_at timestamptz not null default now(),email_verified_at timestamptz,is_demo_guest boolean not null default false);
  create table organizations(id bigint primary key,name text not null,slug text not null,active boolean not null default true,created_at timestamptz not null default now(),demo_owner_user_id bigint,demo_source_id bigint);
  create table organization_members(organization_id bigint,user_id bigint,active boolean not null default true,removed_at timestamptz,role text);
- create table organization_subscriptions(organization_id bigint primary key,stripe_status text,currency text,trial_ends_at timestamptz,due_at timestamptz);
+ create table organization_subscriptions(organization_id bigint primary key,stripe_status text,currency text,trial_started_at timestamptz,trial_ends_at timestamptz,due_at timestamptz,paid_through_at timestamptz);
  insert into users(id,email,email_verified_at) values(1,'owner@agency.example',now()),(2,'platform@scale.example',now()),(3,'member@agency.example',now());
  insert into organizations(id,name,slug) values(10,'Agency One','agency-one'),(20,'Agency Two','agency-two'),(30,'Demo','scale-demo-controles-20260908');
  insert into organization_members values(10,1,true,null,'owner'),(10,3,true,null,'viewer'),(20,2,true,null,'owner');
@@ -15,6 +15,7 @@ await pg.exec(`
 `);
 await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260912_platform_admin.sql',import.meta.url),'utf8'));
 await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260912_platform_admin_bootstrap.sql',import.meta.url),'utf8'));
+await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260913_platform_admin_vertical_slice.sql',import.meta.url),'utf8'));
 await pg.query('insert into platform_administrators(user_id) values(2)');
 const db={query:(sql,values)=>pg.query(sql,values)};
 async function call(path,{method='GET',actor={id:2,email:'platform@scale.example'},payload={},bootstrapValue=''}={}){
@@ -28,6 +29,7 @@ const platformSource=fs.readFileSync(new URL('./platform-admin.js',import.meta.u
 assert(platformSource.includes('stripe_status as status'),'global subscription summary must use the production stripe_status column');
 assert(platformSource.includes('s.stripe_status as subscription_status'),'global agency list must use the production stripe_status column');
 assert(platformSource.includes("case s.currency when 'USD' then 10::numeric when 'PYG' then 50000::numeric"),'global agency list must derive the launch price from the supported subscription currency');
+assert(platformSource.includes('platform_administrators'),'the global guard must remain independent from agency membership');
 assert.equal((await call('/api/agency/clients')).handled,false);
 assert.deepEqual((await call('/api/platform/bootstrap-status',{actor:null,bootstrapValue:'invalid'})).data,{configured:true,valid:false,initialized:true,state:'initialized'},'the public diagnostic never exposes the configured address');
 assert.equal((await call('/api/platform/overview',{actor:{id:1,email:'owner@agency.example'}})).status,403,'agency owner must not inherit platform access');
@@ -35,15 +37,21 @@ assert.equal((await call('/api/platform/overview',{actor:{id:2,email:'platform@s
 const overview=await call('/api/platform/overview');assert.equal(overview.status,200);assert.equal(overview.data.agencies.total,2,'demo is excluded');assert.equal(overview.data.users.total,3);
 const agencies=await call('/api/platform/agencies?limit=1');assert.equal(agencies.status,200);assert.equal(agencies.data.agencies.length,1);assert(!Object.keys(agencies.data.agencies[0]).some(k=>k.includes('stripe')||k.includes('password')));
 const users=await call('/api/platform/users?q=member');assert.equal(users.status,200);assert.equal(users.data.users[0].email,'member@agency.example');
-let coupon=await call('/api/platform/coupons',{method:'POST',payload:{code:'SCALE10',discount_type:'percent',discount_value:10,currency:null,max_redemptions:25}});assert.equal(coupon.status,201);assert.equal(coupon.data.coupon.code,'SCALE10');
+assert.equal((await call('/api/platform/agencies/10/subscription',{actor:{id:1,email:'owner@agency.example'}})).status,403,'agency ownership cannot inspect platform subscription controls');
+const inspected=await call('/api/platform/agencies/10/subscription');assert.equal(inspected.status,200);assert.equal(inspected.data.subscription.currency,'USD');assert.equal(inspected.data.subscription.internal_state,null);
+const updated=await call('/api/platform/agencies/10/subscription',{method:'PATCH',payload:{state:'suspended',reason:'Security review',expires_at:null}});assert.equal(updated.status,200);assert.equal(updated.data.subscription.internal_state,'suspended');assert.equal(updated.data.subscription.internal_reason,'Security review');
+assert.equal((await call('/api/platform/agencies/10/subscription',{method:'PATCH',payload:{state:'active',reason:'x'}})).status,400,'a short reason cannot grant access');
+let coupon=await call('/api/platform/coupons',{method:'POST',payload:{code:'SCALE10',discount_type:'percent',discount_value:10,currency:null,max_redemptions:25,lifetime_eligible:true}});assert.equal(coupon.status,201);assert.equal(coupon.data.coupon.code,'SCALE10');assert.equal(coupon.data.coupon.lifetime_eligible,true);
 coupon=await call('/api/platform/coupons/'+coupon.data.coupon.id,{method:'PATCH',payload:{active:false}});assert.equal(coupon.status,200);assert.equal(coupon.data.coupon.active,false);
+assert.equal((await call('/api/platform/coupons')).data.coupons[0].lifetime_eligible,true,'coupon listing preserves lifetime eligibility');
 assert.equal((await call('/api/platform/coupons',{method:'POST',payload:{code:'bad code',discount_type:'percent',discount_value:10}})).status,400);
-assert.equal((await pg.query('select count(*)::int as n from platform_audit_log')).rows[0].n,2);
+const audit=await call('/api/platform/audit');assert.equal(audit.status,200);assert.equal(audit.data.actions.length,3);assert.equal(audit.data.actions[0].action,'coupon.deactivate');assert.equal((await pg.query('select count(*)::int as n from platform_audit_log')).rows[0].n,3);
 await pg.query('delete from platform_administrators');
 let bootstrap=await bootstrapInitialPlatformAdmin(db,'platform@scale.example');
 assert.equal(bootstrap.activated,true);
 assert.equal(bootstrap.initialized,true);
 assert.equal((await pg.query("select count(*)::int as n from platform_bootstrap_audit_log where action='initial_admin_granted'")).rows[0].n,1);
+assert.equal((await call('/api/platform/audit')).data.actions[0].action,'initial_admin_granted','the unified audit includes the one-time bootstrap');
 bootstrap=await bootstrapInitialPlatformAdmin(db,'member@agency.example');
 assert.equal(bootstrap.activated,false,'an initialized platform never grants a second admin from configuration');
 await pg.query('delete from platform_administrators');
