@@ -24,6 +24,7 @@ const otherProject=(await query("insert into agency_projects(organization_id,cli
 const legacy=(await query("insert into agency_inventory(organization_id,name,category,value,currency) values($1,'Old card','Memoria',0,'USD') returning id",[org])).rows[0].id;
 const migration=await fs.readFile(new URL('./migrations/20260910_inventory_reservations.sql',import.meta.url),'utf8');await pg.exec(migration);await pg.exec(migration);
 const verificationMigration=await fs.readFile(new URL('./migrations/20260912_inventory_verifications.sql',import.meta.url),'utf8');await pg.exec(verificationMigration);await pg.exec(verificationMigration);
+const advancedInventoryMigration=await fs.readFile(new URL('./migrations/20260913_inventory_advanced_traceability.sql',import.meta.url),'utf8');await pg.exec(advancedInventoryMigration);await pg.exec(advancedInventoryMigration);
 assert((await query('select category_id from agency_inventory where id=$1',[legacy])).rows[0].category_id);
 await query("insert into agency_settings(organization_id,default_currency) values($1,'EUR')",[org]);
 // PGlite has one connection. Queue leased transactions, as a size-1 pg Pool does.
@@ -51,12 +52,15 @@ assert(category);assert.equal((await call('inventory-categories','POST',{name:' 
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'Nope'},producer)).status,403);
 let item=(await call('inventory','POST',{name:'Memoria SD 128 GB',category_id:category.id,storage_shelf:'Estante A',storage_row:'2'})).record;
 assert.equal(item.currency,'EUR');const card=String(item.id);assert.equal(item.inventory_code,`INV-${card.padStart(4,'0')}`);
+assert.equal(item.barcode_payload,`SCALE-INVENTORY:${item.inventory_code}`);
 let mic=(await call('inventory','POST',{name:'DJI Mic',category:'Audio',value:100,currency:'USD'})).record;const micId=String(mic.id);
 assert.equal(mic.currency,'USD');
 assert.equal((await call(`inventory/${card}`,'PATCH',{name:'Memoria SD'})).record.currency,'EUR');
-let verified=await call(`inventory/${card}/verify`,'POST',{result:'difference',differences:'Ubicación física: estante B',note:'Control mensual',adjustment:{storage_shelf:'Estante B',storage_row:'4',status:'available'}},management);
-assert.equal(verified.status,200);assert.equal(verified.record.last_verification_result,'difference');assert.equal(verified.record.storage_shelf,'Estante B');
-let trace=await call(`inventory/${card}`);assert.equal(trace.verifications.length,1);assert.equal(trace.verifications[0].adjusted,true);assert.equal(trace.verifications[0].verified_by_user_id,management.id);
+assert.equal((await call(`inventory/${card}`,'PATCH',{inventory_code:'INV-REASSIGNED'})).status,409,'A physical asset code cannot be reassigned');
+let verified=await call(`inventory/${card}/verify`,'POST',{result:'difference',counted_quantity:1,differences:'Ubicación física: estante B',note:'Control mensual',adjustment:{storage_shelf:'Estante B',storage_row:'4',status:'available'}},management);
+assert.equal(verified.status,200);assert.equal(verified.record.last_verification_result,'difference');assert.equal(verified.record.storage_shelf,'Estante B');assert.equal(verified.verification.counted_quantity,1);assert.equal(verified.verification.verified_by_user_id,management.id);assert(verified.verification.verified_at);
+let trace=await call(`inventory/${card}`);assert.equal(trace.verifications.length,1);assert.equal(trace.verifications[0].adjusted,true);assert.equal(trace.verifications[0].verified_by_user_id,management.id);assert.equal(trace.verifications[0].counted_quantity,1);assert(trace.verifications[0].verified_at);assert.equal(trace.record.last_verified_counted_quantity,1);assert(trace.trace.some(event=>event.event_type==='inventory.created'));assert(trace.trace.some(event=>event.event_type==='stock.verified'));
+assert.equal((await call(`inventory/${card}/verify`,'POST',{result:'confirmed',counted_quantity:2})).status,400);
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'Memorias'})).status,200);
 assert.equal((await call(`inventory/${card}`)).record.category,'Memorias');
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{active:false})).status,200);
@@ -128,6 +132,10 @@ assert.equal(returned.status,200);assert.equal(returned.reservation.status,'retu
 assert.equal((await call(`inventory/${card}`)).record.storage_shelf,'Estante B');assert.equal((await call(`inventory/${card}`)).record.custodian_user_id,null);
 assert.equal((await call(`inventory/${micId}`)).record.status,'maintenance');
 assert.equal((await call(`inventory-reservations/${row.id}/return`,'POST',{},producer)).alreadyRecorded,true);
+trace=await call(`inventory/${card}`);for(const event of ['reservation.reserved','loan.checked_out','loan.checked_in'])assert(trace.trace.some(row=>row.event_type===event),`missing immutable trace event ${event}`);
+const traceId=trace.trace[0].id,verificationId=trace.verifications[0].id;
+await assert.rejects(query('update agency_inventory_trace set event_type=$1 where id=$2',['inventory.updated',traceId]),error=>error.code==='55000');
+await assert.rejects(query('delete from agency_inventory_verifications where id=$1',[verificationId]),error=>error.code==='55000');
 await query("update agency_projects set status='active' where id=$1",[project]);
 await query('update organization_members set active=true where organization_id=$1 and user_id=$2',[org,secondProducer.id]);
 assert.equal((await call('inventory-reservations','POST',reservationPayload([micId]),producer)).status,400);
@@ -135,8 +143,8 @@ assert.equal((await call('inventory-reservations','POST',reservationPayload([mic
 // granting editing/cancellation rights or membership permissions.
 const lone=(await call('inventory','POST',{name:'Assigned return fixture'})).record;
 let assigned=(await call('inventory-reservations','POST',reservationPayload([lone.id]),producer)).reservation;
-assigned=(await call(`inventory-reservations/${assigned.id}/checkout`,'POST',{expected_version:assigned.version,custodian_user_id:producer.id},producer)).reservation;
-assert.equal((await call(`inventory-reservations/${assigned.id}/return`,'POST',{expected_version:assigned.version,locations:[{inventory_id:lone.id,storage_shelf:'A'}]},secondProducer)).status,200,'designated production returner can return another creator’s booking');
+assigned=(await call(`inventory-reservations/${assigned.id}/check-out`,'POST',{expected_version:assigned.version,custodian_user_id:producer.id},producer)).reservation;
+assert.equal((await call(`inventory-reservations/${assigned.id}/check-in`,'POST',{expected_version:assigned.version,locations:[{inventory_id:lone.id,storage_shelf:'A'}]},secondProducer)).status,200,'designated production returner can check in another creator’s booking');
 assigned=(await call('inventory-reservations','POST',{...reservationPayload([lone.id]),return_user_id:producer.id},producer)).reservation;
 assigned=(await call(`inventory-reservations/${assigned.id}/checkout`,'POST',{expected_version:assigned.version,custodian_user_id:secondProducer.id},producer)).reservation;
 assert.equal((await call(`inventory-reservations/${assigned.id}/return`,'POST',{expected_version:assigned.version,locations:[{inventory_id:lone.id,storage_shelf:'B'}]},secondProducer)).status,200,'production custodian can return');

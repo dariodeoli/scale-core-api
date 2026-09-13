@@ -54,7 +54,7 @@ try{
  const order=await insert("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Release order')",[a,project]);
  const assigned=await call(projectAssignees,`work-orders/${order}/assignees`,self,'PATCH',{assigned_user_ids:[String(uid)],expected_version:'0'});
  assert.deepEqual(assigned.assigned_user_ids,[String(uid)]);
- for(const relation of ['organization_person_identity','agency_record_assignees','agency_project_assignees','agency_work_order_assignees','agency_inventory_categories','agency_inventory_reservations','agency_inventory_reservation_members','agency_inventory_reservation_items','agency_work_checklists','agency_work_checklist_items']){
+ for(const relation of ['organization_person_identity','agency_record_assignees','agency_project_assignees','agency_work_order_assignees','agency_inventory_categories','agency_inventory_reservations','agency_inventory_reservation_members','agency_inventory_reservation_items','agency_inventory_verifications','agency_inventory_trace','agency_work_checklists','agency_work_checklist_items']){
   assert.equal((await query('select to_regclass($1)::text as name',[relation])).rows[0].name,relation,`Missing release relation ${relation}`);
  }
  // Re-run the exact server transaction with populated identities and assignments.

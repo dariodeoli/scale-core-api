@@ -12,6 +12,7 @@ const identifier=value=>{
  const n=BigInt(value);if(n<=0n||n>=9223372036854775807n)fail('Identificador inválido');return String(n);
 };
 const optionalId=value=>value===null||value===undefined||value===''?null:identifier(value);
+const inventoryPayload=row=>({...row,barcode_payload:`SCALE-INVENTORY:${row.inventory_code}`});
 function identifiers(values,label,max=50){
  if(!Array.isArray(values)||!values.length||values.length>max)fail(`Elegí entre 1 y ${max} ${label}`);
  const ids=values.map(identifier);if(new Set(ids).size!==ids.length)fail(`No repitas ${label}`);
@@ -51,6 +52,9 @@ async function equipment(c,org,ids){
  const rows=(await c.query(`select i.* from agency_inventory i where i.organization_id=$1 and i.id=any($2::bigint[]) and ${visibleRecord('i','inventory')} order by i.id for update`,[org,ids])).rows;
  if(rows.length!==ids.length)fail('Uno o más equipos no están disponibles en esta empresa');return rows;
 }
+async function traceInventory(c,org,ids,eventType,actor,reservationId=null,context={}){
+ for(const id of ids)await c.query('insert into agency_inventory_trace(organization_id,inventory_id,reservation_id,event_type,actor_user_id,context) values($1,$2,$3,$4,$5,$6::jsonb)',[org,id,reservationId,eventType,actor,JSON.stringify(context)]);
+}
 async function reservation(c,org,key){
  const row=(await c.query('select * from agency_inventory_reservations where id=$1 and organization_id=$2 for update',[key,org])).rows[0];
  if(!row)fail('Reserva no encontrada',404);return row;
@@ -74,7 +78,7 @@ async function catalog(c,org){
   left join agency_user_profiles rp on rp.user_id=ru.id and rp.organization_id=i.organization_id
   left join users vu on vu.id=i.last_verified_by_user_id
   left join agency_user_profiles vp on vp.user_id=vu.id and vp.organization_id=i.organization_id
-  where i.organization_id=$1 and ${visibleRecord('i','inventory')} order by i.name,i.id`,[org])).rows;
+  where i.organization_id=$1 and ${visibleRecord('i','inventory')} order by i.name,i.id`,[org])).rows.map(inventoryPayload);
 }
 async function listReservations(c,org,from,to,key=null){
  return (await c.query(`select r.*,p.name as project_name,
@@ -115,6 +119,7 @@ async function saveReservation(c,user,org,payload,key){
  }else saved=(await c.query('insert into agency_inventory_reservations(organization_id,project_id,title,starts_at,ends_at,created_by_user_id,return_user_id,notes) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[org,project,title,start,end,user.id,returnId,text(payload.notes||'')])).rows[0];
  for(const person of members)await c.query('insert into agency_inventory_reservation_members(organization_id,reservation_id,user_id) values($1,$2,$3)',[org,saved.id,person]);
  for(const item of itemIds)await c.query('insert into agency_inventory_reservation_items(organization_id,reservation_id,inventory_id) values($1,$2,$3)',[org,saved.id,item]);
+ await traceInventory(c,org,itemIds,old?'reservation.updated':'reservation.reserved',user.id,saved.id,{project_id:String(project),title,starts_at:start,ends_at:end,responsible_user_ids:members,return_user_id:returnId,notes:text(payload.notes||'')});
  return (await listReservations(c,org,start,end,saved.id))[0];
 }
 async function transition(c,user,org,key,action,payload){
@@ -139,6 +144,7 @@ async function transition(c,user,org,key,action,payload){
   const note=text(payload.note||'',2000);
   await c.query("update agency_inventory_reservations set status='checked_out',custodian_user_id=$1,checked_out_at=now(),checked_out_by_user_id=$2,checkout_note=$3,version=version+1,updated_at=now() where id=$4 and organization_id=$5",[custodian,user.id,note,key,org]);
   await c.query("update agency_inventory set status='in_use',custodian_user_id=$1 where organization_id=$2 and id=any($3::bigint[])",[custodian,org,ids]);
+  await traceInventory(c,org,ids,'loan.checked_out',user.id,key,{project_id:String(row.project_id),title:row.title,responsible_user_ids:members,custodian_user_id:custodian,note});
  }else if(action==='return'){
   if(row.status!=='checked_out')fail('Primero registrá el retiro',409);
   const ids=(await c.query('select inventory_id::text as id from agency_inventory_reservation_items where reservation_id=$1 and organization_id=$2',[key,org])).rows.map(r=>r.id);
@@ -155,14 +161,17 @@ async function transition(c,user,org,key,action,payload){
   const note=text(payload.note||'',2000);
   await c.query("update agency_inventory_reservations set status='returned',returned_at=now(),returned_by_user_id=$1,return_note=$2,version=version+1,updated_at=now() where id=$3 and organization_id=$4",[user.id,note,key,org]);
   for(const location of locations)await c.query('update agency_inventory set status=$1,custodian_user_id=null,storage_shelf=$2,storage_row=$3 where id=$4 and organization_id=$5',[location.status||'available',text(location.storage_shelf,100),text(location.storage_row||'',80),location.inventory_id,org]);
+  await traceInventory(c,org,ids,'loan.checked_in',user.id,key,{project_id:String(row.project_id),title:row.title,locations,note});
  }else{
   if(row.status!=='reserved')fail('Una reserva retirada se cierra registrando la devolución',409);
   await c.query("update agency_inventory_reservations set status='cancelled',cancelled_at=now(),version=version+1,updated_at=now() where id=$1 and organization_id=$2",[key,org]);
+  const ids=(await c.query('select inventory_id::text as id from agency_inventory_reservation_items where reservation_id=$1 and organization_id=$2',[key,org])).rows.map(r=>r.id);
+  await traceInventory(c,org,ids,'reservation.cancelled',user.id,key,{project_id:String(row.project_id),title:row.title});
  }
  return {reservation:(await listReservations(c,org,null,null,key))[0]};
 }
 
-async function saveItem(c,org,key,payload){
+async function saveItem(c,user,org,key,payload){
  const old=key?(await equipment(c,org,[key]))[0]:{};
  const merged={...old,...payload},name=text(merged.name,160);if(name.length<2)fail('Ingresá el nombre del equipo');
  let category;
@@ -184,15 +193,21 @@ async function saveItem(c,org,key,payload){
   if(open.length&&status!==old.status)fail('Cerrá o cancelá las reservas antes de cambiar el estado del equipo',409);
   if(open.some(r=>r.status==='checked_out')&&(custodian!==optionalId(old.custodian_user_id)||shelf!==old.storage_shelf||storageRow!==old.storage_row))fail('La ubicación y el custodio se cambian al registrar la devolución',409);
  }
- const code=text(merged.inventory_code||'',60);
+ if(key&&Object.hasOwn(payload,'inventory_code')&&text(payload.inventory_code,60)!==old.inventory_code)fail('El código de inventario es estable y no se puede cambiar',409);
+ const code=key?old.inventory_code:text(merged.inventory_code||'',60);
  const values=[name,category.name,text(merged.serial_number||'',120),custodian,amount(merged.value??0),option(merged.currency===undefined?await companyCurrency(c,org):merged.currency,currencies),status,date(merged.acquired_on),text(merged.notes||''),category.id,shelf,storageRow,code,org];
  const result=key?await c.query('update agency_inventory set name=$1,category=$2,serial_number=$3,custodian_user_id=$4,value=$5,currency=$6,status=$7,acquired_on=$8,notes=$9,category_id=$10,storage_shelf=$11,storage_row=$12,inventory_code=$13 where organization_id=$14 and id=$15 returning *',[...values,key]):await c.query('insert into agency_inventory(name,category,serial_number,custodian_user_id,value,currency,status,acquired_on,notes,category_id,storage_shelf,storage_row,inventory_code,organization_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning *',values);
- return result.rows[0];
+ const saved=inventoryPayload(result.rows[0]);
+ await traceInventory(c,org,[String(saved.id)],key?'inventory.updated':'inventory.created',user.id,null,{inventory_code:saved.inventory_code,name:saved.name,status:saved.status});
+ return saved;
 }
 
 async function verifyItem(c,user,org,key,payload){
  const item=(await equipment(c,org,[key]))[0];
  const result=option(payload.result,['confirmed','difference','missing']);
+ const counted=payload.counted_quantity===undefined?(result==='missing'?0:1):payload.counted_quantity;
+ if(!Number.isInteger(counted)||counted<0||counted>1)fail('La cantidad contada debe ser 0 o 1 para este activo físico');
+ if(result==='missing'&&counted!==0||result==='confirmed'&&counted!==1)fail('La cantidad contada no coincide con el resultado de la verificación');
  const differences=text(payload.differences||'',2000),note=text(payload.note||'',2000);
  if(['difference','missing'].includes(result)&&!differences)fail('Describí la diferencia encontrada');
  const adjustment=payload.adjustment;
@@ -207,9 +222,10 @@ async function verifyItem(c,user,org,key,payload){
   adjusted=status!==item.status||shelf!==item.storage_shelf||row!==item.storage_row;
   if(adjusted)after=(await c.query('update agency_inventory set status=$1,storage_shelf=$2,storage_row=$3,custodian_user_id=null where id=$4 and organization_id=$5 returning *',[status,shelf,row,key,org])).rows[0];
  }
- const verified=(await c.query('update agency_inventory set last_verified_at=now(),last_verified_by_user_id=$1,last_verification_result=$2,last_verification_differences=$3 where id=$4 and organization_id=$5 returning *',[user.id,result,differences,key,org])).rows[0];
- await c.query('insert into agency_inventory_verifications(organization_id,inventory_id,verified_by_user_id,result,differences,note,adjusted,before_state,after_state) values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)',[org,key,user.id,result,differences,note,adjusted,JSON.stringify(item),JSON.stringify({...after,...verified})]);
- return verified;
+ const verified=(await c.query('update agency_inventory set last_verified_at=now(),last_verified_by_user_id=$1,last_verification_result=$2,last_verification_differences=$3,last_verified_counted_quantity=$4 where id=$5 and organization_id=$6 returning *',[user.id,result,differences,counted,key,org])).rows[0];
+ const verification=(await c.query('insert into agency_inventory_verifications(organization_id,inventory_id,verified_by_user_id,result,counted_quantity,differences,note,adjusted,before_state,after_state) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb) returning *',[org,key,user.id,result,counted,differences,note,adjusted,JSON.stringify(item),JSON.stringify({...after,...verified})])).rows[0];
+ await traceInventory(c,org,[key],'stock.verified',user.id,null,{inventory_code:item.inventory_code,result,counted_quantity:counted,differences,note,adjusted});
+ return {record:inventoryPayload(verified),verification};
 }
 
 async function verificationHistory(c,org,key){
@@ -218,9 +234,15 @@ async function verificationHistory(c,org,key){
   left join agency_user_profiles p on p.user_id=u.id and p.organization_id=v.organization_id
   where v.organization_id=$1 and v.inventory_id=$2 order by v.verified_at desc,v.id desc limit 30`,[org,key])).rows;
 }
+async function traceHistory(c,org,key){
+ return (await c.query(`select t.*,i.inventory_code,coalesce(nullif(p.full_name,''),u.email) as actor_name,p.photo_url as actor_photo_url
+  from agency_inventory_trace t join agency_inventory i on i.id=t.inventory_id and i.organization_id=t.organization_id
+  left join users u on u.id=t.actor_user_id left join agency_user_profiles p on p.user_id=u.id and p.organization_id=t.organization_id
+  where t.organization_id=$1 and t.inventory_id=$2 order by t.event_at desc,t.id desc limit 100`,[org,key])).rows;
+}
 
 export async function inventoryReservations({req,res,url,db,session,body,send}){
- const route=url.pathname.match(/^\/api\/agency\/(inventory|inventory-categories|inventory-reservations|inventory-context)(?:\/(\d+))?(?:\/(checkout|return|cancel|restore|verify))?$/);
+ const route=url.pathname.match(/^\/api\/agency\/(inventory|inventory-categories|inventory-reservations|inventory-context)(?:\/(\d+))?(?:\/(checkout|return|check-out|check-in|cancel|restore|verify))?$/);
  if(!route)return false;
  let c,transaction=false;
  try{
@@ -249,9 +271,9 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
     result={category:row};status=key?200:201;
    }else fail('Método no permitido',405);
   }else if(kind==='inventory'){
-   if(req.method==='GET'&&!action){const records=await catalog(c,org);if(key){const record=records.find(r=>String(r.id)===key);if(!record)fail('Equipo no encontrado',404);result={record,verifications:await verificationHistory(c,org,key)};}else result={records};}
-   else if(!action&&(req.method==='POST'&&!key||req.method==='PATCH'&&key)){result={record:await saveItem(c,org,key,await body(req))};status=key?200:201;}
-   else if(key&&req.method==='POST'&&action==='verify'){result={record:await verifyItem(c,user,org,key,await body(req))};}
+   if(req.method==='GET'&&!action){const records=await catalog(c,org);if(key){const record=records.find(r=>String(r.id)===key);if(!record)fail('Equipo no encontrado',404);result={record,verifications:await verificationHistory(c,org,key),trace:await traceHistory(c,org,key)};}else result={records};}
+   else if(!action&&(req.method==='POST'&&!key||req.method==='PATCH'&&key)){result={record:await saveItem(c,user,org,key,await body(req))};status=key?200:201;}
+   else if(key&&req.method==='POST'&&action==='verify'){result=await verifyItem(c,user,org,key,await body(req));}
    else if(key&&(req.method==='DELETE'&&!action||req.method==='POST'&&action==='restore')){
     const item=(await c.query('select id from agency_inventory where organization_id=$1 and id=$2 for update',[org,key])).rows[0];if(!item)fail('Equipo no encontrado',404);
     if(action==='restore')await c.query("delete from agency_archived_records where organization_id=$1 and kind='inventory' and record_id=$2",[org,key]);
@@ -267,7 +289,7 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
     if(to<=from||new Date(to)-new Date(from)>366*86400000)fail('Elegí un intervalo de hasta 366 días');
     const records=await listReservations(c,org,from,to,key);if(key&&!records.length)fail('Reserva no encontrada',404);result=key?{reservation:records[0]}:{reservations:records};
    }else if(!action&&(req.method==='POST'&&!key||req.method==='PATCH'&&key)){result={reservation:await saveReservation(c,user,org,await body(req),key)};status=key?200:201;}
-   else if(req.method==='POST'&&key&&['checkout','return','cancel'].includes(action))result=await transition(c,user,org,key,action,await body(req));
+   else if(req.method==='POST'&&key&&['checkout','return','check-out','check-in','cancel'].includes(action))result=await transition(c,user,org,key,action==='check-out'?'checkout':action==='check-in'?'return':action,await body(req));
    else fail('Método no permitido',405);
   }else fail('Método no permitido',405);
   await attributeActors(c,org,[

@@ -140,6 +140,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal_google_oauth.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_client_portal_password_resets.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260913_client_portal_vertical_slice.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260913_inventory_advanced_traceability.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_account_security.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
