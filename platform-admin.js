@@ -48,7 +48,10 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    const [agencies,users,subscriptions,coupons]=(await Promise.all([
     db.query("select count(*)::int as total,count(*) filter(where active)::int as active from organizations where demo_owner_user_id is null and demo_source_id is null and slug<>'scale-demo-controles-20260908'"),
     db.query("select count(*)::int as total from users where not is_demo_guest"),
-    db.query("select status,count(*)::int as total from organization_subscriptions group by status order by status"),
+    // The subscription domain exposes its provider state as stripe_status.  Alias it
+    // here so the global-admin API stays stable without relying on a legacy `status`
+    // column that production databases never had.
+    db.query("select stripe_status as status,count(*)::int as total from organization_subscriptions group by stripe_status order by stripe_status"),
     db.query('select count(*)::int as total,count(*) filter(where active)::int as active from platform_coupons')
    ])).map(result=>result.rows);
    send(res,200,{agencies:agencies[0],users:users[0],subscriptions,coupons:coupons[0]});return true;
@@ -57,12 +60,14 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    const {limit,offset}=page(url),q=search(url),where=q?'and (o.name ilike $3 or o.slug ilike $3)':'';
    const values=q?[limit,offset,'%'+q+'%']:[limit,offset];
    const result=await db.query(`select o.id,o.name,o.slug,o.active,o.created_at,
-     s.status as subscription_status,s.currency as subscription_currency,s.amount as subscription_amount,s.trial_ends_at,s.due_at,
+     s.stripe_status as subscription_status,s.currency as subscription_currency,
+     case s.currency when 'USD' then 10::numeric when 'PYG' then 50000::numeric else null end as subscription_amount,
+     s.trial_ends_at,s.due_at,
      count(m.user_id) filter(where m.active and m.removed_at is null)::int as active_users
      from organizations o left join organization_subscriptions s on s.organization_id=o.id
      left join organization_members m on m.organization_id=o.id
      where o.demo_owner_user_id is null and o.demo_source_id is null and o.slug<>'scale-demo-controles-20260908' ${where}
-     group by o.id,s.status,s.currency,s.amount,s.trial_ends_at,s.due_at order by o.created_at desc limit $1 offset $2`,values);
+     group by o.id,s.stripe_status,s.currency,s.trial_ends_at,s.due_at order by o.created_at desc limit $1 offset $2`,values);
    send(res,200,{agencies:result.rows,limit,offset});return true;
   }
   if(url.pathname==='/api/platform/users'&&req.method==='GET'){

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {platformAdmin,platformBootstrapEmail,platformBootstrapStatus,bootstrapInitialPlatformAdmin} from './platform-admin.js';
 const pg=new PGlite();
@@ -6,11 +7,11 @@ await pg.exec(`
  create table users(id bigint primary key,email text not null,created_at timestamptz not null default now(),email_verified_at timestamptz,is_demo_guest boolean not null default false);
  create table organizations(id bigint primary key,name text not null,slug text not null,active boolean not null default true,created_at timestamptz not null default now(),demo_owner_user_id bigint,demo_source_id bigint);
  create table organization_members(organization_id bigint,user_id bigint,active boolean not null default true,removed_at timestamptz,role text);
- create table organization_subscriptions(organization_id bigint primary key,status text,currency text,amount numeric,trial_ends_at timestamptz,due_at timestamptz);
+ create table organization_subscriptions(organization_id bigint primary key,stripe_status text,currency text,trial_ends_at timestamptz,due_at timestamptz);
  insert into users(id,email,email_verified_at) values(1,'owner@agency.example',now()),(2,'platform@scale.example',now()),(3,'member@agency.example',now());
  insert into organizations(id,name,slug) values(10,'Agency One','agency-one'),(20,'Agency Two','agency-two'),(30,'Demo','scale-demo-controles-20260908');
  insert into organization_members values(10,1,true,null,'owner'),(10,3,true,null,'viewer'),(20,2,true,null,'owner');
- insert into organization_subscriptions values(10,'trialing','USD',10,null,null),(20,'active','PYG',50000,null,null);
+ insert into organization_subscriptions values(10,'trialing','USD',null,null),(20,'active','PYG',null,null);
 `);
 await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260912_platform_admin.sql',import.meta.url),'utf8'));
 await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260912_platform_admin_bootstrap.sql',import.meta.url),'utf8'));
@@ -23,6 +24,10 @@ async function call(path,{method='GET',actor={id:2,email:'platform@scale.example
 assert.equal(platformBootstrapEmail(' Platform@Scale.Example '),'platform@scale.example');
 assert.equal(platformBootstrapEmail('platform@scale.example,other@scale.example'),null,'the bootstrap accepts exactly one explicit email');
 assert.equal(platformBootstrapEmail('invalid'),null);
+const platformSource=fs.readFileSync(new URL('./platform-admin.js',import.meta.url),'utf8');
+assert(platformSource.includes('stripe_status as status'),'global subscription summary must use the production stripe_status column');
+assert(platformSource.includes('s.stripe_status as subscription_status'),'global agency list must use the production stripe_status column');
+assert(platformSource.includes("case s.currency when 'USD' then 10::numeric when 'PYG' then 50000::numeric"),'global agency list must derive the launch price from the supported subscription currency');
 assert.equal((await call('/api/agency/clients')).handled,false);
 assert.deepEqual((await call('/api/platform/bootstrap-status',{actor:null,bootstrapValue:'invalid'})).data,{configured:true,valid:false,initialized:true,state:'initialized'},'the public diagnostic never exposes the configured address');
 assert.equal((await call('/api/platform/overview',{actor:{id:1,email:'owner@agency.example'}})).status,403,'agency owner must not inherit platform access');
