@@ -1,8 +1,8 @@
 import {inspectInternalSubscription,updateInternalSubscription} from './platform-subscription-service.js';
 
 const currencies=['USD','PYG'];
-const realOrganization=alias=>`${alias}.demo_owner_user_id is null and ${alias}.demo_source_id is null and ${alias}.slug<>'scale-demo-controles-20260908'`;
-const realUser=alias=>`not ${alias}.is_demo_guest and ${alias}.email not ilike '%@demo.example.invalid'`;
+const realOrganization=alias=>`${alias}.demo_owner_user_id is null and ${alias}.demo_source_id is null and lower(${alias}.slug) not in ('scale-demo-controles-20260908','agenciaprueba','agencia-prueba') and lower(${alias}.name)<>'agenciaprueba'`;
+const realUser=alias=>`not ${alias}.is_demo_guest and ${alias}.email not ilike '%@demo.example.invalid' and ${alias}.email not ilike '%@scale-demo.example.invalid'`;
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const integer=(value,fallback=0)=>{if(value===null||value===undefined||value==='')return fallback;const parsed=Number(value);return Number.isInteger(parsed)&&parsed>=0?parsed:fallback;};
 const limit=value=>Math.min(100,Math.max(1,integer(value,25)));
@@ -67,10 +67,11 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
      s.stripe_status as subscription_status,s.currency as subscription_currency,
      case s.currency when 'USD' then 10::numeric when 'PYG' then 50000::numeric else null end as subscription_amount,
      s.trial_ends_at,s.due_at,ps.state as internal_subscription_state,ps.expires_at as internal_subscription_expires_at,
-     count(m.user_id) filter(where m.active and m.removed_at is null)::int as active_users
+     count(m.user_id) filter(where m.active and m.removed_at is null and ${realUser('u')})::int as active_users
      from organizations o left join organization_subscriptions s on s.organization_id=o.id
      left join platform_subscription_states ps on ps.organization_id=o.id
      left join organization_members m on m.organization_id=o.id
+     left join users u on u.id=m.user_id
      where ${realOrganization('o')} ${where}
      group by o.id,s.stripe_status,s.currency,s.trial_ends_at,s.due_at,ps.state,ps.expires_at order by o.created_at desc limit $1 offset $2`,values);
    send(res,200,{agencies:result.rows,limit,offset});return true;
