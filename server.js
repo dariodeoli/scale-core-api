@@ -268,7 +268,7 @@ const server = http.createServer(async (req,res) => {
     if(await suite({req,res,url,db,session,body,send,sendInvitation}))return;
     if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {
-      res.writeHead(302, { Location: 'https://app.scaleparaguay.com' });
+      res.writeHead(307, { Location: 'https://app.scaleparaguay.com/superadmin' });
       return res.end();
     }
     if (url.pathname === '/health') return send(res,databaseReady ? 200 : 503,{ok:databaseReady,database:databaseReady ? 'ready' : 'initializing',release});
@@ -718,9 +718,13 @@ const server = http.createServer(async (req,res) => {
     send(res,404,{error:'No encontrado'});
   } catch (e) { console.error(JSON.stringify({event:'request_error',status:e.status||500,code:e.code})); send(res,e.status||500,{error:e.status?e.message:'Error interno'}); }
 });
-server.listen(port, () => {
-  console.log(`Scale Core API listening on ${port}`);
-  init()
-    .then(() => { databaseReady = true; startAutomation(db,emailDelivery); server.once('close',startLiveVisitorCleanup(db));server.once('close',startMaintenance(db));console.log(JSON.stringify({event:'email_delivery_readiness',provider:emailDelivery.status.provider,available:emailDelivery.status.available,missing:emailDelivery.status.missing}));console.log('Scale database ready'); })
-    .catch((error) => { console.error('Database initialization failed', error); });
-});
+if (process.env.SCALE_CORE_API_DISABLE_LISTEN !== '1') {
+  server.listen(port, () => {
+    console.log(`Scale Core API listening on ${port}`);
+    init()
+      .then(() => { databaseReady = true; startAutomation(db,emailDelivery); server.once('close',startLiveVisitorCleanup(db));server.once('close',startMaintenance(db));console.log(JSON.stringify({event:'email_delivery_readiness',provider:emailDelivery.status.provider,available:emailDelivery.status.available,missing:emailDelivery.status.missing}));console.log('Scale database ready'); })
+      .catch((error) => { console.error('Database initialization failed', error); });
+  });
+}
+
+export { server };
