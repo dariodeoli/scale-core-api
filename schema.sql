@@ -5,6 +5,8 @@ create table if not exists users (
   role text not null default 'admin' check (role in ('admin','viewer')),
   created_at timestamptz not null default now()
 );
+alter table users add column if not exists deleted_at timestamptz;
+alter table users add column if not exists anonymized_at timestamptz;
 create table if not exists sessions (
   id text primary key,
   user_id bigint not null references users(id) on delete cascade,
@@ -82,6 +84,8 @@ create table if not exists organizations (
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
+alter table organizations add column if not exists deleted_at timestamptz;
+alter table organizations add column if not exists deleted_by_user_id bigint references users(id) on delete restrict;
 insert into organizations(slug,name) values('scale','Scale Strategy Group') on conflict(slug) do nothing;
 
 create table if not exists organization_members (

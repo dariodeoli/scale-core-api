@@ -34,6 +34,15 @@ async function createUnverifiedUser(client,{email,password}){
  return (await client.query('insert into users(email,password_hash) values($1,$2) returning id,email',[email,passwordHash])).rows[0];
 }
 
+async function createOrRebindInviteUser(client,{email,password}){
+ const existing=(await client.query('select id,email,password_hash,email_verified_at from users where email=$1 for update',[email])).rows[0];
+ if(!existing)return createUnverifiedUser(client,{email,password});
+ // A verified account, or a password mismatch, must never let an invitation
+ // replace an existing account's pending state.
+ if(existing.email_verified_at||!await bcrypt.compare(password,existing.password_hash).catch(()=>false))fail('Ya existe una cuenta con este correo. Iniciá sesión o recuperá tu contraseña.',409);
+ return existing;
+}
+
 async function queueVerification(sendVerification,email,token){
  // Delivery failures never activate access. Callers are told to retry instead
  // of being promised a message that was not accepted by the provider.
@@ -71,7 +80,9 @@ export async function emailPasswordAuth({req,res,url,db,body,send,sendVerificati
    const invite=await resolveInvite(db,token);
    if(!await throttle(db,'password-invite:'+email,3))fail('Intentá nuevamente en unos minutos.',429);
    client=await db.connect();await client.query('begin');
-   const user=await createUnverifiedUser(client,{email,password});
+   // A valid replacement invite can restart an unfinished enrollment. The
+   // user row and invite verification are locked/replaced in this transaction.
+   const user=await createOrRebindInviteUser(client,{email,password});
    const verify=await issueVerification(client,{userId:user.id,purpose:'invite',inviteLinkId:invite.id,payload:{full_name:nameOf(input.full_name)||email}});
    await client.query('commit');client.release();client=null;
    if(!await queueVerification(sendVerification,email,verify)){

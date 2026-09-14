@@ -1,33 +1,227 @@
 import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 
 const CLOSE_CONFIRMATION='CERRAR MI CUENTA';
+const DELETE_ACCOUNT_CONFIRMATION='ELIMINAR MI CUENTA';
 const RECOVERY_DAYS=30;
+const PREVIEW_MINUTES=5;
+const PROOF_MINUTES=5;
 
-function fail(message,status=400){throw Object.assign(new Error(message),{status});}
+function fail(message,status=400,code,details){throw Object.assign(new Error(message),{status,code,details});}
+const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
+const token=()=>crypto.randomBytes(32).toString('base64url');
+const same=(a,b)=>String(a??'')===String(b??'');
+const googleOnlyPasswordHash=value=>typeof value==='string'&&value.startsWith('!');
+
+function stateHash(value){return hash(JSON.stringify(value));}
+function organizationIds(rows){return [...new Set(rows.map(row=>String(row.organization_id)))].sort((a,b)=>Number(a)-Number(b));}
+
+async function accountState(c,userId,{lock=false}={}){
+ const suffix=lock?' for update of m,o':'';
+ const mine=(await c.query(`select m.organization_id,m.user_id,m.role,m.active,m.removed_at,o.name,o.active as organization_active,o.deleted_at
+  from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 order by m.organization_id${suffix}`,[userId])).rows;
+ const ids=organizationIds(mine);let all=[];
+ if(ids.length)all=(await c.query(`select organization_id,user_id,role,active,removed_at from organization_members
+  where organization_id=any($1::bigint[]) order by organization_id,user_id${lock?' for update':''}`,[ids])).rows;
+ const canonical={
+  mine:mine.map(row=>({organizationId:String(row.organization_id),name:row.name,role:row.role,active:row.active,removedAt:row.removed_at?new Date(row.removed_at).toISOString():null,organizationActive:row.organization_active,organizationDeletedAt:row.deleted_at?new Date(row.deleted_at).toISOString():null})),
+  members:all.map(row=>({organizationId:String(row.organization_id),userId:String(row.user_id),role:row.role,active:row.active,removedAt:row.removed_at?new Date(row.removed_at).toISOString():null}))
+ };
+ const organizations=mine.filter(row=>row.active&&row.removed_at===null&&row.organization_active&&row.deleted_at===null).map(row=>{
+  const active=all.filter(member=>same(member.organization_id,row.organization_id)&&member.active&&member.removed_at===null);
+  const activeOwners=active.filter(member=>member.role==='owner');
+  const soleMember=active.length===1;
+  const lastOwnerInShared=!soleMember&&row.role==='owner'&&activeOwners.length===1;
+  return {organizationId:String(row.organization_id),name:row.name,role:row.role,activeMemberCount:active.length,activeOwnerCount:activeOwners.length,consequence:soleMember?'organization_soft_delete':'membership_deactivation',blocked:lastOwnerInShared};
+ });
+ const blockers=organizations.filter(row=>row.blocked).map(row=>({code:'LAST_ACTIVE_OWNER',organizationId:row.organizationId,organizationName:row.name,message:`Transferí la propiedad de “${row.name}” antes de eliminar tu cuenta.`}));
+ return {stateHash:stateHash(canonical),organizations:organizations.map(({blocked,...row})=>row),blockers};
+}
+
+async function companyState(c,userId,organizationId,{lock=false}={}){
+ const org=(await c.query(`select id,name,active,deleted_at from organizations where id=$1${lock?' for update':''}`,[organizationId])).rows[0];
+ if(!org||!org.active||org.deleted_at)fail('Empresa no encontrada.',404,'ORGANIZATION_NOT_FOUND');
+ const membership=(await c.query(`select role,active,removed_at from organization_members where organization_id=$1 and user_id=$2${lock?' for update':''}`,[organizationId,userId])).rows[0];
+ if(membership?.role!=='owner'||!membership.active||membership.removed_at)fail('Solo un dueño activo puede eliminar esta empresa.',403,'ORGANIZATION_DELETE_FORBIDDEN');
+ const members=(await c.query(`select organization_id,user_id,role,active,removed_at from organization_members where organization_id=$1 order by user_id${lock?' for update':''}`,[organizationId])).rows;
+ const active=members.filter(row=>row.active&&row.removed_at===null);
+ const canonical={organization:{id:String(org.id),name:org.name,active:org.active,deletedAt:org.deleted_at?new Date(org.deleted_at).toISOString():null},members:members.map(row=>({userId:String(row.user_id),role:row.role,active:row.active,removedAt:row.removed_at?new Date(row.removed_at).toISOString():null}))};
+ return {stateHash:stateHash(canonical),organization:{id:String(org.id),name:org.name,activeMemberCount:active.length},confirmation:`ELIMINAR ${org.name}`};
+}
+
+async function deriveState(c,userId,action,organizationId,options){
+ return action==='account.delete'?accountState(c,userId,options):companyState(c,userId,organizationId,options);
+}
+
+async function previewByRaw(c,userId,raw,{lock=false}={}){
+ if(typeof raw!=='string'||!/^[-\w]{43}$/.test(raw))fail('La vista previa no es válida o venció.',409,'DELETION_PREVIEW_INVALID');
+ const row=(await c.query(`select * from destructive_action_previews where token_hash=$1 and user_id=$2 and consumed_at is null and expires_at>now()${lock?' for update':''}`,[hash(raw),userId])).rows[0];
+ if(!row)fail('La vista previa no es válida o venció.',409,'DELETION_PREVIEW_INVALID');
+ return row;
+}
+
+async function assertFreshPreview(c,row,{lock=false}={}){
+ const current=await deriveState(c,row.user_id,row.action,row.organization_id,{lock});
+ if(current.stateHash!==row.state_hash)fail('La empresa o sus miembros cambiaron. Generá una nueva vista previa.',409,'DELETION_PREVIEW_STALE');
+ if(row.action==='account.delete'&&current.blockers.length)fail('La cuenta no se puede eliminar mientras seas el último dueño activo de una empresa compartida.',409,'LAST_ACTIVE_OWNER',{organizations:current.blockers});
+ return current;
+}
+
+async function createPreview(db,userId,action,organizationId){
+ const derived=await deriveState(db,userId,action,organizationId);
+ const raw=token(),confirmation=action==='account.delete'?DELETE_ACCOUNT_CONFIRMATION:derived.confirmation;
+ const payload=action==='account.delete'
+  ?{memberships:derived.organizations,blockers:derived.blockers,account:{willBeAnonymized:true,sessionsWillBeRevoked:true,tenantDataWillBeRetained:true}}
+  :{organization:derived.organization,consequences:{organizationWillBeSoftDeleted:true,allMemberAccessWillBeDeactivated:true,organizationSessionsWillBeRevoked:true,tenantDataWillBeRetained:true}};
+ const saved=(await db.query(`insert into destructive_action_previews(token_hash,user_id,action,organization_id,state_hash,confirmation,payload,expires_at)
+  values($1,$2,$3,$4,$5,$6,$7,now()+interval '${PREVIEW_MINUTES} minutes') returning expires_at`,[hash(raw),userId,action,organizationId,derived.stateHash,confirmation,JSON.stringify(payload)])).rows[0];
+ return {id:raw,action,organizationId:organizationId===null?null:String(organizationId),confirmation,expiresAt:saved.expires_at,...payload,executable:action==='organization.delete'||derived.blockers.length===0};
+}
+
+async function issueProof(c,preview,method){
+ const raw=token();
+ const saved=(await c.query(`insert into destructive_auth_proofs(token_hash,preview_token_hash,user_id,action,organization_id,method,expires_at)
+  values($1,$2,$3,$4,$5,$6,now()+interval '${PROOF_MINUTES} minutes') returning expires_at`,[hash(raw),preview.token_hash,preview.user_id,preview.action,preview.organization_id,method])).rows[0];
+ return {proof:raw,method,action:preview.action,organizationId:preview.organization_id===null?null:String(preview.organization_id),expiresAt:saved.expires_at};
+}
+
+export async function googleRecentAuthBinding(db,userId,rawPreview){
+ const account=(await db.query('select password_hash from users where id=$1 and deleted_at is null',[userId])).rows[0];
+ if(!account||!googleOnlyPasswordHash(account.password_hash))fail('Usá tu contraseña actual para confirmar esta operación.',409,'GOOGLE_REAUTH_NOT_ALLOWED');
+ const preview=await previewByRaw(db,userId,rawPreview);
+ await assertFreshPreview(db,preview);
+ return {previewHash:preview.token_hash,action:preview.action,organizationId:preview.organization_id===null?null:String(preview.organization_id)};
+}
+
+export async function issueGoogleRecentAuthHandoff(db,{userId,previewHash,profile}){
+ if(profile?.email_verified!==true)fail('Google no confirmó tu correo.',401,'GOOGLE_IDENTITY_UNVERIFIED');
+ const email=String(profile.email||'').trim().toLowerCase();
+ const c=await db.connect();
+ try{
+  await c.query('begin isolation level serializable');
+  const account=(await c.query('select id,email,password_hash from users where id=$1 and deleted_at is null for update',[userId])).rows[0];
+  if(!account||account.email!==email)fail('La cuenta de Google no coincide con la sesión activa.',401,'GOOGLE_IDENTITY_MISMATCH');
+  if(!googleOnlyPasswordHash(account.password_hash))fail('Usá tu contraseña actual para confirmar esta operación.',409,'GOOGLE_REAUTH_NOT_ALLOWED');
+  const preview=(await c.query('select * from destructive_action_previews where token_hash=$1 and user_id=$2 and consumed_at is null and expires_at>now() for update',[previewHash,userId])).rows[0];
+  if(!preview)fail('La vista previa no es válida o venció.',409,'DELETION_PREVIEW_INVALID');
+  await assertFreshPreview(c,preview,{lock:true});
+  const raw=token();
+  await c.query("insert into destructive_google_handoffs(token_hash,preview_token_hash,user_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[hash(raw),preview.token_hash,userId]);
+  await c.query('commit');return {ticket:raw};
+ }catch(error){await c.query('rollback');throw error;}finally{c.release();}
+}
+
+async function optionalUpdate(c,table,sql,params){
+ const exists=(await c.query('select to_regclass($1)::text as name',[table])).rows[0]?.name;
+ if(exists)await c.query(sql,params);
+}
+
+async function executeAccountDeletion(c,userId,current){
+ const softDeleted=current.organizations.filter(row=>row.consequence==='organization_soft_delete').map(row=>row.organizationId);
+ const detached=current.organizations.map(row=>row.organizationId);
+ if(softDeleted.length)await c.query('update organizations set active=false,deleted_at=now(),deleted_by_user_id=$1 where id=any($2::bigint[])',[userId,softDeleted]);
+ await c.query('update organization_members set active=false,removed_at=coalesce(removed_at,now()) where user_id=$1',[userId]);
+ await c.query('delete from sessions where user_id=$1',[userId]);
+ await c.query('delete from oauth_states where recent_auth_user_id=$1',[userId]);
+ await c.query('delete from destructive_google_handoffs where user_id=$1',[userId]);
+ await c.query('update destructive_auth_proofs set consumed_at=coalesce(consumed_at,now()) where user_id=$1',[userId]);
+ await optionalUpdate(c,'oauth_handoffs','delete from oauth_handoffs where user_id=$1',[userId]);
+ await optionalUpdate(c,'user_personal_identities',"update user_personal_identities set full_name='Deleted account',photo_url=null,updated_at=now() where user_id=$1",[userId]);
+ await optionalUpdate(c,'agency_user_profiles',"update agency_user_profiles set full_name='Deleted account',photo_url=null,updated_at=now() where user_id=$1",[userId]);
+ await optionalUpdate(c,'agency_collaborators',"update agency_collaborators set full_name='Deleted account',email=null,photo_url=null,updated_at=now() where user_id=$1",[userId]);
+ await optionalUpdate(c,'agency_access_requests',"update agency_access_requests set full_name='Deleted account' where user_id=$1",[userId]);
+ const anonymous=`deleted+${userId}+${crypto.randomBytes(8).toString('hex')}@deleted.invalid`;
+ await c.query("update users set email=$2,password_hash='!deleted-account',google_photo_url=null,google_full_name=null,deleted_at=now(),anonymized_at=now() where id=$1",[userId,anonymous]);
+ await c.query('update account_closure_requests set cancelled_at=coalesce(cancelled_at,now()) where user_id=$1',[userId]);
+ return {organizationsSoftDeleted:softDeleted,membershipsDeactivated:detached};
+}
+
+async function executeCompanyDeletion(c,userId,organizationId){
+ await c.query('update organizations set active=false,deleted_at=now(),deleted_by_user_id=$2 where id=$1',[organizationId,userId]);
+ await c.query('update organization_members set active=false,removed_at=coalesce(removed_at,now()) where organization_id=$1',[organizationId]);
+ await c.query('delete from sessions where organization_id=$1',[organizationId]);
+ await optionalUpdate(c,'oauth_handoffs','delete from oauth_handoffs where organization_id=$1',[organizationId]);
+ return {organizationId:String(organizationId)};
+}
+
+async function executeDeletion({db,user,previewId,recentAuthProof,confirmation,expectedAction,expectedOrganizationId=null}){
+ const c=await db.connect();
+ try{
+  await c.query('begin isolation level serializable');
+  const account=(await c.query('select id from users where id=$1 and deleted_at is null for update',[user.id])).rows[0];
+  if(!account)fail('La cuenta ya no está disponible.',409,'ACCOUNT_UNAVAILABLE');
+  const preview=await previewByRaw(c,user.id,previewId,{lock:true});
+  if(preview.action!==expectedAction||(expectedAction==='organization.delete'&&!same(preview.organization_id,expectedOrganizationId)))fail('La vista previa no corresponde a esta operación.',409,'DELETION_SCOPE_MISMATCH');
+  if(confirmation!==preview.confirmation)fail(`Escribí exactamente “${preview.confirmation}” para confirmar.`,400,'CONFIRMATION_MISMATCH');
+  if(typeof recentAuthProof!=='string'||!/^[-\w]{43}$/.test(recentAuthProof))fail('Volvé a confirmar tu identidad.',401,'RECENT_AUTH_REQUIRED');
+  const proof=(await c.query(`select * from destructive_auth_proofs where token_hash=$1 and preview_token_hash=$2 and user_id=$3
+   and action=$4 and organization_id is not distinct from $5 and consumed_at is null and expires_at>now() and created_at >= $6 for update`,[hash(recentAuthProof),preview.token_hash,user.id,preview.action,preview.organization_id,preview.created_at])).rows[0];
+  if(!proof)fail('La confirmación de identidad no es válida o venció.',401,'RECENT_AUTH_INVALID');
+  const current=await assertFreshPreview(c,preview,{lock:true});
+  await c.query('update destructive_auth_proofs set consumed_at=now() where token_hash=$1',[proof.token_hash]);
+  await c.query('update destructive_action_previews set consumed_at=now() where token_hash=$1',[preview.token_hash]);
+  const result=preview.action==='account.delete'?await executeAccountDeletion(c,user.id,current):await executeCompanyDeletion(c,user.id,preview.organization_id);
+  await c.query('commit');return {action:preview.action,...result};
+ }catch(error){await c.query('rollback');throw error;}finally{c.release();}
+}
 
 export async function accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie,throttle}){
- if(!url.pathname.startsWith('/api/auth/account'))return false;
+ const companyMatch=url.pathname.match(/^\/api\/auth\/organizations\/(\d+)\/deletion(?:\/preview)?$/);
+ if(!url.pathname.startsWith('/api/auth/account')&&!companyMatch)return false;
+ if(url.pathname==='/api/auth/account/recent-auth/google/start')return false;
  const limit=throttle||(async()=>true);
  if(url.pathname==='/api/auth/account/closure/cancel'&&req.method==='POST'){
   try{
-   const value=await body(req);
-   const email=typeof value?.email==='string'?value.email.trim().toLowerCase():'';
+   const value=await body(req);const email=typeof value?.email==='string'?value.email.trim().toLowerCase():'';
    if(!email||typeof value?.password!=='string'||!value.password)fail('Ingresá tu correo y contraseña actual para cancelar el cierre.');
    if(!await limit(db,'account-closure-cancel:'+email,5))fail('Demasiados intentos. Esperá 15 minutos.',429);
-   const account=(await db.query('select id,password_hash from users where email=$1',[email])).rows[0];
+   const account=(await db.query('select id,password_hash from users where email=$1 and deleted_at is null',[email])).rows[0];
    if(!account||!await bcrypt.compare(value.password,account.password_hash))fail('No pudimos confirmar tus credenciales.',401);
-   const changed=(await db.query(`update account_closure_requests set cancelled_at=now() where user_id=$1 and cancelled_at is null and recoverable_until>now() returning user_id`,[account.id])).rows[0];
+   const changed=(await db.query('update account_closure_requests set cancelled_at=now() where user_id=$1 and cancelled_at is null and recoverable_until>now() returning user_id',[account.id])).rows[0];
    if(!changed)fail('No hay un cierre recuperable para cancelar.',404);
    return send(res,200,{ok:true});
-  }catch(error){console.error(JSON.stringify({event:'account_security_cancel_error',status:error.status||500,code:error.code}));send(res,error.status||500,{error:error.status?error.message:'No se pudo cancelar el cierre.'});return true;}
+  }catch(error){console.error(JSON.stringify({event:'account_security_cancel_error',status:error.status||500,code:error.code}));send(res,error.status||500,{...(error.code?{code:error.code}:{}),error:error.status?error.message:'No se pudo cancelar el cierre.'});return true;}
  }
- const user=await session(req);
- if(!user){send(res,401,{error:'No autenticado'});return true;}
+ const user=await session(req);if(!user){send(res,401,{error:'No autenticado'});return true;}
  const currentSession=parseCookies(req).scale_session||'';
  try{
+  if(url.pathname==='/api/auth/account/deletion/preview'&&req.method==='POST')return send(res,200,{preview:await createPreview(db,user.id,'account.delete',null)});
+  if(companyMatch&&url.pathname.endsWith('/preview')&&req.method==='POST')return send(res,200,{preview:await createPreview(db,user.id,'organization.delete',companyMatch[1])});
+  if(url.pathname==='/api/auth/account/recent-auth/password'&&req.method==='POST'){
+   const value=await body(req);if(!await limit(db,'destructive-reauth:'+user.id,5))fail('Demasiados intentos. Esperá 15 minutos.',429);
+   const preview=await previewByRaw(db,user.id,value?.previewId||'');await assertFreshPreview(db,preview);
+   const account=(await db.query('select password_hash from users where id=$1 and deleted_at is null',[user.id])).rows[0];
+   if(!account||account.password_hash.startsWith('!'))fail('Esta cuenta debe confirmar su identidad con Google.',409,'PASSWORD_REAUTH_UNAVAILABLE');
+   if(typeof value?.password!=='string'||!value.password||!await bcrypt.compare(value.password,account.password_hash))fail('No pudimos confirmar tu contraseña.',401,'PASSWORD_REAUTH_FAILED');
+   return send(res,200,await issueProof(db,preview,'password'));
+  }
+  if(url.pathname==='/api/auth/account/recent-auth/google/complete'&&req.method==='POST'){
+   const value=await body(req),raw=value?.ticket;
+   if(typeof raw!=='string'||!/^[-\w]{43}$/.test(raw))fail('La verificación con Google no es válida o venció.',401,'GOOGLE_REAUTH_INVALID');
+   const c=await db.connect();
+   try{
+    await c.query('begin');
+    const handoff=(await c.query('select preview_token_hash from destructive_google_handoffs where token_hash=$1 and user_id=$2 and expires_at>now() for update',[hash(raw),user.id])).rows[0];
+    if(!handoff)fail('La verificación con Google no es válida o venció.',401,'GOOGLE_REAUTH_INVALID');
+    const account=(await c.query('select password_hash from users where id=$1 and deleted_at is null for update',[user.id])).rows[0];
+    if(!account||!googleOnlyPasswordHash(account.password_hash))fail('Usá tu contraseña actual para confirmar esta operación.',409,'GOOGLE_REAUTH_NOT_ALLOWED');
+    await c.query('delete from destructive_google_handoffs where token_hash=$1',[hash(raw)]);
+    const preview=(await c.query('select * from destructive_action_previews where token_hash=$1 and user_id=$2 and consumed_at is null and expires_at>now() for update',[handoff.preview_token_hash,user.id])).rows[0];
+    if(!preview)fail('La vista previa no es válida o venció.',409,'DELETION_PREVIEW_INVALID');
+    await assertFreshPreview(c,preview,{lock:true});
+    const proof=await issueProof(c,preview,'google');await c.query('commit');return send(res,200,proof);
+   }catch(error){await c.query('rollback');throw error;}finally{c.release();}
+  }
+  const accountDelete=url.pathname==='/api/auth/account/deletion';
+  const companyDelete=companyMatch&&!url.pathname.endsWith('/preview');
+  if((accountDelete||companyDelete)&&req.method==='POST'){
+   const value=await body(req);
+   const result=await executeDeletion({db,user,previewId:value?.previewId,recentAuthProof:value?.recentAuthProof,confirmation:value?.confirmation,expectedAction:accountDelete?'account.delete':'organization.delete',expectedOrganizationId:companyDelete?companyMatch[1]:null});
+   const clear=result.action==='account.delete'||same(user.organization_id,result.organizationId);
+   return send(res,200,{ok:true,deleted:true,...result},{...(clear?{'Set-Cookie':cookie('scale_session','',0)}:{})});
+  }
   if(url.pathname==='/api/auth/account/sessions'&&req.method==='GET'){
-   const records=(await db.query(`select id,created_at,expires_at,id=$2 as current
-    from sessions where user_id=$1 and expires_at>now() order by created_at desc`,[user.id,currentSession])).rows;
+   const records=(await db.query('select id,created_at,expires_at,id=$2 as current from sessions where user_id=$1 and expires_at>now() order by created_at desc',[user.id,currentSession])).rows;
    return send(res,200,{sessions:records});
   }
   const sessionMatch=url.pathname.match(/^\/api\/auth\/account\/sessions\/([a-f0-9]{64})$/);
@@ -37,9 +231,7 @@ export async function accountSecurity({req,res,url,db,session,body,send,parseCoo
    return send(res,200,{ok:true},{...(sessionMatch[1]===currentSession?{'Set-Cookie':cookie('scale_session','',0)}:{})});
   }
   if(url.pathname==='/api/auth/account/closure'&&req.method==='GET'){
-   const request=(await db.query(`select requested_at,recoverable_until,cancelled_at
-    from account_closure_requests where user_id=$1 and cancelled_at is null
-    order by requested_at desc limit 1`,[user.id])).rows[0]||null;
+   const request=(await db.query('select requested_at,recoverable_until,cancelled_at from account_closure_requests where user_id=$1 and cancelled_at is null order by requested_at desc limit 1',[user.id])).rows[0]||null;
    return send(res,200,{closure:request,recoveryDays:RECOVERY_DAYS});
   }
   if(url.pathname==='/api/auth/account/closure'&&req.method==='POST'){
@@ -48,7 +240,7 @@ export async function accountSecurity({req,res,url,db,session,body,send,parseCoo
    if(!await limit(db,'account-closure:'+user.id,5))fail('Demasiados intentos. Esperá 15 minutos.',429);
    if(value?.confirmation!==CLOSE_CONFIRMATION)fail(`Escribí “${CLOSE_CONFIRMATION}” para confirmar el cierre.`);
    if(typeof value?.password!=='string'||!value.password)fail('Ingresá tu contraseña actual para confirmar el cierre.');
-   const account=(await db.query('select password_hash from users where id=$1',[user.id])).rows[0];
+   const account=(await db.query('select password_hash from users where id=$1 and deleted_at is null',[user.id])).rows[0];
    if(!account||!await bcrypt.compare(value.password,account.password_hash))fail('No pudimos confirmar tu contraseña.',401);
    const soleOwner=(await db.query(`select o.name from organization_members m join organizations o on o.id=m.organization_id
     where m.user_id=$1 and m.role='owner' and m.active=true and not exists(
@@ -67,7 +259,10 @@ export async function accountSecurity({req,res,url,db,session,body,send,parseCoo
    return send(res,202,{ok:true,recoverableUntil:new Date(Date.now()+RECOVERY_DAYS*86400000).toISOString()},{'Set-Cookie':cookie('scale_session','',0)});
   }
   send(res,405,{error:'Método no permitido'});return true;
- }catch(error){console.error(JSON.stringify({event:'account_security_error',status:error.status||500,code:error.code}));send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación.'});return true;}
+ }catch(error){
+  console.error(JSON.stringify({event:'account_security_error',status:error.status||500,code:error.code}));
+  send(res,error.status||500,{...(error.code?{code:error.code}:{}),error:error.status?error.message:'No se pudo completar la operación.',...(error.details?{details:error.details}:{})});return true;
+ }
 }
 
-export {CLOSE_CONFIRMATION,RECOVERY_DAYS};
+export {CLOSE_CONFIRMATION,DELETE_ACCOUNT_CONFIRMATION,RECOVERY_DAYS};

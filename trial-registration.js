@@ -3,7 +3,8 @@ import {startTrial} from './subscription-billing.js';
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 export function trialDetails(params){
  if(params.get('signup')!=='1')return null;
- return trialDetailsFromInput({company:params.get('company'),currency:params.get('currency'),consent:params.get('consent')==='1',invite:params.get('invite')});
+ if(params.get('invite'))fail('Usá la invitación o el registro de una agencia nueva, no ambos.');
+ return {};
 }
 export function trialDetailsFromInput(input={}){
  const name=(typeof input.company==='string'?input.company:'').trim(),currency=input.currency;

@@ -69,6 +69,27 @@ try{
  assert.equal(accepted.status,200);assert.equal(accepted.data.pending,false);
  assert.deepEqual((await rows('select role,active from organization_members where organization_id=$1 and user_id=$2',[org,invited.id]))[0],{role:'editor',active:true});
  const link=(await rows('select used_at from agency_invite_links where token_hash=$1',[crypto.createHash('sha256').update(inviteToken).digest('hex')]))[0];assert(link.used_at);
+ const verifiedInviteToken=crypto.randomBytes(32).toString('base64url');await query("insert into agency_invite_links(organization_id,token_hash,role,mode,created_by,expires_at) values($1,$2,'viewer','single',$3,now()+interval '1 day')",[org,crypto.createHash('sha256').update(verifiedInviteToken).digest('hex'),owner]);
+ assert.equal((await call('/api/auth/password/invitations/register',{token:verifiedInviteToken,email:'invite-password@example.invalid',password,full_name:'Invitada Password'})).status,409);
+
+ // A correct-password, unverified enrollment may move from a revoked invite
+ // to a new valid one. The old proof is invalidated atomically; mismatches and
+ // verified accounts retain the existing 409 behavior.
+ const staleToken=crypto.randomBytes(32).toString('base64url'),replacementToken=crypto.randomBytes(32).toString('base64url');
+ const addInvite=async token=>(await rows("insert into agency_invite_links(organization_id,token_hash,role,mode,created_by,expires_at) values($1,$2,'viewer','single',$3,now()+interval '1 day') returning id",[org,crypto.createHash('sha256').update(token).digest('hex'),owner]))[0];
+ const stale=await addInvite(staleToken),replacement=await addInvite(replacementToken),rebindEmail='rebind-invite@example.invalid';
+ assert.equal((await call('/api/auth/password/invitations/register',{token:staleToken,email:rebindEmail,password,full_name:'Rebound Invite'})).status,202);const staleMail=sent.at(-1);
+ await query('update agency_invite_links set revoked_at=now() where id=$1',[stale.id]);
+ assert.equal((await call('/api/auth/password/invitations/register',{token:replacementToken,email:rebindEmail,password:'OtraClaveSegura!2026',full_name:'Rebound Invite'})).status,409);
+ assert.equal((await call('/api/auth/password/invitations/register',{token:replacementToken,email:rebindEmail,password,full_name:'Rebound Invite'})).status,202);const replacementMail=sent.at(-1);
+ assert.equal((await rows('select invite_link_id from auth_email_verifications v join users u on u.id=v.user_id where u.email=$1 and v.used_at is null',[rebindEmail]))[0].invite_link_id,replacement.id);
+ assert.equal((await call('/api/auth/password/verify',{token:staleMail.token})).status,400);
+ assert.equal((await call('/api/auth/password/verify',{token:replacementMail.token})).status,200);
+ const expiredToken=crypto.randomBytes(32).toString('base64url'),expiredReplacementToken=crypto.randomBytes(32).toString('base64url'),expiredEmail='expired-rebind@example.invalid';
+ const expired=await addInvite(expiredToken),expiredReplacement=await addInvite(expiredReplacementToken);
+ assert.equal((await call('/api/auth/password/invitations/register',{token:expiredToken,email:expiredEmail,password,full_name:'Expired Rebind'})).status,202);await query("update agency_invite_links set expires_at=now()-interval '1 second' where id=$1",[expired.id]);
+ assert.equal((await call('/api/auth/password/invitations/register',{token:expiredReplacementToken,email:expiredEmail,password,full_name:'Expired Rebind'})).status,202);
+ assert.equal((await rows('select invite_link_id from auth_email_verifications v join users u on u.id=v.user_id where u.email=$1 and v.used_at is null',[expiredEmail]))[0].invite_link_id,expiredReplacement.id);
 
  // Resend response is deliberately neutral and creates a replacement, not an
  // additional valid token.

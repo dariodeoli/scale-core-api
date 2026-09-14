@@ -34,7 +34,12 @@ export async function claimInvite(c,linkId,profile){
  const existing=(await c.query('select active,removed_at from organization_members where organization_id=$1 and user_id=$2',[l.organization_id,u.id])).rows[0];
  // A link never changes the role or reactivates a previously removed/suspended member.
  if(existing){
-  if(existing.active&&!existing.removed_at)return{userId:u.id,organizationId:l.organization_id};
+  if(existing.active&&!existing.removed_at){
+   // Claiming a single-use link is still a claim even when access already
+   // exists. The row lock makes this consumption atomic with other claimers.
+   if(l.mode==='single')await c.query('update agency_invite_links set used_at=now() where id=$1',[l.id]);
+   return{userId:u.id,organizationId:l.organization_id};
+  }
   // A new invitation must be reviewable even when this email had a suspended
   // membership before. It never grants access until the owner approves it.
   const name=String(profile.name||email).slice(0,160);

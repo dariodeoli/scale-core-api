@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "test:secure-deletion": "node test-secure-deletion.mjs",
     "test:billing": "node test-subscription-billing.mjs && node test-pagaya-subscription-handoff.mjs",
     "test:release": "node test-suite.mjs && node test-operations.mjs && node --experimental-vm-modules test-auth.mjs"
   },

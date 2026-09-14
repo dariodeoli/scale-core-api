@@ -29,7 +29,7 @@ import {inventoryReservations} from './inventory-reservations.js';
 import {studioReservations} from './studio-reservations.js';
 import {workChecklists} from './work-checklists.js';
 import {ensurePersonalIdentity,ensurePersonalIdentityInTransaction} from './identity-session.js';
-import {rememberGooglePhoto} from './google-profile-photo.js';
+import {googleProfilePhoto,rememberGooglePhoto} from './google-profile-photo.js';
 import {liveVisitors,startLiveVisitorCleanup} from './live-visitors.js';
 import { productivity } from './productivity.js';
 import {weeklyReports} from './weekly-reports.js';
@@ -42,11 +42,11 @@ import {publicExperience} from './public-experience.js';
 import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
 import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
-import {trialDetails,registerTrial} from './trial-registration.js';
+import {trialDetails,trialDetailsFromInput,registerTrial} from './trial-registration.js';
 import {platformAdmin,bootstrapInitialPlatformAdmin} from './platform-admin.js';
 import {createEmailDelivery,publicEmailDeliveryStatus} from './email-delivery.js';
 import {acceptClientPortalGoogleInvite,clientPortal,clientPortalGoogleInvite,clientPortalResetEmail,clientPortalUrl} from './client-portal.js';
-import {accountSecurity} from './account-security.js';
+import {accountSecurity,googleRecentAuthBinding,issueGoogleRecentAuthHandoff} from './account-security.js';
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
@@ -125,6 +125,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_subscriptions.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260913_pagaya_subscription_handoff.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_trial_registration.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260914_google_pending_trial_registration.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_agency_reports.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_drive_links.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_invite_link_metrics.sql'),'utf8'));
@@ -148,6 +149,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260913_inventory_advanced_traceability.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260913_ruc_collaboration.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_account_security.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260914_secure_deletion.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -287,6 +289,17 @@ const server = http.createServer(async (req,res) => {
       const params=new URLSearchParams({client_id:googleClientId,redirect_uri:googleRedirectUri,response_type:'code',scope:'openid email profile',state,prompt:'select_account'});
       res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)});return res.end();
     }
+    if (url.pathname === '/api/auth/account/recent-auth/google/start' && req.method === 'GET') {
+      if (!googleClientId || !googleClientSecret) return send(res,503,{code:'GOOGLE_REAUTH_UNAVAILABLE',error:'Google OAuth aún no está configurado'});
+      const user=await session(req);if(!user)return send(res,401,{error:'No autenticado'});
+      try{
+        const binding=await googleRecentAuthBinding(db,user.id,url.searchParams.get('previewId')||'');
+        const state=id();
+        await db.query("insert into oauth_states(state,organization_slug,redirect_uri,expires_at,recent_auth_preview_hash,recent_auth_user_id) values($1,'',$2,now()+interval '10 minutes',$3,$4)",[state,googleRedirectUri,binding.previewHash,user.id]);
+        const params=new URLSearchParams({client_id:googleClientId,redirect_uri:googleRedirectUri,response_type:'code',scope:'openid email profile',state,prompt:'select_account'});
+        res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)});return res.end();
+      }catch(error){return send(res,error.status||500,{...(error.code?{code:error.code}:{}),error:error.status?error.message:'No se pudo iniciar la verificación con Google.'});}
+    }
     if (url.pathname === '/api/auth/google/start' && req.method === 'GET') {
       if (!googleClientId || !googleClientSecret) return send(res,503,{error:'Google OAuth aún no está configurado'});
       const trial=trialDetails(url.searchParams);
@@ -296,7 +309,7 @@ const server = http.createServer(async (req,res) => {
       const invite=inviteToken?await resolveInvite(db,inviteToken):null;
       const state = id();
       await db.query('insert into oauth_states(state,organization_slug,redirect_uri,expires_at) values($1,$2,$3,now()+interval \'10 minutes\')',[state,organizationSlug,googleRedirectUri]);
-      if(trial)await db.query('update oauth_states set trial_company=$1,trial_currency=$2 where state=$3',[trial.name,trial.currency,state]);
+      if(trial)await db.query('update oauth_states set trial_registration=true where state=$1',[state]);
       if(invite)await db.query('update oauth_states set invite_link_id=$1 where state=$2',[invite.id,state]);
       const params = new URLSearchParams({ client_id: googleClientId, redirect_uri: googleRedirectUri, response_type: 'code', scope: 'openid email profile', state, prompt: 'select_account' });
       res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)}); return res.end();
@@ -304,12 +317,12 @@ const server = http.createServer(async (req,res) => {
     if (url.pathname === '/api/auth/google/callback' && req.method === 'GET') {
       const state = url.searchParams.get('state') || ''; const code = url.searchParams.get('code') || '';
       if (!state || parseCookies(req).scale_oauth_state !== state) {res.writeHead(302,{Location:`${appUrl}/?authError=La%20sesión%20de%20Google%20venció.%20Intentá%20nuevamente.`});return res.end();}
-      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri,invite_link_id,trial_company,trial_currency,client_portal_login,client_portal_invite_id',[state]);
+      const saved = await db.query('delete from oauth_states where state=$1 and expires_at>now() returning organization_slug,redirect_uri,invite_link_id,trial_registration,client_portal_login,client_portal_invite_id,recent_auth_preview_hash,recent_auth_user_id',[state]);
       if (!saved.rows[0]) return send(res,400,{error:'Sesión de Google inválida o vencida'});
       // Only a consumed, cookie-bound state selects the internal recovery route.
       // Never use callback redirect/next/error_description (or redirect_uri) as a destination.
       const oauthFailure=message=>{
-        const target=saved.rows[0].client_portal_login?new URL(saved.rows[0].client_portal_invite_id?'invitacion':'ingresar',clientPortalUrl('')):new URL(saved.rows[0].trial_company?'/registro':saved.rows[0].invite_link_id?'/invitacion':'/',appUrl);
+        const target=saved.rows[0].recent_auth_preview_hash?new URL('/configuracion',appUrl):saved.rows[0].client_portal_login?new URL(saved.rows[0].client_portal_invite_id?'invitacion':'ingresar',clientPortalUrl('')):new URL(saved.rows[0].trial_registration?'/registro':saved.rows[0].invite_link_id?'/invitacion':'/',appUrl);
         target.searchParams.set(target.pathname==='/'?'authError':'error',message+(saved.rows[0].invite_link_id?' Volvé a abrir el enlace de invitación e intentá nuevamente.':' Intentá nuevamente desde esta pantalla.'));
         res.writeHead(302,{Location:target.href,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
       };
@@ -327,6 +340,13 @@ const server = http.createServer(async (req,res) => {
       }catch{return oauthFailure('No se pudo completar la conexión con Google.');}
       const email = String(profile.email || '').trim().toLowerCase();
       if (!email || profile.email_verified !== true) return oauthFailure('Google no confirmó un correo verificado.');
+      if(saved.rows[0].recent_auth_preview_hash){
+        try{
+          const handoff=await issueGoogleRecentAuthHandoff(db,{userId:saved.rows[0].recent_auth_user_id,previewHash:saved.rows[0].recent_auth_preview_hash,profile});
+          const target=new URL('/configuracion',appUrl);target.searchParams.set('recentAuthTicket',handoff.ticket);
+          res.writeHead(302,{Location:target.href,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+        }catch(error){return oauthFailure(error.status?error.message:'No se pudo confirmar tu identidad con Google.');}
+      }
       if(saved.rows[0].client_portal_login){
         if(saved.rows[0].client_portal_invite_id){
           try{
@@ -339,12 +359,10 @@ const server = http.createServer(async (req,res) => {
         const portalToken=id();await db.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[crypto.createHash('sha256').update(portalToken).digest('hex'),portalUser.id]);
         res.writeHead(302,{Location:clientPortalUrl('entregas'),'Set-Cookie':`__Host-scale_client_session=${portalToken}; Max-Age=604800; Path=/; HttpOnly; Secure; SameSite=Lax`});return res.end();
       }
-      if(saved.rows[0].trial_company){
-        const c=await db.connect();let account;
-        try{await c.query('begin');account=await registerTrial(c,profile,{name:saved.rows[0].trial_company,currency:saved.rows[0].trial_currency});await rememberGooglePhoto(c,account.userId,profile);if(profile.picture||profile.name)await ensurePersonalIdentityInTransaction(c,account.userId,account.organizationId);await c.query('commit');}
-        catch(e){await c.query('rollback');res.writeHead(302,{Location:`${appUrl}/registro?error=${encodeURIComponent(e.status?e.message:'No se pudo iniciar la prueba. Intentá nuevamente.')}`});return res.end();}finally{c.release();}
-        const ticket=id();await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at,trial_registration) values($1,$2,$3,now()+interval '60 seconds',true)",[crypto.createHash('sha256').update(ticket).digest('hex'),account.userId,account.organizationId]);
-        res.writeHead(302,{Location:`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+      if(saved.rows[0].trial_registration){
+        const ticket=id(),name=typeof profile.name==='string'?profile.name.trim().slice(0,120):'',picture=googleProfilePhoto(profile);
+        await db.query("insert into pending_trial_registrations(token_hash,email_normalized,full_name,picture_url,expires_at) values($1,$2,$3,$4,now()+interval '10 minutes')",[crypto.createHash('sha256').update(ticket).digest('hex'),email,name||null,picture]);
+        res.writeHead(302,{Location:`${appUrl}/registro?pendingRegistration=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
       }
       if(saved.rows[0].invite_link_id){
         const c=await db.connect();let claim;
@@ -362,6 +380,28 @@ const server = http.createServer(async (req,res) => {
       if(profile.picture||profile.name)await ensurePersonalIdentity(db,member.rows[0].id,member.rows[0].organization_id);
       const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at,normal_login) values($1,$2,$3,now()+interval '60 seconds',true)",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
       res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)}); return res.end();
+    }
+    if(url.pathname==='/api/auth/google/registration/complete'&&req.method==='POST'){
+      const input=await body(req),ticket=typeof input.ticket==='string'?input.ticket:'';
+      let details;
+      try{details=trialDetailsFromInput(input);}catch(error){return send(res,error.status||400,{error:error.message});}
+      if(!/^[a-f0-9]{64}$/.test(ticket))return send(res,400,{error:'El registro con Google venció. Volvé a comenzar.'});
+      if(!await throttle(db,'trial-registration-complete',60))return send(res,429,{error:'Hay muchas solicitudes de registro. Intentá nuevamente en unos minutos.'});
+      const c=await db.connect();
+      try{
+        await c.query('begin');
+        const pending=(await c.query('delete from pending_trial_registrations where token_hash=$1 and expires_at>now() returning email_normalized,full_name,picture_url',[crypto.createHash('sha256').update(ticket).digest('hex')])).rows[0];
+        if(!pending)throw Object.assign(Error('El registro con Google venció o ya fue utilizado. Volvé a comenzar.'),{status:400});
+        const profile={email:pending.email_normalized,email_verified:true,name:pending.full_name||'',picture:pending.picture_url||undefined};
+        const account=await registerTrial(c,profile,details);
+        await rememberGooglePhoto(c,account.userId,profile);
+        if(profile.picture||profile.name)await ensurePersonalIdentityInTransaction(c,account.userId,account.organizationId);
+        const sessionToken=id();
+        await c.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[sessionToken,account.userId,account.organizationId]);
+        await c.query('commit');
+        return send(res,201,{ok:true,redirect:'/produccion'},{'Set-Cookie':cookie('scale_session',sessionToken,604800)});
+      }catch(error){await c.query('rollback');return send(res,error.status||500,{error:error.status?error.message:'No se pudo iniciar la prueba. Intentá nuevamente.'});}
+      finally{c.release();}
     }
     if(url.pathname==='/api/auth/google/complete' && req.method==='GET') {
       const ticket=url.searchParams.get('ticket')||'';

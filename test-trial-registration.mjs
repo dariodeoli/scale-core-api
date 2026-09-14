@@ -16,6 +16,7 @@ const init=source.slice(source.indexOf('async function init()'),source.indexOf('
 const migrations=Array.from(init.matchAll(/['"](?:migrations\/)?(\d{8}_[\w-]+\.sql)['"]/g),m=>m[1]).filter(file=>file!=='20260908_dadoo_hub.sql');
 assert(migrations.includes('20260911_subscriptions.sql'));
 assert(migrations.includes('20260911_trial_registration.sql'));
+assert(migrations.includes('20260914_google_pending_trial_registration.sql'));
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
 for(const file of migrations)await pg.exec(await fs.readFile(new URL('./migrations/'+file,import.meta.url),'utf8'));
 
@@ -78,8 +79,8 @@ async function request(path,{cookie='',method='GET',payload}={}){
 const cookieOf=r=>{assert.equal(typeof r.headers['Set-Cookie'],'string');return r.headers['Set-Cookie'].split(';')[0];};
 const me=async cookie=>{const r=await request('/api/auth/me',{cookie});assert.equal(r.status,200);return r.data.user;};
 const count=async table=>Number((await rows(`select count(*) as n from ${table}`))[0].n);
-async function start(currency='USD',extra={}){
- const params=new URLSearchParams({signup:'1',company:'Fixture private agency',currency,consent:'1',...extra});
+async function start(extra={}){
+ const params=new URLSearchParams({signup:'1',...extra});
  const r=await request('/api/auth/google/start?'+params);assert.equal(r.status,302,JSON.stringify(r.data));
  const url=new URL(r.headers.Location);assert.equal(url.origin,'https://accounts.google.com');
  return {state:url.searchParams.get('state'),cookie:cookieOf(r)};
@@ -88,16 +89,27 @@ async function callback(flow,profile){
  const code=crypto.randomUUID();profiles.set(code,profile);
  return request('/api/auth/google/callback?'+new URLSearchParams({state:flow.state,code}),{cookie:flow.cookie});
 }
-async function complete(r,trial=true){
+async function pendingTicket(r){
+ assert.equal(r.status,302);const url=new URL(r.headers.Location);assert.equal(url.origin,'https://app.scaleparaguay.com');assert.equal(url.pathname,'/registro');
+ const ticket=url.searchParams.get('pendingRegistration');assert.match(ticket,/^[a-f0-9]{64}$/);
+ const hash=crypto.createHash('sha256').update(ticket).digest('hex');assert.equal((await rows('select count(*)::int as count from pending_trial_registrations where token_hash=$1',[hash]))[0].count,1);
+ return {ticket,hash};
+}
+async function complete(r,{currency='USD',company='Fixture private agency',extra={}}={}){
+ const {ticket}=await pendingTicket(r),path='/api/auth/google/registration/complete',payload={ticket,company,currency,consent:true,...extra};
+ const response=await request(path,{method:'POST',payload});assert.equal(response.status,201,JSON.stringify(response.data));assert.equal(response.data.redirect,'/produccion');
+ return {cookie:cookieOf(response),path,payload};
+}
+async function completeLogin(r){
  assert.equal(r.status,302);assert(r.headers.Location.includes('/api/auth/google/complete?ticket='),r.headers.Location+' '+JSON.stringify(databaseErrors));
  const url=new URL(r.headers.Location),path=url.pathname.replace(/^\/core-api/,'')+url.search;
  const hash=crypto.createHash('sha256').update(url.searchParams.get('ticket')).digest('hex');
- assert.equal((await rows('select trial_registration from oauth_handoffs where token_hash=$1',[hash]))[0].trial_registration,trial);
+ assert.equal((await rows('select trial_registration from oauth_handoffs where token_hash=$1',[hash]))[0].trial_registration,false);
  const response=await request(path);assert.equal(response.status,302);
- assert.equal(response.headers.Location,trial?'https://app.scaleparaguay.com/produccion':'https://app.scaleparaguay.com/?chooseCompany=1');
+ assert.equal(response.headers.Location,'https://app.scaleparaguay.com/?chooseCompany=1');
  return {cookie:cookieOf(response),path};
 }
-async function signup(profile,currency='USD'){return complete(await callback(await start(currency),profile));}
+async function signup(profile,currency='USD'){return complete(await callback(await start(),profile),{currency});}
 async function fixtureCookie(user,org){
  const token=crypto.randomUUID();await query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '1 day')",[token,user,org]);
  return 'scale_session='+token;
@@ -140,12 +152,12 @@ try{
  const existingOrganizations=await rows('select * from organizations order by id');
  const baselineOrgs=await count('organizations');
 
- // Reject invalid details before issuing an OAuth state, without enrollment.
+ // OAuth start carries identity-only intent. Agency fields are required only
+ // when the browser returns with a verified pending-registration ticket.
  const initialStates=await count('oauth_states');
- for(const extra of [{consent:''},{consent:'0'},{currency:'EUR'},{currency:'usd'},{company:'x'},{invite:'not-a-real-invite'}]){
-  const r=await request('/api/auth/google/start?'+new URLSearchParams({signup:'1',company:'Fixture',currency:'USD',consent:'1',...extra}));
-  assert.equal(r.status,400);assert.equal(r.headers['Set-Cookie'],undefined);
- }
+ const identityOnly=await start(),identityState=(await rows('select trial_registration,trial_company,trial_currency,invite_link_id from oauth_states where state=$1',[identityOnly.state]))[0];
+ assert.deepEqual(identityState,{trial_registration:true,trial_company:null,trial_currency:null,invite_link_id:null});await query('delete from oauth_states where state=$1',[identityOnly.state]);
+ const mixed=await request('/api/auth/google/start?signup=1&invite=not-a-real-invite');assert.equal(mixed.status,400);assert.equal(mixed.headers['Set-Cookie'],undefined);
  assert.equal(await count('oauth_states'),initialStates);
  for(const verified of [false,'true',undefined]){
   const r=await callback(await start(),{email:'unverified-trial@example.invalid',email_verified:verified});assert.equal(r.status,302);
@@ -153,9 +165,15 @@ try{
  }
  assert.equal(await count('organizations'),baselineOrgs);assert.equal(await count('organization_subscriptions'),0);
  assert.equal((await rows("select id from users where email='unverified-trial@example.invalid'")).length,0);
- console.log('PASS: invalid consent/currency/company/invite and unverified Google identities cannot enroll');
+ console.log('PASS: Google signup starts identity-only; mixed invitation and unverified identities cannot enroll');
 
- const usd=await signup({email:'new-trial@example.invalid',name:'New Trial Owner',email_verified:true}),usdUser=await me(usd.cookie);
+ const usdCallback=await callback(await start(),{email:'new-trial@example.invalid',name:'New Trial Owner',email_verified:true});
+ const usdPending=await pendingTicket(usdCallback);assert.equal(await count('organizations'),baselineOrgs);assert.equal((await rows("select id from users where email='new-trial@example.invalid'")).length,0,'callback cannot create the user');
+ for(const payload of [{ticket:usdPending.ticket,currency:'USD',consent:true},{ticket:usdPending.ticket,company:'New Trial Agency',consent:true},{ticket:usdPending.ticket,company:'New Trial Agency',currency:'EUR',consent:true},{ticket:usdPending.ticket,company:'New Trial Agency',currency:'USD',consent:false}]){
+  const invalid=await request('/api/auth/google/registration/complete',{method:'POST',payload});assert.equal(invalid.status,400);assert.equal((await rows('select count(*)::int as count from pending_trial_registrations where token_hash=$1',[usdPending.hash]))[0].count,1,'invalid details cannot consume the ticket');
+ }
+ const usd=await complete(usdCallback,{company:'New Trial Agency',currency:'USD',extra:{email:'attacker@example.invalid'}}),usdUser=await me(usd.cookie);
+ assert.equal(usdUser.email,'new-trial@example.invalid');assert.equal((await rows("select id from users where email='attacker@example.invalid'")).length,0,'client email cannot replace verified Google email');
  const usdOrg=usdUser.organization_id;assert.equal(usdUser.role,'owner');assert.equal(usdUser.subscription.status,'trialing');
  assert.equal(usdUser.subscription.canManage,true);assert.equal(usdUser.subscription.hasAccess,true);assert.equal(usdUser.subscription.checkoutReady,false);
  assert.equal(usdUser.subscription.amount,10);assert.equal(usdUser.default_currency,'USD');await assertTrial(usdOrg,'USD');
@@ -166,7 +184,7 @@ try{
  assert.equal((await rows('select consent_version from os_trial_registrations where user_id=$1',[usdUser.id])).length,1);
  assert.equal((await request('/api/auth/switch-organization',{cookie:usd.cookie,method:'POST',payload:{organizationId:existing}})).status,403);
  const callsBeforeReplay=googleCalls;
- assert.equal((await request(usd.path)).headers['Set-Cookie'],undefined,'handoff may be exchanged only once');
+ assert.equal((await request(usd.path,{method:'POST',payload:usd.payload})).headers['Set-Cookie'],undefined,'pending registration may be completed only once');
  assert.equal(googleCalls,callsBeforeReplay);
 
  const pyg=await signup({email:'prior-trial@example.invalid',name:'Google must not overwrite identity',email_verified:true},'PYG'),pygUser=await me(pyg.cookie);
@@ -175,7 +193,7 @@ try{
  assert.deepEqual(await rows('select user_id,role from organization_members where organization_id=$1',[pygOrg]),[{user_id:priorUser,role:'owner'}]);
  assert.equal(pygUser.full_name,'Prior Personal Identity');assert.equal(pygUser.photo_url,'https://example.invalid/prior.png');
  assert.deepEqual(await rows('select * from user_personal_identities where user_id=$1',[priorUser]),priorIdentity);
- assert.deepEqual(await rows('select * from users where id=$1',[priorUser]),priorUserRow);
+ const [currentPriorUser]=await rows('select * from users where id=$1',[priorUser]);assert.equal(currentPriorUser.email,priorUserRow[0].email);assert.equal(currentPriorUser.password_hash,priorUserRow[0].password_hash);assert.equal(currentPriorUser.google_full_name,'Google must not overwrite identity');
  assert.deepEqual(await rows('select * from organization_members where user_id=$1 and organization_id=$2',[priorUser,existing]),priorMembership);
  assert.equal((await me(priorCookie)).role,'viewer');
  assert.deepEqual(await rows('select * from agency_clients order by id'),sourceClients);
@@ -184,9 +202,9 @@ try{
 
  // Concurrent FIRST signups with different valid states must create one org.
  const beforeConcurrent=await count('organizations'),dupeProfile={email:'concurrent-trial@example.invalid',name:'Concurrent Owner',email_verified:true};
- const flows=await Promise.all([start('USD',{company:'First name'}),start('PYG',{company:'Second name'})]);
+ const flows=await Promise.all([start(),start()]);
  const results=await Promise.all(flows.map(flow=>callback(flow,dupeProfile)));
- const logins=await Promise.all(results.map(r=>complete(r))),actors=await Promise.all(logins.map(login=>me(login.cookie)));
+ const logins=await Promise.all([complete(results[0],{company:'First name',currency:'USD'}),complete(results[1],{company:'Second name',currency:'PYG'})]),actors=await Promise.all(logins.map(login=>me(login.cookie)));
  assert.equal(actors[0].organization_id,actors[1].organization_id);assert.equal(await count('organizations'),beforeConcurrent+1);
  const dupeOrg=actors[0].organization_id,dupeSub=(await rows('select * from organization_subscriptions where organization_id=$1',[dupeOrg]))[0];
  assert.equal((await rows('select * from os_trial_registrations where user_id=$1',[actors[0].id])).length,1);
@@ -197,7 +215,7 @@ try{
  const beforeStateReplay=googleCalls;
  for(const flow of flows)assert.equal((await callback(flow,dupeProfile)).status,400);
  assert.equal(googleCalls,beforeStateReplay,'consumed states never reach Google');
- const ordinary=await complete(await callback(await start('USD',{signup:'0'}),dupeProfile),false);
+ const ordinary=await completeLogin(await callback(await start({signup:'0'}),dupeProfile));
  assert.equal((await me(ordinary.cookie)).organization_id,dupeOrg,'ordinary login keeps company selection instead of signup redirect');
  const oneState=await start(),sessionCount=await count('sessions');
  const sameStateResults=await Promise.all([callback(oneState,dupeProfile),callback(oneState,dupeProfile)]);
@@ -206,10 +224,10 @@ try{
  assert.equal((await me(handed.cookie)).organization_id,dupeOrg);assert.equal(await count('sessions'),sessionCount+1);
  const forged=await callback({...await start(),cookie:'scale_oauth_state=wrong'},dupeProfile);assert.equal(forged.status,302);assert(forged.headers.Location.includes('authError'));
  const expired=await start();await query("update oauth_states set expires_at=now()-interval '1 second' where state=$1",[expired.state]);assert.equal((await callback(expired,dupeProfile)).status,400);
- const expiredHandoff=await callback(await start(),dupeProfile),ticket=new URL(expiredHandoff.headers.Location).searchParams.get('ticket');
- await query("update oauth_handoffs set expires_at=now()-interval '1 second' where token_hash=$1",[crypto.createHash('sha256').update(ticket).digest('hex')]);
- assert.equal((await request('/api/auth/google/complete?ticket='+ticket)).headers['Set-Cookie'],undefined);
- console.log('PASS: concurrent first enrollment/different states, later retries do not duplicate/reset; state and handoff replay/expiry denied');
+ const expiredPending=await pendingTicket(await callback(await start(),{email:'expired-pending@example.invalid',email_verified:true}));
+ await query("update pending_trial_registrations set expires_at=now()-interval '1 second' where token_hash=$1",[expiredPending.hash]);
+ assert.equal((await request('/api/auth/google/registration/complete',{method:'POST',payload:{ticket:expiredPending.ticket,company:'Expired',currency:'USD',consent:true}})).headers['Set-Cookie'],undefined);assert.equal((await rows("select id from users where email='expired-pending@example.invalid'")).length,0);
+ console.log('PASS: concurrent first enrollment/different tickets, later retries do not duplicate/reset; state and pending-ticket replay/expiry denied');
 
  // Advance stored dates rather than patching the application clock or waiting.
  const setDue=async interval=>query(`update organization_subscriptions set trial_started_at=now()-interval '${interval}'-interval '720 hours',trial_ends_at=now()-interval '${interval}',due_at=now()-interval '${interval}' where organization_id=$1`,[pygOrg]);
