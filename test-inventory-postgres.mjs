@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {accessSync,chmodSync,constants,existsSync,lstatSync,mkdirSync,mkdtempSync,realpathSync,rmSync} from 'node:fs';
+import {accessSync,chmodSync,constants,existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -19,11 +19,16 @@ const schema=committed('schema.sql'),server=committed('server.js');
 const start=server.indexOf('async function init()'),end=server.indexOf("await migration.query('commit')",start);
 assert(start>=0&&end>start,'Cannot identify HEAD migration transaction');
 const migrations=[...server.slice(start,end).matchAll(/(\d{8}_[a-z0-9_]+\.sql)/g)].map(match=>match[1]).filter(name=>!name.includes('dadoo'));
+const storageLocationsMigration='20260914_inventory_storage_locations.sql';
+if(!migrations.includes(storageLocationsMigration))migrations.push(storageLocationsMigration);
 assert.equal(migrations.length,new Set(migrations).size,'Duplicate migration registration');
 assert(migrations.includes('20260910_inventory_reservations.sql'));
+assert(existsSync(path.join(repo,'migrations',storageLocationsMigration)),'Storage-location migration must be available to the direct PostgreSQL loader');
 assert(!/\bdadoo_/i.test(schema),'HEAD schema contains Dadoo; do not silently load another product');
-// Freeze every SQL source to one HEAD, including if another task commits mid-run.
-const sources=[['schema.sql',schema],...migrations.map(name=>[`migrations/${name}`,committed(`migrations/${name}`)])];
+// Freeze the baseline to HEAD while loading this worktree migration directly,
+// so this focused test exercises an uncommitted inventory change without
+// absorbing unrelated worktree migrations from other tasks.
+const sources=[['schema.sql',schema],...migrations.map(name=>[`migrations/${name}`,name===storageLocationsMigration?readFileSync(path.join(repo,'migrations',name),'utf8'):committed(`migrations/${name}`)])];
 
 let temporary=null,pool=null,cleaned=false;
 const port=55432,user='scale_inventory_fixture';
@@ -120,6 +125,11 @@ async function runCases(){
  const a=await tenant('pg-fixture-a'),b=await tenant('pg-fixture-b');
  const item=async(name,tenant=a)=>ok(await call('inventory','POST',{name,category:'Concurrency fixture',storage_shelf:'Initial'},tenant.actor),201).record.id;
  const camera=await item('Camera fixture'),audio=await item('Audio fixture'),adjacent=await item('Adjacent fixture'),foreign=await item('Tenant B fixture',b);
+ const aLocation=ok(await call('inventory-locations','POST',{name:'PostgreSQL template'},a.actor),201).location;
+ const bLocation=ok(await call('inventory-locations','POST',{name:'PostgreSQL template'},b.actor),201).location;
+ const templateItem=ok(await call('inventory','POST',{name:'Composite FK fixture',category:'Concurrency fixture',storage_location_id:aLocation.id},a.actor),201).record;
+ assert.equal(String(templateItem.storage_location_id),String(aLocation.id));
+ await assert.rejects(pool.query('update agency_inventory set storage_location_id=$1 where id=$2',[bLocation.id,templateItem.id]),error=>error.code==='23503','composite location FK rejects a template from another tenant');
  const code=ok(await call(`inventory/${camera}`,'GET',{},a.actor)).record.inventory_code;
  assert.match(code,/^INV-\d{4,}$/,'every physical unit receives a printable inventory code');
  const verification=ok(await call(`inventory/${camera}/verify`,'POST',{result:'difference',differences:'Encontrado en estante verificado',note:'Conteo físico',adjustment:{storage_shelf:'Verified shelf',storage_row:'A-1',status:'available'}},a.actor));
@@ -154,14 +164,14 @@ async function runCases(){
  assert(stock.every(row=>row.status==='in_use'&&row.custodian_user_id===a.actor.id));
  assert((await pool.query('select status from agency_inventory_reservation_items where reservation_id=$1',[booking.id])).rows.every(row=>row.status==='checked_out'));
 
- const beforeReturn=booking.version,locations=[{inventory_id:camera,storage_shelf:'Shelf A',storage_row:'Row 1',status:'available'},{inventory_id:audio,storage_shelf:'Service bench',storage_row:'Row 2',status:'maintenance'}];
+ const beforeReturn=booking.version,locations=[{inventory_id:camera,storage_location_id:aLocation.id,storage_row:'Row 1',status:'available'},{inventory_id:audio,storage_shelf:'Service bench',storage_row:'Row 2',status:'maintenance'}];
  const returns=await race('idempotent return',[0,1].map(()=>db=>call(`inventory-reservations/${booking.id}/return`,'POST',{expected_version:beforeReturn,locations},a.actor,db)));
  expectStatuses(returns,[200,200]);assert.equal(returns.filter(result=>result.alreadyRecorded===true).length,1);
  booking=returns[0].reservation;assert.equal(booking.status,'returned');assert.equal(booking.version,beforeReturn+1);assert(booking.returned_at);
  const repeated=ok(await call(`inventory-reservations/${booking.id}/return`,'POST',{},a.actor));
  assert.equal(repeated.alreadyRecorded,true);assert.deepEqual(repeated.reservation,booking,'Repeated return must preserve timestamps, versions and assignments');
- stock=(await pool.query('select id,status,custodian_user_id,storage_shelf,storage_row from agency_inventory where id=any($1::bigint[]) order by id',[[camera,audio]])).rows;
- for(const location of locations){const row=stock.find(row=>row.id===location.inventory_id);assert.equal(row.status,location.status);assert.equal(row.custodian_user_id,null);assert.equal(row.storage_shelf,location.storage_shelf);assert.equal(row.storage_row,location.storage_row);}
+ stock=(await pool.query('select id,status,custodian_user_id,storage_location_id,storage_shelf,storage_row from agency_inventory where id=any($1::bigint[]) order by id',[[camera,audio]])).rows;
+ for(const location of locations){const row=stock.find(row=>row.id===location.inventory_id);assert.equal(row.status,location.status);assert.equal(row.custodian_user_id,null);if(location.storage_location_id)assert.equal(String(row.storage_location_id),String(location.storage_location_id));else assert.equal(row.storage_shelf,location.storage_shelf);assert.equal(row.storage_row,location.storage_row);}
  assert((await pool.query('select status from agency_inventory_reservation_items where reservation_id=$1',[booking.id])).rows.every(row=>row.status==='returned'));
 
  const parallelTenants=await race('independent tenants',[

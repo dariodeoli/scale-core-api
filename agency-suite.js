@@ -12,6 +12,7 @@ import {clientLinks} from './client-links.js';
 import {setRecordAssignees} from './project-assignees.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {assertUniqueClientRuc} from './ruc-lookup.js';
+import {commercialProfile} from './commercial-lifecycle.js';
 const admin=['owner','admin'], commercial=[...admin,'management','finance','sales'], production=[...admin,'management','production'];
 const roles=[...admin,'management','finance','sales','production','editor','viewer'];
 const stages=['lead','contacted','proposal','negotiation','won','lost'];
@@ -79,6 +80,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
     if(kind==='projects')identity=(await c.query('select name as client_name,logo_url as client_logo_url,color_key as client_color_key from agency_clients where id=$1 and organization_id=$2',[old.client_id,org])).rows[0]||{};
     if(kind==='work-orders')identity=(await c.query('select c.name as client_name,c.logo_url as client_logo_url,c.color_key as client_color_key from agency_projects p join agency_clients c on c.id=p.client_id where p.id=$1 and p.organization_id=$2',[old.project_id,org])).rows[0]||{};
     result={record:{...old,...identity}};
+    if(kind==='clients'&&commercial.includes(user.role))result.commercial=await commercialProfile(c,org,old.id);
    }
    else if(action&&kind==='work-orders'&&req.method==='POST'){
     const project=await owned(c,'agency_projects',old.project_id,org);

@@ -12,6 +12,7 @@ const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const token=()=>crypto.randomBytes(32).toString('base64url');
 const same=(a,b)=>String(a??'')===String(b??'');
 const googleOnlyPasswordHash=value=>typeof value==='string'&&value.startsWith('!');
+const isDemoOrganization=organization=>organization.demo_owner_user_id!==null||organization.demo_source_id!==null||organization.slug==='scale-demo-controles-20260908';
 
 function stateHash(value){return hash(JSON.stringify(value));}
 function organizationIds(rows){return [...new Set(rows.map(row=>String(row.organization_id)))].sort((a,b)=>Number(a)-Number(b));}
@@ -30,17 +31,18 @@ async function accountState(c,userId,{lock=false}={}){
  const organizations=mine.filter(row=>row.active&&row.removed_at===null&&row.organization_active&&row.deleted_at===null).map(row=>{
   const active=all.filter(member=>same(member.organization_id,row.organization_id)&&member.active&&member.removed_at===null);
   const activeOwners=active.filter(member=>member.role==='owner');
-  const soleMember=active.length===1;
-  const lastOwnerInShared=!soleMember&&row.role==='owner'&&activeOwners.length===1;
-  return {organizationId:String(row.organization_id),name:row.name,role:row.role,activeMemberCount:active.length,activeOwnerCount:activeOwners.length,consequence:soleMember?'organization_soft_delete':'membership_deactivation',blocked:lastOwnerInShared};
+  const soleActiveOwner=active.length===1&&row.role==='owner';
+  const lastOwnerInShared=!soleActiveOwner&&row.role==='owner'&&activeOwners.length===1;
+  return {organizationId:String(row.organization_id),name:row.name,role:row.role,activeMemberCount:active.length,activeOwnerCount:activeOwners.length,consequence:soleActiveOwner?'organization_soft_delete':'membership_deactivation',blocked:lastOwnerInShared};
  });
  const blockers=organizations.filter(row=>row.blocked).map(row=>({code:'LAST_ACTIVE_OWNER',organizationId:row.organizationId,organizationName:row.name,message:`Transferí la propiedad de “${row.name}” antes de eliminar tu cuenta.`}));
  return {stateHash:stateHash(canonical),organizations:organizations.map(({blocked,...row})=>row),blockers};
 }
 
 async function companyState(c,userId,organizationId,{lock=false}={}){
- const org=(await c.query(`select id,name,active,deleted_at from organizations where id=$1${lock?' for update':''}`,[organizationId])).rows[0];
+ const org=(await c.query(`select id,name,slug,active,deleted_at,demo_owner_user_id,demo_source_id from organizations where id=$1${lock?' for update':''}`,[organizationId])).rows[0];
  if(!org||!org.active||org.deleted_at)fail('Empresa no encontrada.',404,'ORGANIZATION_NOT_FOUND');
+ if(isDemoOrganization(org))fail('El Demo no permite eliminar empresas.',403,'DEMO_ORGANIZATION_DELETE_FORBIDDEN');
  const membership=(await c.query(`select role,active,removed_at from organization_members where organization_id=$1 and user_id=$2${lock?' for update':''}`,[organizationId,userId])).rows[0];
  if(membership?.role!=='owner'||!membership.active||membership.removed_at)fail('Solo un dueño activo puede eliminar esta empresa.',403,'ORGANIZATION_DELETE_FORBIDDEN');
  const members=(await c.query(`select organization_id,user_id,role,active,removed_at from organization_members where organization_id=$1 order by user_id${lock?' for update':''}`,[organizationId])).rows;
@@ -145,6 +147,7 @@ async function executeCompanyDeletion(c,userId,organizationId){
 }
 
 async function executeDeletion({db,user,previewId,recentAuthProof,confirmation,expectedAction,expectedOrganizationId=null}){
+ if(expectedAction==='organization.delete'&&!same(user.organization_id,expectedOrganizationId))fail('La empresa no corresponde a tu sesión actual.',403,'DELETION_SCOPE_MISMATCH');
  const c=await db.connect();
  try{
   await c.query('begin isolation level serializable');
@@ -186,6 +189,7 @@ export async function accountSecurity({req,res,url,db,session,body,send,parseCoo
  const currentSession=parseCookies(req).scale_session||'';
  try{
   if(url.pathname==='/api/auth/account/deletion/preview'&&req.method==='POST')return send(res,200,{preview:await createPreview(db,user.id,'account.delete',null)});
+  if(companyMatch&&!same(user.organization_id,companyMatch[1]))fail('La empresa no corresponde a tu sesión actual.',403,'DELETION_SCOPE_MISMATCH');
   if(companyMatch&&url.pathname.endsWith('/preview')&&req.method==='POST')return send(res,200,{preview:await createPreview(db,user.id,'organization.delete',companyMatch[1])});
   if(url.pathname==='/api/auth/account/recent-auth/password'&&req.method==='POST'){
    const value=await body(req);if(!await limit(db,'destructive-reauth:'+user.id,5))fail('Demasiados intentos. Esperá 15 minutos.',429);

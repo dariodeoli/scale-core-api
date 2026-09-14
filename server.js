@@ -21,6 +21,7 @@ import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
 import { invitationEmail,resetEmail,verificationEmail } from './invitation-email.js';
 import {financialForecast} from './forecast.js';
+import {commercialLifecycle} from './commercial-lifecycle.js';
 import {reports} from './reports.js';
 import {projectAssignees} from './project-assignees.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
@@ -150,6 +151,8 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260913_ruc_collaboration.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_account_security.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_secure_deletion.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260914_client_commercial_lifecycle.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260914_inventory_storage_locations.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -232,6 +235,7 @@ const server = http.createServer(async (req,res) => {
     }
     if(await liveVisitors({req,res,url,db,session,send}))return;
     if(await financialForecast({req,res,url,db,session,send}))return;
+    if(await commercialLifecycle({req,res,url,db,session,body,send}))return;
     if(await projectAssignees({req,res,url,db,session,body,send}))return;
     if(await inventoryReservations({req,res,url,db,session,body,send}))return;
     if(await workChecklists({req,res,url,db,session,body,send}))return;

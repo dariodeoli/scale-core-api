@@ -25,6 +25,8 @@ const legacy=(await query("insert into agency_inventory(organization_id,name,cat
 const migration=await fs.readFile(new URL('./migrations/20260910_inventory_reservations.sql',import.meta.url),'utf8');await pg.exec(migration);await pg.exec(migration);
 const verificationMigration=await fs.readFile(new URL('./migrations/20260912_inventory_verifications.sql',import.meta.url),'utf8');await pg.exec(verificationMigration);await pg.exec(verificationMigration);
 const advancedInventoryMigration=await fs.readFile(new URL('./migrations/20260913_inventory_advanced_traceability.sql',import.meta.url),'utf8');await pg.exec(advancedInventoryMigration);await pg.exec(advancedInventoryMigration);
+await query("update agency_inventory set storage_shelf=' Legacy cage ' where id=$1",[legacy]);
+const storageLocationMigration=await fs.readFile(new URL('./migrations/20260914_inventory_storage_locations.sql',import.meta.url),'utf8');await pg.exec(storageLocationMigration);await pg.exec(storageLocationMigration);
 assert((await query('select category_id from agency_inventory where id=$1',[legacy])).rows[0].category_id);
 await query("insert into agency_settings(organization_id,default_currency) values($1,'EUR')",[org]);
 // PGlite has one connection. Queue leased transactions, as a size-1 pg Pool does.
@@ -59,6 +61,7 @@ assert.equal((await call(`inventory/${card}`,'PATCH',{name:'Memoria SD'})).recor
 assert.equal((await call(`inventory/${card}`,'PATCH',{inventory_code:'INV-REASSIGNED'})).status,409,'A physical asset code cannot be reassigned');
 let verified=await call(`inventory/${card}/verify`,'POST',{result:'difference',counted_quantity:1,differences:'Ubicación física: estante B',note:'Control mensual',adjustment:{storage_shelf:'Estante B',storage_row:'4',status:'available'}},management);
 assert.equal(verified.status,200);assert.equal(verified.record.last_verification_result,'difference');assert.equal(verified.record.storage_shelf,'Estante B');assert.equal(verified.verification.counted_quantity,1);assert.equal(verified.verification.verified_by_user_id,management.id);assert(verified.verification.verified_at);
+assert.equal(verified.record.storage_location_id,null,'verification adjustments retain legacy free-text locations');
 let trace=await call(`inventory/${card}`);assert.equal(trace.verifications.length,1);assert.equal(trace.verifications[0].adjusted,true);assert.equal(trace.verifications[0].verified_by_user_id,management.id);assert.equal(trace.verifications[0].counted_quantity,1);assert(trace.verifications[0].verified_at);assert.equal(trace.record.last_verified_counted_quantity,1);assert(trace.trace.some(event=>event.event_type==='inventory.created'));assert(trace.trace.some(event=>event.event_type==='stock.verified'));
 assert.equal((await call(`inventory/${card}/verify`,'POST',{result:'confirmed',counted_quantity:2})).status,400);
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'Memorias'})).status,200);
@@ -241,5 +244,43 @@ await query("update organization_members set role='viewer' where organization_id
 assert.equal((await call('inventory-reservations','POST',reservationPayload([card]),producer)).status,403,'stale session role cannot grant booking permission');
 assert.equal((await call('inventory-context','POST')).status,405);
 assert((await query("select count(*)::int as count from agency_operation_audit where table_name='agency_inventory_reservations' and actor=$1",[String(producer.id)])).rows[0].count>0);
+// Storage-place templates are tenant-local, normalized, and preserve free-text fallback.
+const backfilled=(await query(`select i.storage_shelf,i.storage_location_id,l.name from agency_inventory i
+ left join agency_inventory_storage_locations l on l.id=i.storage_location_id and l.organization_id=i.organization_id where i.id=$1`,[legacy])).rows[0];
+assert(backfilled.storage_location_id,'legacy shelf backfilled to a reusable location');
+assert.equal(backfilled.storage_shelf,' Legacy cage ','backfill preserves legacy shelf text');
+assert.equal(backfilled.name,'Legacy cage','backfill normalizes the reusable template name');
+let place=(await call('inventory-locations','POST',{name:'  Depósito central  '},management));
+assert.equal(place.status,201);const placeId=place.location.id;
+assert.equal((await call('inventory-locations','POST',{name:'depósito CENTRAL'},management)).status,409,'normalized duplicate rejected per tenant');
+const otherPlace=(await call('inventory-locations','POST',{name:'Depósito central'},{...owner,organization_id:other}));
+assert.equal(otherPlace.status,201,'different tenants may use the same template name');
+const templated=(await call('inventory','POST',{name:'Template location fixture',storage_location_id:placeId},management)).record;
+assert.equal(String(templated.storage_location_id),String(placeId));assert.equal(templated.storage_shelf,'Depósito central');
+const custom=(await call('inventory','POST',{name:'Custom location fixture',storage_location_id:'custom',storage_location_name:'Mesa de reparación'},management)).record;
+assert.equal(custom.storage_location_id,null);assert.equal(custom.storage_shelf,'Mesa de reparación');
+const created=(await call('inventory','POST',{name:'New location fixture',storage_location_id:'new',storage_location_name:'Rack de audio'},management)).record;
+assert(created.storage_location_id);assert.equal(created.storage_shelf,'Rack de audio');
+await assert.rejects(query('update agency_inventory set storage_location_id=$1 where id=$2',[otherPlace.location.id,templated.id]),error=>error.code==='23503');
+assert.equal((await call(`inventory-locations/${placeId}`,'DELETE',{},management)).status,409,'referenced place cannot be deleted');
+place=await call(`inventory-locations/${placeId}`,'PATCH',{name:'Depósito principal',active:false},management);
+assert.equal(place.status,200);assert.equal(place.location.name,'Depósito principal');assert.equal(place.location.active,false);
+assert.equal((await call(`inventory/${templated.id}`)).record.storage_location_name,'Depósito principal','renaming updates the template presentation without rewriting stock');
+assert.equal((await call('inventory','POST',{name:'Inactive location fixture',storage_location_id:placeId},management)).status,400);
+assert.equal((await call(`inventory/${templated.id}`,'PATCH',{name:'Existing archived template fixture'},management)).status,200,'existing stock may retain an archived template');
+assert(!(await call('inventory-locations','GET',{}, {...owner,organization_id:other})).locations.some(row=>String(row.id)===String(placeId)),'tenant location list excludes another tenant’s templates');
+const listedLocations=(await call('inventory-locations','GET',{},management)).locations;assert(listedLocations.find(row=>String(row.id)===String(placeId)).item_count>=1,'place list returns usage count');
+assert(!listedLocations.some(row=>String(row.id)===String(otherPlace.location.id)),'place list is tenant scoped');
+const unused=(await call('inventory-locations','POST',{name:'Temporary location'},management)).location;
+assert.equal((await call(`inventory-locations/${unused.id}`,'DELETE',{},management)).status,200,'unreferenced place can be deleted');
+let templateReturn=(await call('inventory-reservations','POST',{...reservationPayload([created.id]),...currentRange},owner)).reservation;
+templateReturn=(await call(`inventory-reservations/${templateReturn.id}/checkout`,'POST',{expected_version:templateReturn.version,custodian_user_id:producer.id},owner)).reservation;
+const templateReturnResult=await call(`inventory-reservations/${templateReturn.id}/return`,'POST',{expected_version:templateReturn.version,locations:[{inventory_id:created.id,storage_location_id:created.storage_location_id,status:'available'}]},owner);
+assert.equal(templateReturnResult.status,200,'returns accept an active reusable template without redundant shelf text');
+const returnedTemplateRecord=(await call(`inventory/${created.id}`)).record;
+assert.equal(String(returnedTemplateRecord.storage_location_id),String(created.storage_location_id));assert.equal(returnedTemplateRecord.storage_shelf,'Rack de audio');
+assert.equal((await call('inventory-locations','GET',{},viewer)).status,200);
+assert.equal((await call('inventory-locations','POST',{name:'Forbidden'},producer)).status,403);
+
 await pg.close();
 console.log(`PASS: ${apiCases} API cases; category lifecycle, multi-unit/responsible workflow, conflict rollback, reschedule/cancel releases, physical availability, overdue handover, complete-return atomicity, safe rejection of partial/malformed returns, recorded locations, calendar year/midnight boundaries, tenant/role checks, GiST exclusion, unique checkout and audit. Concurrent API requests use a single-connection PGlite pool; real multi-connection PostgreSQL not run.`);

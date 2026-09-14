@@ -10,6 +10,7 @@ const read=file=>fs.readFile(new URL(file,import.meta.url),'utf8');
 await pg.exec(await read('./schema.sql'));
 await pg.exec(await read('./migrations/20260908_google_oauth.sql'));
 await pg.exec(await read('./migrations/20260911_google_profile_photo.sql'));
+await pg.exec(await read('./migrations/20260910_demo_sessions.sql'));
 await pg.exec('alter table organization_members add column if not exists active boolean not null default true; alter table organization_members add column if not exists removed_at timestamptz;');
 await pg.exec(await read('./migrations/20260914_secure_deletion.sql'));
 
@@ -102,6 +103,7 @@ assert.deepEqual(response.data.membershipsDeactivated,[String(derivedSole),Strin
 assert.equal((await query('select active,deleted_at is not null as deleted from organizations where id=$1',[derivedSole])).rows[0].active,false);
 assert.equal((await query('select count(*)::int as count from agency_clients where id=$1',[retainedSoleClient])).rows[0].count,1);
 assert.equal((await query('select active from organizations where id=$1',[derivedShared])).rows[0].active,true);
+assert.deepEqual((await query('select active,removed_at is not null as removed from organization_members where organization_id=$1 and user_id=$2',[derivedSole,derivedUser])).rows[0],{active:false,removed:true},'Account deletion must soft-deactivate the sole active owner membership with its organization.');
 assert.equal((await query('select active,removed_at is not null as removed from organization_members where organization_id=$1 and user_id=$2',[derivedShared,derivedUser])).rows[0].active,false);
 assert.equal((await query('select active from organization_members where organization_id=$1 and user_id=$2',[derivedShared,derivedPeer])).rows[0].active,true);
 assert.equal((await query('select count(*)::int as count from sessions where user_id=$1',[derivedUser])).rows[0].count,0);
@@ -127,6 +129,27 @@ assert.equal(response.status,409);assert.equal(response.data.code,'LAST_ACTIVE_O
 assert.equal((await query('select active from organizations where id=$1',[blockedSole])).rows[0].active,true);
 assert.equal((await query('select active from organization_members where user_id=$1 order by organization_id',[blockedUser])).rows.every(row=>row.active),true);
 assert.equal((await query('select deleted_at from users where id=$1',[blockedUser])).rows[0].deleted_at,null);
+
+// The company in a deletion URL must be the authenticated session organization, even when the actor owns both.
+const scopedTargetUser=await makeUser('scoped-target@example.invalid');
+const sessionOrganization=await makeOrg('scoped-session-org');
+const differentOrganization=await makeOrg('scoped-different-org');
+await member(sessionOrganization,scopedTargetUser,'owner');
+await member(differentOrganization,scopedTargetUser,'owner');
+as=actor(scopedTargetUser,sessionOrganization);
+response=await call(`/api/auth/organizations/${differentOrganization}/deletion/preview`,{as});
+assert.equal(response.status,403);assert.equal(response.data.code,'DELETION_SCOPE_MISMATCH');
+assert.equal((await query('select active from organizations where id=$1',[differentOrganization])).rows[0].active,true);
+
+// Direct API callers cannot use the company deletion endpoints against a demo organization.
+const demoOwner=await makeUser('demo-owner@example.invalid');
+const demoOrganization=await makeOrg('demo-deletion-protected');
+await query('update organizations set demo_owner_user_id=$1 where id=$2',[demoOwner,demoOrganization]);
+await member(demoOrganization,demoOwner,'owner');
+as=actor(demoOwner,demoOrganization);
+response=await call(`/api/auth/organizations/${demoOrganization}/deletion/preview`,{as});
+assert.equal(response.status,403);assert.equal(response.data.code,'DEMO_ORGANIZATION_DELETE_FORBIDDEN');
+assert.equal((await query('select active from organizations where id=$1',[demoOrganization])).rows[0].active,true);
 
 // A membership race after re-authentication makes the preview stale and leaves all rows untouched.
 const staleUser=await makeUser('stale@example.invalid');
