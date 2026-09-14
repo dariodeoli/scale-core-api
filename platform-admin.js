@@ -1,6 +1,8 @@
 import {inspectInternalSubscription,updateInternalSubscription} from './platform-subscription-service.js';
 
 const currencies=['USD','PYG'];
+const realOrganization=alias=>`${alias}.demo_owner_user_id is null and ${alias}.demo_source_id is null and ${alias}.slug<>'scale-demo-controles-20260908'`;
+const realUser=alias=>`not ${alias}.is_demo_guest and ${alias}.email not ilike '%@demo.example.invalid'`;
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const integer=(value,fallback=0)=>{if(value===null||value===undefined||value==='')return fallback;const parsed=Number(value);return Number.isInteger(parsed)&&parsed>=0?parsed:fallback;};
 const limit=value=>Math.min(100,Math.max(1,integer(value,25)));
@@ -51,9 +53,9 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
   const user=await actor(db,session,req);
   if(url.pathname==='/api/platform/overview'&&req.method==='GET'){
    const [agencies,users,subscriptions,coupons]=(await Promise.all([
-    db.query("select count(*)::int as total,count(*) filter(where active)::int as active from organizations where demo_owner_user_id is null and demo_source_id is null and slug<>'scale-demo-controles-20260908'"),
-    db.query('select count(*)::int as total from users where not is_demo_guest'),
-    db.query('select stripe_status as status,count(*)::int as total from organization_subscriptions group by stripe_status order by stripe_status'),
+    db.query(`select count(*)::int as total,count(*) filter(where active)::int as active from organizations where ${realOrganization('organizations')}`),
+    db.query(`select count(*)::int as total from users where ${realUser('users')}`),
+    db.query(`select s.stripe_status as status,count(*)::int as total from organization_subscriptions s join organizations o on o.id=s.organization_id where ${realOrganization('o')} group by s.stripe_status order by s.stripe_status`),
     db.query('select count(*)::int as total,count(*) filter(where active)::int as active from platform_coupons')
    ])).map(result=>result.rows);
    send(res,200,{agencies:agencies[0],users:users[0],subscriptions,coupons:coupons[0]});return true;
@@ -69,7 +71,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
      from organizations o left join organization_subscriptions s on s.organization_id=o.id
      left join platform_subscription_states ps on ps.organization_id=o.id
      left join organization_members m on m.organization_id=o.id
-     where o.demo_owner_user_id is null and o.demo_source_id is null and o.slug<>'scale-demo-controles-20260908' ${where}
+     where ${realOrganization('o')} ${where}
      group by o.id,s.stripe_status,s.currency,s.trial_ends_at,s.due_at,ps.state,ps.expires_at order by o.created_at desc limit $1 offset $2`,values);
    send(res,200,{agencies:result.rows,limit,offset});return true;
   }
@@ -84,12 +86,14 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    send(res,200,result);return true;
   }
   if(url.pathname==='/api/platform/users'&&req.method==='GET'){
-   const {limit,offset}=page(url),q=search(url),where=q?'where u.email ilike $3':'';
+   const {limit,offset}=page(url),q=search(url),where=q?'and u.email ilike $3':'';
    const values=q?[limit,offset,'%'+q+'%']:[limit,offset];
    const result=await db.query(`select u.id,u.email,u.created_at,
-     count(m.organization_id) filter(where m.active and m.removed_at is null)::int as active_agencies,
+     count(m.organization_id) filter(where m.active and m.removed_at is null and ${realOrganization('o')})::int as active_agencies,
      exists(select 1 from platform_administrators pa where pa.user_id=u.id and pa.active) as platform_admin
-     from users u left join organization_members m on m.user_id=u.id ${where}
+     from users u left join organization_members m on m.user_id=u.id
+     left join organizations o on o.id=m.organization_id
+     where ${realUser('u')} ${where}
      group by u.id order by u.created_at desc limit $1 offset $2`,values);
    send(res,200,{users:result.rows,limit,offset});return true;
   }

@@ -19,7 +19,7 @@ const clientOrigins=new Set(['https://app.scaleparaguay.com','https://cliente.sc
 export const clientPortalOrigin=clientOrigin;
 export const clientPortalUrl=path=>`${clientOrigin}/${String(path).replace(/^\/+/, '')}`;
 const clientRoles=['owner','admin','management','production'];
-const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
+const fail=(message,status=400,details={})=>{throw Object.assign(Error(message),{status},details);};
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const token=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:fail('Enlace inválido');
 const id=value=>/^\d+$/.test(String(value))&&Number(value)>0?String(value):fail('Identificador inválido');
@@ -53,7 +53,11 @@ async function validInvite(c,raw,{lock=false}={}){
  const invite=(await c.query(`select i.*,c.name as client_name,o.name as organization_name,c.active as client_active,o.active as organization_active
   from client_portal_invites i join agency_clients c on c.id=i.client_id and c.organization_id=i.organization_id
   join organizations o on o.id=i.organization_id where i.token_hash=$1${suffix}`,[hash(token(raw))])).rows[0];
- if(!invite||invite.revoked_at||invite.accepted_at||!invite.client_active||!invite.organization_active||new Date(invite.expires_at)<=new Date())fail('Este enlace venció o fue desactivado.',410);
+ if(!invite)fail('Este enlace venció o fue desactivado.',410);
+ if(invite.revoked_at)fail('Este enlace venció o fue desactivado.',410,{link_status:'revoked'});
+ if(invite.accepted_at)fail('Este enlace venció o fue desactivado.',410,{link_status:'used'});
+ if(new Date(invite.expires_at)<=new Date())fail('Este enlace venció o fue desactivado.',410,{link_status:'expired'});
+ if(!invite.client_active||!invite.organization_active)fail('Este enlace venció o fue desactivado.',410);
  return invite;
 }
 function actor(user){if(!user||!clientRoles.includes(user.role))fail('Sin permiso para gestionar el portal de clientes',403);}
@@ -210,5 +214,5 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   const result=(await c.query(`insert into client_portal_delivery_decisions(organization_id,delivery_id,portal_user_id,version,decision,comment_id) values($1,$2,$3,$4,$5,$6)
    on conflict(delivery_id,portal_user_id,version) do update set decision=excluded.decision,comment_id=excluded.comment_id,updated_at=now() returning decision,created_at,updated_at`,[delivery.organization_id,delivery.id,user.id,delivery.version,decision,commentId])).rows[0];
   await c.query('commit');transaction=false;send(res,200,{decision:result});return true;
- }catch(error){if(transaction)await c.query('rollback');console.error(JSON.stringify({event:'client_portal_error',status:error.status||500,code:error.code||null,message:error.status?null:error.message}));send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación'});return true;}finally{c?.release();}
+ }catch(error){if(transaction)await c.query('rollback');console.error(JSON.stringify({event:'client_portal_error',status:error.status||500,code:error.code||null,message:error.status?null:error.message}));const linkStatus=['expired','revoked','used'].includes(error.link_status)?{link_status:error.link_status}:{};send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación',...linkStatus});return true;}finally{c?.release();}
 }
