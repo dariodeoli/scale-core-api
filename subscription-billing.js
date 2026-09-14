@@ -2,6 +2,7 @@ import {createHmac,timingSafeEqual,randomUUID} from 'node:crypto';
 
 const DAY=86400000,GRACE=2*DAY,VERSION='2025-03-31.basil';
 const plans={USD:{amount:10,minor:1000},PYG:{amount:50000,minor:50000}};
+const PAGAYA_CALLBACK_PATH='/api/billing/pagaya/callback',UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const fail=(message,status=400,code='BILLING_INVALID')=>{throw Object.assign(new Error(message),{status,code});};
 const orgId=value=>{if(!/^[1-9]\d{0,18}$/.test(String(value))||BigInt(value)>9223372036854775807n)fail('Empresa inválida');return String(value);};
 const objectId=(value,prefix)=>{const id=typeof value==='object'&&value?value.id:value;if(typeof id!=='string'||!new RegExp(`^${prefix}_[A-Za-z0-9_]+$`).test(id))fail('Referencia de Stripe inválida');return id;};
@@ -26,6 +27,19 @@ function config(){
  return {ready:readiness==='ready',readiness,verifiedAt,key,whsec,prices,product,origin,live:key.startsWith('sk_live_')};
 }
 function configured(){const cfg=config();if(cfg.ready)return cfg;if(cfg.readiness==='webhook_pending')fail('Stripe requiere una prueba firmada del webhook antes de habilitar pagos',503,'BILLING_WEBHOOK_UNVERIFIED');fail('Cobro por Stripe todavía no configurado',503,'BILLING_NOT_CONFIGURED');}
+function strictSecret(value,name){if(typeof value!=='string'||value.length<32||value.trim()!==value)fail(`${name} no configurado`,503,'BILLING_NOT_CONFIGURED');return value;}
+function fixedOrigin(value,name){try{const parsed=new URL(value);if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash)throw new Error();return parsed.origin;}catch{fail(`${name} inválido`,503,'BILLING_NOT_CONFIGURED');}}
+function pagayaConfig(){
+ if(process.env.SUBSCRIPTION_CHECKOUT_PROVIDER!=='pagaya')return null;
+ return {origin:fixedOrigin(process.env.PAGAYA_SUBSCRIPTION_ORIGIN,'PAGAYA_SUBSCRIPTION_ORIGIN'),requestSecret:strictSecret(process.env.PAGAYA_HANDOFF_REQUEST_SECRET,'PAGAYA_HANDOFF_REQUEST_SECRET'),callbackSecret:strictSecret(process.env.PAGAYA_HANDOFF_CALLBACK_SECRET,'PAGAYA_HANDOFF_CALLBACK_SECRET')};
+}
+function pagayaCallbackSecret(){if(process.env.SUBSCRIPTION_CHECKOUT_PROVIDER!=='pagaya')fail('PagaYa no configurado',503,'BILLING_NOT_CONFIGURED');return strictSecret(process.env.PAGAYA_HANDOFF_CALLBACK_SECRET,'PAGAYA_HANDOFF_CALLBACK_SECRET');}
+export function signPagayaMessage(secret,timestamp,nonce,raw){return createHmac('sha256',secret).update(`${timestamp}.${nonce}.${raw}`).digest('hex');}
+export function verifyPagayaMessage({secret,timestamp,nonce,signature,raw,now=Date.now()}){
+ if(typeof timestamp!=='string'||!/^\d{10}$/.test(timestamp)||typeof nonce!=='string'||!UUID.test(nonce)||typeof signature!=='string'||!/^[a-f0-9]{64}$/i.test(signature))return false;
+ const seconds=Number(timestamp);if(!Number.isSafeInteger(seconds)||Math.abs(Math.floor(now/1000)-seconds)>300)return false;
+ const expected=signPagayaMessage(secret,timestamp,nonce,raw);return timingSafeEqual(Buffer.from(signature,'hex'),Buffer.from(expected,'hex'));
+}
 
 async function actor(db,user,owner=false){
  if(!user)fail('No autenticado',401,'BILLING_UNAUTHENTICATED');
@@ -62,11 +76,13 @@ export async function subscriptionState(db,user,now=new Date()){
   const overrideActive=row.platform_state&&(!row.platform_state_expires_at||timestamp<new Date(row.platform_state_expires_at).getTime());
   if(overrideActive){status=row.platform_state;remaining=null;}
  }
- const billing=config(),canManage=!isDemo&&user.role==='owner'&&org.member_role==='owner',checkoutReady=Boolean(row&&!isDemo&&billing.ready);
+ const billing=config(),canManage=!isDemo&&user.role==='owner'&&org.member_role==='owner';let handoffReady=true;
+ if(process.env.SUBSCRIPTION_CHECKOUT_PROVIDER==='pagaya'){try{pagayaConfig();}catch{handoffReady=false;}}
+ const checkoutReady=Boolean(row&&!isDemo&&billing.ready&&handoffReady);
  // Availability only: never expose provider IDs or infer a paid entitlement.
- const portalReady=Boolean(canManage&&checkoutReady&&row?.stripe_customer_id&&row?.stripe_subscription_id);
+ const portalReady=Boolean(canManage&&billing.ready&&row?.stripe_customer_id&&row?.stripe_subscription_id);
  return {status,hasAccess:status!=='suspended',currency,amount:plans[currency].amount,trialEndsAt:row?iso(row.trial_ends_at):null,dueAt:iso(due),suspendAt:iso(suspend),daysRemaining:remaining,
-  canManage,checkoutReady,portalReady,billingReadiness:billing.readiness,platformOverride:Boolean(row?.platform_state&&(!row.platform_state_expires_at||timestamp<new Date(row.platform_state_expires_at).getTime()))};
+  canManage,checkoutReady,portalReady,billingReadiness:handoffReady?billing.readiness:'configuration_pending',platformOverride:Boolean(row?.platform_state&&(!row.platform_state_expires_at||timestamp<new Date(row.platform_state_expires_at).getTime()))};
 }
 
 async function transaction(db,work){const c=await db.connect();try{await c.query('begin');const result=await work(c);await c.query('commit');return result;}catch(error){await c.query('rollback');throw error;}finally{c.release();}}
@@ -90,9 +106,45 @@ function stripeUrl(value,host){let url;try{url=new URL(value);}catch{fail('Strip
 function metadata(row,attempt){return {'metadata[organization_id]':String(row.organization_id),'metadata[binding_token]':row.binding_token,'metadata[attempt_id]':attempt};}
 function subscriptionValid(sub,row,cfg,customer){
  sameMode(sub,cfg);objectId(sub.id,'sub');
- if(objectId(sub.customer,'cus')!==customer||sub.metadata?.organization_id!==String(row.organization_id)||sub.metadata?.binding_token!==row.binding_token||row.stripe_subscription_id&&sub.id!==row.stripe_subscription_id||sub.collection_method!=='charge_automatically'||sub.items?.has_more||sub.items?.data?.length!==1||sub.items.data[0].quantity!==1)fail('Suscripción no vinculada al plan de esta empresa',409,'BILLING_BINDING_MISMATCH');
+ const direct=sub.metadata?.organization_id===String(row.organization_id)&&sub.metadata?.binding_token===row.binding_token;
+ const pagaya=row.pagaya_enrollment_id&&sub.metadata?.scale_enrollment_id===String(row.pagaya_enrollment_id)&&sub.metadata?.scale_plan_code==='scale_monthly';
+ if(objectId(sub.customer,'cus')!==customer||(!direct&&!pagaya)||row.stripe_subscription_id&&sub.id!==row.stripe_subscription_id||sub.collection_method!=='charge_automatically'||sub.items?.has_more||sub.items?.data?.length!==1||sub.items.data[0].quantity!==1)fail('Suscripción no vinculada al plan de esta empresa',409,'BILLING_BINDING_MISMATCH');
  priceValid(sub.items.data[0].price,row,cfg);
  return sub.items.data[0];
+}
+
+function pagayaOffer(currency){return currency==='USD'?'scale_monthly_usd':'scale_monthly_pyg';}
+async function callPagaya(cfg,enrollment,user){
+ const raw=JSON.stringify({enrollmentId:enrollment.id,offerCode:pagayaOffer(enrollment.currency),...(typeof user.email==='string'&&user.email?{customerEmail:user.email.toLowerCase()}:{})});
+ const timestamp=String(Math.floor(Date.now()/1000)),nonce=randomUUID();let response,result;
+ try{response=await fetch(`${cfg.origin}/api/integrations/scale/subscriptions`,{method:'POST',headers:{'Content-Type':'application/json','x-scale-timestamp':timestamp,'x-scale-nonce':nonce,'x-scale-signature':signPagayaMessage(cfg.requestSecret,timestamp,nonce,raw)},body:raw,redirect:'error',signal:AbortSignal.timeout(10000)});result=await response.json();}catch{fail('PagaYa no respondió; reintentá sin crear otra operación',503,'BILLING_PROVIDER_UNAVAILABLE');}
+ if(!response.ok||typeof result?.checkoutSessionId!=='string'||!/^cs_[A-Za-z0-9_]+$/.test(result.checkoutSessionId))fail('PagaYa no pudo crear el checkout',503,'BILLING_PROVIDER_UNAVAILABLE');
+ return {checkoutSessionId:result.checkoutSessionId,url:stripeUrl(result.checkoutUrl,'checkout.stripe.com')};
+}
+async function pagayaCheckout(db,user,cfg,requestedCurrency){
+ const enrollment=await transaction(db,async c=>{
+  const org=await actor(c,user,true);if(demo(org))fail('Las demos están exentas de cobro',409,'BILLING_DEMO');const row=await locked(c,org.id);
+  if(requestedCurrency!==undefined&&requestedCurrency!==row.currency)fail('La moneda de la suscripción es la elegida al crear la empresa y no se cambia desde checkout.',409,'BILLING_CURRENCY_LOCKED');
+  if(row.stripe_subscription_id)fail('La suscripción ya existe; usá el portal',409,'BILLING_USE_PORTAL');
+  let pending=(await c.query("select * from subscription_pagaya_enrollments where organization_id=$1 and status in ('prepared','dispatching','pending') for update",[org.id])).rows[0];
+  if(pending&&pending.status==='prepared'&&new Date(pending.expires_at).getTime()<=Date.now()){await c.query("update subscription_pagaya_enrollments set status='expired' where id=$1",[pending.id]);pending=null;}
+  if(pending)return pending;
+  return (await c.query(`insert into subscription_pagaya_enrollments(id,organization_id,user_id,plan_code,currency,amount_minor,expires_at)
+   values($1,$2,$3,'scale_monthly',$4,$5,$6) returning *`,[randomUUID(),org.id,user.id,row.currency,plans[row.currency].minor,new Date(Date.now()+3600000)])).rows[0];
+ });
+ await transaction(db,async c=>{
+  const current=(await c.query('select * from subscription_pagaya_enrollments where id=$1 for update',[enrollment.id])).rows[0];
+  if(!current||!['prepared','dispatching','pending'].includes(current.status))fail('La operación ya terminó; consultá el estado',409,'BILLING_RECONCILIATION_REQUIRED');
+  if(current.status==='prepared'&&new Date(current.expires_at).getTime()<=Date.now())fail('La preparación venció antes de iniciar Checkout',409,'BILLING_CHECKOUT_EXPIRED');
+  if(current.status==='prepared')await c.query("update subscription_pagaya_enrollments set status='dispatching',updated_at=now() where id=$1",[current.id]);
+ });
+ const checkout=await callPagaya(cfg,enrollment,user);
+ return transaction(db,async c=>{
+  await actor(c,user,true);const row=await locked(c,user.organization_id),current=(await c.query('select * from subscription_pagaya_enrollments where id=$1 for update',[enrollment.id])).rows[0];
+  if(row.stripe_subscription_id||current.consumed_at)fail('La suscripción ya existe; usá el portal',409,'BILLING_USE_PORTAL');
+  if(current.pagaya_checkout_session_id&&current.pagaya_checkout_session_id!==checkout.checkoutSessionId)fail('PagaYa devolvió una operación distinta',409,'BILLING_RECONCILIATION_REQUIRED');
+  await c.query("update subscription_pagaya_enrollments set pagaya_checkout_session_id=$2,status='pending',updated_at=now() where id=$1",[current.id,checkout.checkoutSessionId]);return {url:checkout.url};
+ });
 }
 async function verifyCheckout(c,cfg,row,attempt,session){
  sameMode(session,cfg);
@@ -201,6 +253,46 @@ async function signedEvent(req,cfg){
  objectId(event?.id,'evt');if(!event.data?.object||typeof event.type!=='string'||!Number.isSafeInteger(event.created)||event.created>Date.now()/1000+300||event.account||event.context)fail('Evento no admitido');
  sameMode(event,cfg);return event;
 }
+async function signedPagayaCallback(req,secret){
+ const timestamp=req.headers?.['x-pagaya-timestamp'],nonce=req.headers?.['x-pagaya-nonce'],signature=req.headers?.['x-pagaya-signature'];
+ let raw;
+ if(Buffer.isBuffer(req.rawBody))raw=req.rawBody;
+ else{const parts=[];let length=0;for await(const chunk of req){const part=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);length+=part.length;if(length>16384)fail('Callback demasiado grande',413);parts.push(part);}raw=Buffer.concat(parts);}
+ if(raw.length>16384||!verifyPagayaMessage({secret,timestamp,nonce,signature,raw:raw.toString('utf8')}))fail('Firma inválida',401,'BILLING_SIGNATURE_INVALID');
+ let value;try{value=JSON.parse(raw.toString('utf8'));}catch{fail('JSON inválido');}
+ const keys=['eventId','enrollmentId','checkoutSessionId','stripeCustomerId','stripeSubscriptionId','planCode','currency','amountMinor'];
+ if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!keys.includes(key))||keys.some(key=>!Object.hasOwn(value,key)))fail('Callback inválido');
+ objectId(value.eventId,'evt');if(!UUID.test(value.enrollmentId))fail('Callback inválido');objectId(value.checkoutSessionId,'cs');objectId(value.stripeCustomerId,'cus');objectId(value.stripeSubscriptionId,'sub');
+ if(value.planCode!=='scale_monthly'||!Object.hasOwn(plans,value.currency)||value.amountMinor!==plans[value.currency].minor)fail('Oferta inválida',409,'BILLING_BINDING_MISMATCH');
+ return {value,nonce};
+}
+async function pagayaCallback(db,req,cfg){
+ const signed=await signedPagayaCallback(req,pagayaCallbackSecret()),payload=signed.value;
+ return transaction(db,async c=>{
+  const enrollment=(await c.query(`select e.* from subscription_pagaya_enrollments e
+   join organizations o on o.id=e.organization_id and o.active
+   join organization_members m on m.organization_id=e.organization_id and m.user_id=e.user_id and m.role='owner' and m.active and m.removed_at is null
+   where e.id=$1 for update of e`,[payload.enrollmentId])).rows[0];
+  if(!enrollment)fail('Matrícula no vinculada',409,'BILLING_BINDING_MISMATCH');
+  if(enrollment.plan_code!==payload.planCode||enrollment.currency!==payload.currency||Number(enrollment.amount_minor)!==payload.amountMinor||enrollment.pagaya_checkout_session_id&&enrollment.pagaya_checkout_session_id!==payload.checkoutSessionId)fail('Matrícula no vinculada',409,'BILLING_BINDING_MISMATCH');
+  if(enrollment.consumed_at){
+   if(enrollment.stripe_customer_id===payload.stripeCustomerId&&enrollment.stripe_subscription_id===payload.stripeSubscriptionId)return {received:true,enrollmentId:enrollment.id};
+   fail('Matrícula ya consumida',409,'BILLING_BINDING_MISMATCH');
+  }
+  const replay=(await c.query(`insert into subscription_pagaya_callback_events(event_id,nonce,enrollment_id)
+   values($1,$2,$3) on conflict do nothing returning event_id`,[payload.eventId,signed.nonce,payload.enrollmentId])).rows[0];
+  if(!replay)return {received:true,enrollmentId:enrollment.id};
+  if(!['dispatching','pending'].includes(enrollment.status))fail('Matrícula no activa',409,'BILLING_BINDING_MISMATCH');
+  const row=await locked(c,enrollment.organization_id);
+  if(row.stripe_customer_id&&row.stripe_customer_id!==payload.stripeCustomerId||row.stripe_subscription_id&&row.stripe_subscription_id!==payload.stripeSubscriptionId)fail('Suscripción ajena a la empresa',409,'BILLING_BINDING_MISMATCH');
+  row.pagaya_enrollment_id=enrollment.id;row.stripe_customer_id=payload.stripeCustomerId;row.stripe_subscription_id=payload.stripeSubscriptionId;
+  const sub=await stripe(cfg,`subscriptions/${payload.stripeSubscriptionId}`);subscriptionValid(sub,row,cfg,payload.stripeCustomerId);
+  await c.query(`update organization_subscriptions set stripe_customer_id=$1,stripe_subscription_id=$2,pagaya_enrollment_id=$3,updated_at=now() where organization_id=$4`,[payload.stripeCustomerId,payload.stripeSubscriptionId,enrollment.id,row.organization_id]);
+  await c.query(`update subscription_pagaya_enrollments set consumed_at=now(),status='consumed',pagaya_checkout_session_id=coalesce(pagaya_checkout_session_id,$2),stripe_customer_id=$3,stripe_subscription_id=$4,updated_at=now() where id=$1`,[enrollment.id,payload.checkoutSessionId,payload.stripeCustomerId,payload.stripeSubscriptionId]);
+  await c.query('update subscription_pagaya_callback_events set processed_at=now() where event_id=$1',[payload.eventId]);
+  await reconcile(c,cfg,row,sub);return {received:true,enrollmentId:enrollment.id};
+ });
+}
 async function webhook(db,req,cfg){
  const event=await signedEvent(req,cfg),supported=['checkout.session.completed','checkout.session.async_payment_succeeded','customer.subscription.created','customer.subscription.updated','customer.subscription.deleted','invoice.paid','invoice.payment_succeeded','invoice.payment_failed'];
  if(!supported.includes(event.type))return {received:true,ignored:true};
@@ -231,11 +323,15 @@ async function webhook(db,req,cfg){
 }
 
 export async function subscriptionBilling({req,res,url,db,session,body,send}){
- const path=url.pathname;if(!['/api/billing/subscription','/api/billing/checkout','/api/billing/portal','/api/billing/webhook'].includes(path))return false;
+ const path=url.pathname;if(!['/api/billing/subscription','/api/billing/checkout','/api/billing/portal','/api/billing/webhook',PAGAYA_CALLBACK_PATH].includes(path))return false;
  try{
   if(path==='/api/billing/webhook'){
    if(req.method!=='POST')fail('Método no permitido',405);
    send(res,200,await webhook(db,req,configured()));return true;
+  }
+  if(path===PAGAYA_CALLBACK_PATH){
+   if(req.method!=='POST')fail('Método no permitido',405);
+   send(res,200,await pagayaCallback(db,req,configured()));return true;
   }
   const user=await session(req);await actor(db,user,path!=='/api/billing/subscription');
   if(path==='/api/billing/subscription'){
@@ -247,7 +343,8 @@ export async function subscriptionBilling({req,res,url,db,session,body,send}){
   if(Object.hasOwn(input,'currency')&&!Object.hasOwn(plans,input.currency))fail('La suscripción admite USD o PYG');
   const cfg=configured();
   if(path==='/api/billing/checkout'){
-   const result=await checkout(db,user,cfg,input.currency);send(res,result.expired?409:200,result.expired?{error:'Checkout vencido. Volvé a pulsar contratar.',code:'BILLING_CHECKOUT_EXPIRED'}:result);return true;
+   const handoff=pagayaConfig();
+   const result=handoff?await pagayaCheckout(db,user,handoff,input.currency):await checkout(db,user,cfg,input.currency);send(res,result.expired?409:200,result.expired?{error:'Checkout vencido. Volvé a pulsar contratar.',code:'BILLING_CHECKOUT_EXPIRED'}:result);return true;
   }
   const result=await transaction(db,async c=>{
    const org=await actor(c,user,true);if(demo(org))fail('Las demos están exentas de cobro',409,'BILLING_DEMO');

@@ -123,6 +123,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_inventory_reservations.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260910_work_checklists.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_subscriptions.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260913_pagaya_subscription_handoff.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_trial_registration.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_agency_reports.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260911_drive_links.sql'),'utf8'));

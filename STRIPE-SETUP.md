@@ -112,6 +112,39 @@ El módulo permanece deshabilitado salvo configuración completa:
 | `BILLING_APP_ORIGIN` | Origen HTTPS propio, sin ruta, query, credenciales ni fragmento. No se toma de Host ni del cliente. |
 | `STRIPE_WEBHOOK_VERIFIED_AT` | Instante UTC ISO-8601 (`YYYY-MM-DDTHH:mm:ssZ`) que un operador registra **solo después** de recibir en este endpoint una entrega firmada real de Stripe en el mismo modo (test/live). No es un secreto ni reemplaza la firma por evento. |
 
+Para enrutar nuevas contrataciones por PagaYa sin modificar la autoridad de
+renovación, gracia o suspensión de Scale, aplicar también
+`migrations/20260913_pagaya_subscription_handoff.sql` y configurar:
+
+| Variable | Propósito |
+| --- | --- |
+| `SUBSCRIPTION_CHECKOUT_PROVIDER` | Literal `pagaya` para usar el handoff; omitida conserva el checkout Stripe existente durante la transición. |
+| `PAGAYA_SUBSCRIPTION_ORIGIN` | Origen HTTPS fijo de PagaYa, sin path; Scale agrega `/api/integrations/scale/subscriptions`. |
+| `PAGAYA_HANDOFF_REQUEST_SECRET` | Secreto HMAC Scale → PagaYa, mínimo 32 caracteres. |
+| `PAGAYA_HANDOFF_CALLBACK_SECRET` | Secreto HMAC independiente PagaYa → Scale, mínimo 32 caracteres. |
+
+Los dos servicios deben usar la misma cuenta Stripe, producto y prices
+allowlisted. El callback siempre es `/api/billing/pagaya/callback`; no se acepta
+una URL enviada por el navegador ni por PagaYa. La firma cubre
+`timestamp.nonce.rawBody`, vence a los 300 segundos y el nonce se consume una
+sola vez. El callback recupera la suscripción directamente desde Stripe antes de
+vincularla y concilia su factura pagada dentro de la misma transacción. El
+redirect de Checkout solo refresca UI y nunca otorga acceso.
+
+`expires_at` limita únicamente una preparación que todavía no comenzó a
+despacharse. Desde que Scale marca la matrícula `dispatching`, conserva la misma
+matrícula y la misma sesión aunque pase esa hora: nunca crea un Checkout de
+reemplazo cuyo resultado anterior sea incierto. Un callback pagado tardío sigue
+siendo admisible y se valida contra la matrícula, la sesión firmada y el objeto
+actual recuperado desde Stripe. Después de consumir la matrícula, cualquier
+checkout nuevo se rechaza y el owner usa el portal.
+
+Como acuse server-to-server, tanto la primera aplicación como una repetición
+idempotente del callback responden 2xx con JSON exactamente igual a
+`{ "received": true, "enrollmentId": "<uuid>" }`. PagaYa valida el tipo de
+contenido, limita la respuesta a 4096 bytes y exige que `enrollmentId` coincida
+antes de marcar su outbox como entregado.
+
 Ambos precios deben ser por unidad, quantity 1, uso licensed, intervalo month,
 interval_count 1, mismo producto y modo test/live que el secreto. Checkout exige
 precio activo. No hay cambios de plan, impuestos automáticos, promociones,
