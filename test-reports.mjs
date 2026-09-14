@@ -141,16 +141,16 @@ const payment=(await one("insert into agency_payments(organization_id,invoice_id
 await query("insert into agency_payment_reversals(organization_id,payment_id,reason,reversed_on,created_by_user_id) values($1,$2,'Fixture','2024-03-01',$3)",[fresh,payment,uid]);
 let financial=await agencyReport(db,fresh,{month:'2024-04',months:3},fixed);
 const usd=financial.months[0].financial.find(f=>f.currency==='USD');
-assert.equal(usd.invoiced,'300.30');assert.equal(usd.collected,'30.10');assert.equal(usd.invoiceCount,3);assert.equal(usd.billedClients,2);assert.equal(usd.averageTicket,'100.10');assert.equal(usd.averageRevenuePerClient,'150.15');
-assert.equal(financial.months[0].financial.find(f=>f.currency==='PYG').invoiced,'50000.00');
-assert.equal(financial.months[1].financial[0].collected,'-30.10');assert.equal(financial.months[2].financial[0].invoiced,'0.00');assert.equal(financial.months[2].financial[0].averageTicket,'0.00');
+assert.equal(usd.invoiced,300);assert.equal(usd.collected,30);assert.equal(usd.invoiceCount,3);assert.equal(usd.billedClients,2);assert.equal(usd.averageTicket,100);assert.equal(usd.averageRevenuePerClient,150);
+assert.equal(financial.months[0].financial.find(f=>f.currency==='PYG').invoiced,50000);
+assert.equal(financial.months[1].financial[0].collected,-30);assert.equal(financial.months[2].financial[0].invoiced,0);assert.equal(financial.months[2].financial[0].averageTicket,0);
 await call(`/api/agency/clients/${client.id}`,'DELETE',{}, {...user,organization_id:fresh},recordLifecycle);
 assert.deepEqual((await agencyReport(db,fresh,{month:'2024-04',months:3},fixed)).months.map(m=>m.financial),financial.months.map(m=>m.financial));
 assert.deepEqual((await agencyReport(db,org,{month:'2024-02',months:1},fixed)).months[0].financial,[],'no tenant financial leakage');
 const receiptOnly=await invoice(c2,{date:'2024-01-01',total:'10.00'});
 await query("insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on) values($1,$2,$3,'10.00','2024-05-01')",[fresh,receiptOnly,account]);
 const zero=(await agencyReport(db,fresh,{month:'2024-05',months:1},new Date('2024-06-01T04:00:00Z'))).months[0].financial[0];
-assert.equal(zero.invoiceCount,0);assert.equal(zero.billedClients,0);assert.equal(zero.averageTicket,null);assert.equal(zero.averageRevenuePerClient,null);assert.equal(zero.collected,'10.00');
+assert.equal(zero.invoiceCount,0);assert.equal(zero.billedClients,0);assert.equal(zero.averageTicket,null);assert.equal(zero.averageRevenuePerClient,null);assert.equal(zero.collected,10);
 // Existing lifecycle PATCH must still run both updates and produce a final truthful state.
 const patched=await call(`/api/agency/clients/${legacy}`,'PATCH',{name:'Existing client',lifecycle_status:'paused'},user,suite);
 assert.equal(patched.status,200);

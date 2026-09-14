@@ -19,6 +19,21 @@ export function forecastMonth(value,now=new Date()) {
  return value;
 }
 
+// Monetary source columns are numeric and can contain legacy fractional values.
+// The public API is whole-money only, so project values after calculating them
+// without changing the stored historical transaction.
+export function wholeMoney(value) {
+ const match=String(value).match(/^([+-]?)(\d+)(?:\.(\d+))?$/);
+ if(!match)throw new Error('No se pudo proyectar un importe entero seguro');
+ let amount=BigInt(match[2]);
+ if(match[3]?.[0]>='5')amount+=1n;
+ if(match[1]==='-')amount=-amount;
+ if(amount>BigInt(Number.MAX_SAFE_INTEGER)||amount<BigInt(Number.MIN_SAFE_INTEGER))throw new Error('El importe supera el rango entero seguro');
+ return Number(amount);
+}
+
+const projectMoney=(record,fields)=>Object.fromEntries(Object.entries(record).map(([key,value])=>[key,fields.includes(key)?wholeMoney(value):value]));
+
 export async function financialForecast({req,res,url,db,session,send}) {
  if(url.pathname!=='/api/agency/forecast')return false;
  try {
@@ -52,10 +67,61 @@ export async function financialForecast({req,res,url,db,session,send}) {
     sum(issued+pending)::text as expected_total,sum(invoice_count)::int as invoice_count,
     sum(budget_count)::int as budget_count,sum(undated_count)::int as undated_budget_count
    from entries group by currency order by currency`,[user.organization_id,`${month}-01`,forecastTimezone]);
-  send(res,200,{month,time_zone:forecastTimezone,records:rows,definition:{
+  const personnel=(await db.query(`
+   with included as (
+    select c.monthly_salary_currency as currency,c.monthly_salary_amount as base_amount,o.amount as override_amount
+    from agency_collaborators c
+    left join agency_salary_month_overrides o on o.organization_id=c.organization_id and o.collaborator_id=c.id and o.month=$2::date
+    where c.organization_id=$1 and c.active=true and c.monthly_salary_amount is not null and ${visibleRecord('c','collaborators')}
+     and (c.started_on is null or c.started_on<($2::date+interval '1 month')::date)
+     and (c.ended_on is null or c.ended_on>=$2::date)
+   )
+   select currency,count(*)::int as included_headcount,
+    count(*) filter(where override_amount is null)::int as base_count,
+    coalesce(sum(base_amount) filter(where override_amount is null),0)::text as base_amount,
+    count(*) filter(where override_amount is not null)::int as override_count,
+    coalesce(sum(override_amount) filter(where override_amount is not null),0)::text as override_amount,
+    coalesce(sum(coalesce(override_amount,base_amount)),0)::text as expected_end_of_month_expense
+   from included group by currency order by currency`,[user.organization_id,`${month}-01`])).rows;
+  const [contractedRecurring,collectedActual,commissionForecast,plannedExpenses]=await Promise.all([
+   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(t.recurring_amount),0)::text as amount
+    from agency_client_commercial_terms t join agency_clients c on c.organization_id=t.organization_id and c.id=t.client_id
+    where t.organization_id=$1 and t.starts_on<($2::date+interval '1 month')::date and c.active=true and ${visibleRecord('c','clients')}
+    group by t.currency order by t.currency`,[user.organization_id,`${month}-01`]),
+   db.query(`with movements as (
+     select a.currency,p.amount,p.received_on as booked_on from agency_payments p join bank_accounts a on a.id=p.account_id and a.organization_id=p.organization_id where p.organization_id=$1
+     union all
+     select a.currency,-p.amount,r.reversed_on from agency_payment_reversals r join agency_payments p on p.id=r.payment_id and p.organization_id=r.organization_id join bank_accounts a on a.id=p.account_id and a.organization_id=p.organization_id where r.organization_id=$1
+    ) select currency,coalesce(sum(amount),0)::text as amount from movements where booked_on>=$2::date and booked_on<($2::date+interval '1 month')::date group by currency order by currency`,[user.organization_id,`${month}-01`]),
+   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(case when t.commission_mode='percentage' then round(t.recurring_amount*t.commission_value/100.0,0) else t.commission_value end),0)::text as amount
+    from agency_client_commercial_terms t join agency_clients c on c.organization_id=t.organization_id and c.id=t.client_id
+    join agency_collaborators r on r.organization_id=t.organization_id and r.id=t.commission_recipient_id
+    where t.organization_id=$1 and t.starts_on<($2::date+interval '1 month')::date and c.active=true and r.active=true and ${visibleRecord('c','clients')} and ${visibleRecord('r','collaborators')}
+    group by t.currency order by t.currency`,[user.organization_id,`${month}-01`]),
+   db.query(`select currency,count(*)::int as expense_count,coalesce(sum(amount),0)::text as amount from agency_planned_expenses
+    where organization_id=$1 and ((cadence='monthly' and effective_month=$2::date) or (cadence='recurring' and effective_month<=$2::date))
+    group by currency order by currency`,[user.organization_id,`${month}-01`])
+  ]);
+  const projectedRecords=rows.map(row=>projectMoney(row,['issued_total','accepted_uninvoiced_total','expected_total']));
+  const invoiced=projectedRecords.filter(row=>row.issued_total!==0).map(row=>({currency:row.currency,amount:row.issued_total,invoice_count:row.invoice_count}));
+  const projectedPersonnel=personnel.map(row=>projectMoney(row,['base_amount','override_amount','expected_end_of_month_expense']));
+  const projectedSeries=series=>series.rows.map(row=>projectMoney(row,['amount']));
+  send(res,200,{month,time_zone:forecastTimezone,records:projectedRecords,
+   contracted_recurring:{month,records:projectedSeries(contractedRecurring)},
+   invoiced:{month,records:invoiced},
+   collected_actual:{month,records:projectedSeries(collectedActual)},
+   personnel:{month,included_headcount:projectedPersonnel.reduce((count,row)=>count+row.included_headcount,0),records:projectedPersonnel},
+   commission_forecast:{month,records:projectedSeries(commissionForecast)},
+   planned_expenses:{month,records:projectedSeries(plannedExpenses)},definition:{
    issued:'Totales con impuestos de facturas emitidas en el mes, incluidas las cobradas; excluye borradores y canceladas.',
    accepted_uninvoiced:'Presupuestos aceptados sin ninguna factura vinculada, estimados en el mes de aceptación. No tienen fecha de facturación confirmada.',
-   exclusions:'Sin oportunidades comerciales, conversiones de moneda ni cobros previstos. Un presupuesto con factura vinculada, incluso borrador o cancelada, no se vuelve a sumar. Los aceptados sin fecha se informan aparte.'
+   exclusions:'Sin oportunidades comerciales, conversiones de moneda ni cobros previstos. Un presupuesto con factura vinculada, incluso borrador o cancelada, no se vuelve a sumar. Los aceptados sin fecha se informan aparte.',
+   contracted_recurring:'Acuerdos vigentes de clientes activos al cierre del mes. Es ingreso contractual recurrente y no representa una factura ni un cobro.',
+   invoiced:'Facturas emitidas en el mes. Se informa por separado del ingreso contractual y de los cobros.',
+   collected_actual:'Cobros efectivamente registrados por fecha de cobro, menos reversiones registradas en el mes. No se suma al ingreso contractual.',
+   personnel:'Solo incluye colaboradores activos dentro de las fechas laborales, con salario mensual recurrente configurado. Un ajuste del mes reemplaza ese salario; no incluye pagos, comisiones ni compensaciones variables.',
+   commission_forecast:'Comisiones previstas de acuerdos vigentes de clientes y destinatarios activos; las porcentuales se redondean al entero más cercano.',
+   planned_expenses:'Gastos mensuales del mes seleccionado y gastos recurrentes vigentes desde su mes efectivo; no son pagos reales.'
   }});
  }catch(error){send(res,error.status||500,{error:error.status?error.message:'No se pudo cargar la previsión'});}
  return true;

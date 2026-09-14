@@ -1,10 +1,35 @@
+import {forecastMonth,wholeMoney} from './forecast.js';
+
 const timezone='America/Asuncion';
 const reportRoles=['owner','admin','finance'];
 const editRoles=['owner','admin','management','sales'];
 const metadataRoles=[...editRoles,'finance'];
+const expenseRoles=['owner','admin','finance'];
 const kinds=['unknown','company','professional','individual','other'];
+const termFields=['planId','recurringAmount','currency','startsOn','invoiceRequired','commissionRecipientId','commissionMode','commissionValue'];
+const expenseFields=['cadence','effectiveMonth','category','amount','currency','note'];
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const dateString=value=>value instanceof Date?value.toISOString().slice(0,10):value;
+function id(value,label='Identificador') {
+ if(!['string','number'].includes(typeof value)||!/^[1-9]\d{0,18}$/.test(String(value))||BigInt(value)>9223372036854775807n)fail(`${label} inválido`);
+ return String(value);
+}
+function wholeAmount(value,label='Importe') {
+ const raw=typeof value==='string'?value.trim():value;
+ if((typeof raw!=='number'&&typeof raw!=='string')||(typeof raw==='string'&&!/^\d+$/.test(raw)))fail(`${label} debe ser un entero positivo`);
+ const amount=Number(raw);
+ if(!Number.isSafeInteger(amount)||amount<=0||amount>999999999999)fail(`${label} debe ser un entero positivo`);
+ return amount;
+}
+function requiredDate(value,label) {
+ if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(Date.parse(value))||new Date(value).toISOString().slice(0,10)!==value)fail(`${label} inválida`);
+ return value;
+}
+const monthDate=value=>`${forecastMonth(value)}-01`;
+const validateFields=(input,fields,label)=>{
+ if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!fields.includes(key)))fail(`Campos de ${label} inválidos`);
+};
+const projectMoney=(record,fields)=>Object.fromEntries(Object.entries(record).map(([key,value])=>[key,fields.includes(key)&&value!==null?wholeMoney(value):value]));
 export function reportingPeriod(month=null,months='12',now=new Date()) {
  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit'}).formatToParts(now);
  const current=`${parts.find(p=>p.type==='year').value}-${parts.find(p=>p.type==='month').value}`;
@@ -59,7 +84,8 @@ export async function agencyReport(db,organizationId,options={},now=new Date()) 
   c.history_since
  from periods p left join coverage c on true order by p.start_on`,[organizationId,`${month}-01`,months,now.toISOString(),timezone]);
  return {asOf:now.toISOString(),month,historySince:rows[0]?.history_since?new Date(rows[0].history_since).toISOString():null,
-  months:rows.map(r=>({month:r.month.slice(0,7),isPartial:r.partial,clients:r.clients,financial:r.financial}))};
+  months:rows.map(r=>({month:r.month.slice(0,7),isPartial:r.partial,clients:r.clients,
+   financial:r.financial.map(item=>projectMoney(item,['invoiced','collected','averageTicket','averageRevenuePerClient']))}))};
 }
 
 async function authorize(db,user,roles) {
@@ -76,18 +102,105 @@ async function metadata(db,org,id) {
  const plans=(await db.query("select p.id::text,p.name from agency_plans p where p.organization_id=$1 and p.active and not exists(select 1 from agency_archived_records a where a.organization_id=p.organization_id and a.kind='plans' and a.record_id=p.id) order by p.name,p.id",[org])).rows;
  return {reporting:{clientId:row.id,customerKind:row.customer_kind,servicePlanId:row.service_plan_id,relationshipStartedOn:dateString(row.relationship_started_on),version:row.reporting_version,updatedAt:new Date(row.updated_at).toISOString(),archived:row.archived},plans};
 }
+async function commercialTerms(db,org,id) {
+ const client=(await db.query(`select c.id::text,exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='clients' and a.record_id=c.id) archived
+  from agency_clients c where c.organization_id=$1 and c.id=$2`,[org,id])).rows[0];
+ if(!client)fail('Cliente no encontrado',404);
+ const terms=(await db.query(`select t.client_id::text as "clientId",t.plan_id::text as "planId",p.name as "planName",t.recurring_amount::text as "recurringAmount",t.currency,
+  t.starts_on::text as "startsOn",t.invoice_required as "invoiceRequired",t.commission_recipient_id::text as "commissionRecipientId",c.full_name as "commissionRecipientName",
+  t.commission_mode as "commissionMode",t.commission_value::text as "commissionValue",t.updated_at as "updatedAt"
+  from agency_client_commercial_terms t join agency_plans p on p.organization_id=t.organization_id and p.id=t.plan_id
+  join agency_collaborators c on c.organization_id=t.organization_id and c.id=t.commission_recipient_id
+  where t.organization_id=$1 and t.client_id=$2`,[org,id])).rows[0]||null;
+ const plans=(await db.query(`select p.id::text,p.name,p.currency from agency_plans p where p.organization_id=$1 and p.active
+  and not exists(select 1 from agency_archived_records a where a.organization_id=p.organization_id and a.kind='plans' and a.record_id=p.id) order by p.name,p.id`,[org])).rows;
+ const collaborators=(await db.query(`select c.id::text,c.full_name from agency_collaborators c where c.organization_id=$1 and c.active and ${'not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind=\'collaborators\' and a.record_id=c.id)'} order by c.full_name,c.id`,[org])).rows;
+ return {clientId:client.id,archived:client.archived,
+  terms:terms&&projectMoney(terms,['recurringAmount','commissionValue']),plans,collaborators};
+}
+async function validateTerms(db,org,input) {
+ validateFields(input,termFields,'condiciones comerciales');
+ if(termFields.some(field=>!Object.hasOwn(input,field)))fail('Completá todas las condiciones comerciales');
+ const planId=id(input.planId,'Plan'),recipientId=id(input.commissionRecipientId,'Colaborador'),recurringAmount=wholeAmount(input.recurringAmount,'El importe recurrente'),commissionValue=wholeAmount(input.commissionValue,'La comisión');
+ const currency=['PYG','USD'].includes(input.currency)?input.currency:fail('Moneda inválida');
+ const startsOn=requiredDate(input.startsOn,'Fecha de inicio');
+ if(typeof input.invoiceRequired!=='boolean')fail('invoiceRequired debe ser booleano');
+ const commissionMode=['percentage','fixed'].includes(input.commissionMode)?input.commissionMode:fail('Modo de comisión inválido');
+ if(commissionMode==='percentage'&&commissionValue>100)fail('La comisión porcentual no puede superar 100');
+ const plan=(await db.query(`select id from agency_plans p where p.organization_id=$1 and p.id=$2 and p.active
+  and not exists(select 1 from agency_archived_records a where a.organization_id=p.organization_id and a.kind='plans' and a.record_id=p.id) for share`,[org,planId])).rows[0];
+ if(!plan)fail('Plan no disponible en esta empresa');
+ const recipient=(await db.query(`select id from agency_collaborators c where c.organization_id=$1 and c.id=$2 and c.active
+  and not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='collaborators' and a.record_id=c.id) for share`,[org,recipientId])).rows[0];
+ if(!recipient)fail('El destinatario de comisión debe ser un colaborador activo de esta empresa');
+ return {planId,recipientId,recurringAmount,currency,startsOn,invoiceRequired:input.invoiceRequired,commissionMode,commissionValue};
+}
+async function plannedExpenses(db,org,month) {
+ const records=(await db.query(`select id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note,
+  created_by_user_id::text as "createdByUserId",created_at as "createdAt",updated_at as "updatedAt"
+  from agency_planned_expenses where organization_id=$1 and (cadence='monthly' and effective_month=$2::date or cadence='recurring' and effective_month<=$2::date)
+  order by currency,category,id`,[org,`${month}-01`])).rows;
+ const totals=(await db.query(`select currency,coalesce(sum(amount),0)::text as amount from agency_planned_expenses
+  where organization_id=$1 and (cadence='monthly' and effective_month=$2::date or cadence='recurring' and effective_month<=$2::date)
+  group by currency order by currency`,[org,`${month}-01`])).rows;
+ return {month,records:records.map(record=>projectMoney(record,['amount'])),totals:totals.map(total=>projectMoney(total,['amount']))};
+}
+async function validateExpense(input) {
+ validateFields(input,expenseFields,'gasto planificado');
+ if(expenseFields.some(field=>!Object.hasOwn(input,field)))fail('Completá todos los campos del gasto planificado');
+ const cadence=['monthly','recurring'].includes(input.cadence)?input.cadence:fail('Cadencia inválida');
+ const effectiveMonth=monthDate(input.effectiveMonth,'Mes efectivo');
+ if(typeof input.category!=='string'||input.category.trim().length<1||input.category.trim().length>120)fail('Categoría inválida');
+ if(!['PYG','USD'].includes(input.currency))fail('Moneda inválida');
+ if(input.note!==null&&input.note!==undefined&&(typeof input.note!=='string'||input.note.length>1000))fail('Nota inválida');
+ return {cadence,effectiveMonth,category:input.category.trim(),amount:wholeAmount(input.amount,'El importe'),currency:input.currency,note:input.note?.trim()||null};
+}
 export async function reports({req,res,url,db,session,body,send}) {
- const aggregate=url.pathname==='/api/agency/reports',match=url.pathname.match(/^\/api\/agency\/clients\/([1-9]\d*)\/reporting$/);
- if(!aggregate&&!match)return false;
+ const aggregate=url.pathname==='/api/agency/reports',match=url.pathname.match(/^\/api\/agency\/clients\/([1-9]\d*)\/reporting$/),termsMatch=url.pathname.match(/^\/api\/agency\/clients\/([1-9]\d*)\/commercial-terms$/),expenseMatch=url.pathname.match(/^\/api\/agency\/planned-expenses(?:\/([1-9]\d*))?$/);
+ if(!aggregate&&!match&&!termsMatch&&!expenseMatch)return false;
  let c;
  try {
   const user=await session(req);
-  await authorize(db,user,aggregate?reportRoles:req.method==='PATCH'?editRoles:metadataRoles);
+  await authorize(db,user,aggregate?reportRoles:expenseMatch?expenseRoles:(match||termsMatch)&&req.method==='PATCH'?editRoles:metadataRoles);
   if(aggregate){
    if(req.method!=='GET')fail('Método no permitido',405);
    send(res,200,await agencyReport(db,user.organization_id,{month:url.searchParams.get('month'),months:url.searchParams.get('months')}));return true;
   }
-  const id=match[1];if(BigInt(id)>9223372036854775807n)fail('Cliente no encontrado',404);
+  if(expenseMatch){
+   const month=forecastMonth(url.searchParams.get('month'));
+   if(req.method==='GET'){send(res,200,await plannedExpenses(db,user.organization_id,month));return true;}
+   if(req.method==='POST'&&!expenseMatch[1]){
+    const value=await validateExpense(await body(req));c=await db.connect();await c.query('begin');await authorize(c,user,expenseRoles);
+    await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
+    const expense=(await c.query(`insert into agency_planned_expenses(organization_id,cadence,effective_month,category,amount,currency,note,created_by_user_id)
+     values($1,$2,$3::date,$4,$5,$6,$7,$8) returning id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note`,[user.organization_id,value.cadence,value.effectiveMonth,value.category,value.amount,value.currency,value.note,user.id])).rows[0];
+    await c.query('commit');c.release();c=null;send(res,201,{expense:projectMoney(expense,['amount'])});return true;
+   }
+   if((req.method==='PATCH'||req.method==='DELETE')&&expenseMatch[1]){
+    c=await db.connect();await c.query('begin');await authorize(c,user,expenseRoles);
+    await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
+    const existing=(await c.query('select id from agency_planned_expenses where organization_id=$1 and id=$2 for update',[user.organization_id,expenseMatch[1]])).rows[0];if(!existing)fail('Gasto planificado no encontrado',404);
+    if(req.method==='DELETE'){await c.query('delete from agency_planned_expenses where organization_id=$1 and id=$2',[user.organization_id,expenseMatch[1]]);await c.query('commit');c.release();c=null;send(res,200,{deleted:true});return true;}
+    const value=await validateExpense(await body(req));
+    const expense=(await c.query(`update agency_planned_expenses set cadence=$3,effective_month=$4::date,category=$5,amount=$6,currency=$7,note=$8,updated_at=clock_timestamp()
+     where organization_id=$1 and id=$2 returning id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note`,[user.organization_id,expenseMatch[1],value.cadence,value.effectiveMonth,value.category,value.amount,value.currency,value.note])).rows[0];
+    await c.query('commit');c.release();c=null;send(res,200,{expense:projectMoney(expense,['amount'])});return true;
+   }
+   fail('Método no permitido',405);
+  }
+  const id=(match||termsMatch)[1];if(BigInt(id)>9223372036854775807n)fail('Cliente no encontrado',404);
+  if(termsMatch){
+   if(req.method==='GET'){send(res,200,await commercialTerms(db,user.organization_id,id));return true;}
+   if(req.method!=='PATCH')fail('Método no permitido',405);
+   c=await db.connect();await c.query('begin');await authorize(c,user,editRoles);
+   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
+   const client=(await c.query(`select c.id from agency_clients c where c.organization_id=$1 and c.id=$2 and not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='clients' and a.record_id=c.id) for update`,[user.organization_id,id])).rows[0];
+   if(!client)fail('Cliente no disponible',404);
+   const value=await validateTerms(c,user.organization_id,await body(req));
+   await c.query(`insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,invoice_required,commission_recipient_id,commission_mode,commission_value)
+    values($1,$2,$3,$4,$5,$6::date,$7,$8,$9,$10) on conflict(organization_id,client_id) do update set plan_id=excluded.plan_id,recurring_amount=excluded.recurring_amount,currency=excluded.currency,starts_on=excluded.starts_on,invoice_required=excluded.invoice_required,commission_recipient_id=excluded.commission_recipient_id,commission_mode=excluded.commission_mode,commission_value=excluded.commission_value,updated_at=clock_timestamp()`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue]);
+   const result=await commercialTerms(c,user.organization_id,id);await c.query('commit');c.release();c=null;send(res,200,result);return true;
+  }
   if(req.method==='GET'){send(res,200,await metadata(db,user.organization_id,id));return true;}
   if(req.method!=='PATCH')fail('Método no permitido',405);
   const input=await body(req);

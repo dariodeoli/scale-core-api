@@ -1,6 +1,6 @@
 import {currencies} from './currencies.js';
 import {attributeActors} from './actor-identity.js';
-import {companyCurrency} from './forecast.js';
+import {companyCurrency,forecastMonth} from './forecast.js';
 import { collaboratorAccess } from './collaborator-access.js';
 import { profilePhoto } from './media-policy.js';
 import {visibleRecord,assertRecordAvailable} from './record-lifecycle.js';
@@ -11,6 +11,7 @@ const text = (value, max=2000) => typeof value==='string' && value.length<=max ?
 const identifier = value => /^\d+$/.test(String(value)) && Number(value)>0 ? String(value) : fail('Identificador inválido');
 const optionalId = value => value===null || value===undefined || value==='' ? null : identifier(value);
 function money(value, zero=false) { const n=Number(value); if(!Number.isFinite(n)||n<0||(!zero&&n===0)||n>999999999999) fail('Importe inválido'); return Math.round(n*100)/100; }
+function monthlySalary(value) { const raw=typeof value==='string'?value.trim():value;if((typeof raw!=='number'&&typeof raw!=='string')||(typeof raw==='string'&&!/^\d+$/.test(raw)))fail('El salario mensual debe ser un importe entero válido');const n=Number(raw);if(!Number.isSafeInteger(n)||n<=0||n>999999999999)fail('El salario mensual debe ser un importe entero válido');return n; }
 function date(value) { if(!value) return null; const parsed=new Date(value); if(!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==value) fail('Fecha inválida'); return value; }
 const option = (value, choices) => choices.includes(value) ? value : fail('Opción inválida');
 const email = value => !value ? null : /^\S+@\S+\.\S+$/.test(value) ? text(value,254).toLowerCase() : fail('Email inválido');
@@ -19,11 +20,12 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
  const teamRoute=url.pathname==='/api/agency/team';
  const commentMatch=url.pathname.match(/^\/api\/agency\/projects\/(\d+)\/comments$/);
  const collaboratorMatch=url.pathname.match(/^\/api\/agency\/collaborators(?:\/(\d+))?$/);
+ const salaryOverrideMatch=url.pathname.match(/^\/api\/agency\/collaborators\/(\d+)\/salary-overrides$/);
  const commissionMatch=url.pathname.match(/^\/api\/agency\/commissions(?:\/(\d+))?$/);
  const payoutRoute=url.pathname==='/api/agency/payouts';
  const discountMatch=url.pathname.match(/^\/api\/agency\/referral-discounts(?:\/(\d+))?$/);
  const jobMatch=url.pathname.match(/^\/api\/agency\/job-roles(?:\/(\d+))?$/);
- if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!commissionMatch&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
+ if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!salaryOverrideMatch&&!commissionMatch&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
  const user=await session(req);
  if(!user) {send(res,401,{error:'No autenticado'});return true;}
  const allowed=commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? ['owner','admin'].includes(user.role) : financeRoles.includes(user.role);
@@ -69,6 +71,23 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     result={comment};status=201;
    }
    else fail('Método no permitido',405);
+  } else if(salaryOverrideMatch) {
+   const collaborator=(await c.query('select * from agency_collaborators where id=$1 and organization_id=$2 for update',[salaryOverrideMatch[1],org])).rows[0];
+   if(!collaborator)fail('Colaborador no encontrado',404);
+   await assertRecordAvailable(c,'agency_collaborators',collaborator);
+   if(req.method==='GET'){
+    const month=forecastMonth(url.searchParams.get('month'));
+    result={month,override:(await c.query('select amount::text as amount,note from agency_salary_month_overrides where organization_id=$1 and collaborator_id=$2 and month=$3::date',[org,collaborator.id,`${month}-01`])).rows[0]||null};
+   } else if(req.method==='PATCH'){
+    const b=await body(req),month=forecastMonth(b.month),amount=monthlySalary(b.amount);
+    if(amount===null)fail('Indicá el importe del ajuste mensual');
+    result={month,override:(await c.query(`insert into agency_salary_month_overrides(organization_id,collaborator_id,month,amount,note)
+     values($1,$2,$3::date,$4,$5) on conflict(organization_id,collaborator_id,month) do update set amount=excluded.amount,note=excluded.note,updated_at=now()
+     returning amount::text as amount,note`,[org,collaborator.id,`${month}-01`,amount,text(b.note||'',1000)||null])).rows[0]};
+   } else if(req.method==='DELETE'){
+    const month=forecastMonth(url.searchParams.get('month'));
+    await c.query('delete from agency_salary_month_overrides where organization_id=$1 and collaborator_id=$2 and month=$3::date',[org,collaborator.id,`${month}-01`]);result={month,override:null};
+   } else fail('Método no permitido',405);
   } else if(collaboratorMatch) {
    if(req.method==='GET') result={collaborators:(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows};
    else if(req.method==='POST'||(req.method==='PATCH'&&collaboratorMatch[1])) {
@@ -92,9 +111,10 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     const day=b.payment_day?Number(b.payment_day):null;if(day!==null&&(!Number.isInteger(day)||day<1||day>31)) fail('Día de pago inválido');
     const start=date(b.started_on),end=date(b.ended_on);if(start&&end&&end<start) fail('La salida no puede ser anterior al ingreso');
     const access=await collaboratorAccess(c,{email:contact,org,actorRole:user.demo_owner_user_id?'finance':user.role,active:b.active!==false,previousUserId:uid});uid=access.userId;notifyEmail=access.notifyEmail;
-    const values=[org,uid,name,contact,photo||null,jobTitle,option(b.compensation_type,['fixed','variable','hourly','per_project']),money(b.compensation_amount,true),Boolean(b.invoices_company),start,day,b.active!==false,text(b.notes||''),option(b.currency,currencies),end];
-    if(collaboratorMatch[1]) {await belongs(c,'agency_collaborators',collaboratorMatch[1],org);values.push(collaboratorMatch[1]);result={collaborator:(await c.query('update agency_collaborators set user_id=$2,full_name=$3,email=$4,photo_url=$5,job_title=$6,compensation_type=$7,compensation_amount=$8,invoices_company=$9,started_on=$10,payment_day=$11,active=$12,notes=$13,currency=$14,ended_on=$15,updated_at=now() where organization_id=$1 and id=$16 returning *',values)).rows[0]};}
-    else {result={collaborator:(await c.query('insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_type,compensation_amount,invoices_company,started_on,payment_day,active,notes,currency,ended_on) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) returning *',values)).rows[0]};status=201;}
+    const salaryAmount=Object.hasOwn(incoming,'monthly_salary_amount')?monthlySalary(incoming.monthly_salary_amount):previous.monthly_salary_amount??null,salaryCurrency=salaryAmount===null?null:option(b.monthly_salary_currency||'PYG',['PYG','USD']);
+    const values=[org,uid,name,contact,photo||null,jobTitle,option(b.compensation_type,['fixed','variable','hourly','per_project']),money(b.compensation_amount,true),Boolean(b.invoices_company),start,day,b.active!==false,text(b.notes||''),option(b.currency,currencies),end,salaryAmount,salaryCurrency];
+    if(collaboratorMatch[1]) {await belongs(c,'agency_collaborators',collaboratorMatch[1],org);values.push(collaboratorMatch[1]);result={collaborator:(await c.query('update agency_collaborators set user_id=$2,full_name=$3,email=$4,photo_url=$5,job_title=$6,compensation_type=$7,compensation_amount=$8,invoices_company=$9,started_on=$10,payment_day=$11,active=$12,notes=$13,currency=$14,ended_on=$15,monthly_salary_amount=$16,monthly_salary_currency=$17,updated_at=now() where organization_id=$1 and id=$18 returning *',values)).rows[0]};}
+    else {result={collaborator:(await c.query('insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_type,compensation_amount,invoices_company,started_on,payment_day,active,notes,currency,ended_on,monthly_salary_amount,monthly_salary_currency) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) returning *',values)).rows[0]};status=201;}
     result.collaborator=(await c.query('update agency_collaborators set job_role_id=$1 where id=$2 and organization_id=$3 returning *',[jobId,result.collaborator.id,org])).rows[0];result.access={status:access.status};
    } else fail('Método no permitido',405);
   } else if(commissionMatch) {
