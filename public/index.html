@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Scale / Control — Métricas y señales</title>
 <meta name="robots" content="noindex, nofollow">
-<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
+<link rel="icon" type="image/png" sizes="32x32" href="https://app.scaleparaguay.com/brand/favicon-32.png">
 
 <style id="fonts-embed">
 /* Fuentes incrustadas — sin flash de tipografía ni dependencia de Google Fonts */
@@ -42,99 +42,110 @@
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-    --bg: #12021a; --surface: #1a0a24; --surface-2: #221030;
-    --border: #2a1535; --border-2: #3d2150;
-    --text: #ece6f0; --muted: #5f5568; --muted-2: #8d8296;
-    --led: #d16ac4; --wa: #25D366; --form: #00E5FF;
-    --font-body: 'Outfit', system-ui, sans-serif;
-    --font-display: 'Outfit', sans-serif;
+    --gold: #F5C518; --anthracite: #251C29;
+    --brand-700: #4D065B; --brand-600: #8F1184;
+    --canvas: #F7F6F8; --surface: #FFFFFF; --surface-subtle: #FBFAFC;
+    --text: #251C29; --muted: #746C78;
+    --line: #E8E3EA; --line-strong: #D9D0DD;
+    --success: #1D7A62; --success-soft: #E2F4ED;
+    --violet-soft: #F2EAF4; --danger: #B43B4C;
+    --shadow-sm: 0 1px 2px rgb(37 28 41 / 6%);
+    --shadow-md: 0 14px 40px rgb(37 28 41 / 9%);
+    --radius-sm: 8px; --radius-md: 12px; --radius-lg: 18px;
+    --font-body: 'Outfit', Arial, sans-serif;
+    --font-mono: 'DM Mono', monospace;
 }
-body { background: var(--bg); color: var(--text); font-family: var(--font-body); font-size: 14px; line-height: 1.6; }
-.grid-bg { position: fixed; inset: 0; pointer-events: none; background-image: radial-gradient(circle, rgba(255,255,255,.04) 1px, transparent 1.4px); background-size: 22px 22px; }
+body { background: var(--canvas); color: var(--text); font: 14px/1.45 var(--font-body); min-width: 320px; }
 .wrap { position: relative; max-width: 1100px; margin: 0 auto; padding: 40px 24px 80px; }
 
-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; margin-bottom: 36px; }
-.logo-box {
-    display: inline-flex; flex-direction: column; align-items: center;
-    border: 2.5px solid #fff; padding: 5px 9px 4px;
-    font-family: var(--font-display); font-size: 12px; line-height: 1.02; letter-spacing: 1px;
-    color: #fff; text-decoration: none; text-transform: uppercase;
-}
-.logo-box span:last-child { color: var(--led); }
-.head-l { display: flex; align-items: center; gap: 16px; }
-h1 { font-family: var(--font-display); font-size: 22px; text-transform: uppercase; }
-h1 em { color: var(--led); font-style: normal; }
-.sub { font-size: 12px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; margin-top: 2px; }
-.btn {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 10px 18px; background: var(--led); color: #000;
-    font-family: var(--font-body); font-size: 12px; font-weight: 700;
-    letter-spacing: 1px; text-transform: uppercase;
-    border: none; cursor: pointer; text-decoration: none;
-}
-.btn:hover { background: #fff; }
-.btn.ghost { background: transparent; color: var(--muted-2); border: 1px solid var(--border-2); }
-.btn.ghost:hover { color: var(--led); border-color: var(--led); }
+.workspace-brand { display: inline-flex; align-items: center; gap: 9px; flex: none; white-space: nowrap; text-decoration: none; }
+.workspace-brand img { display: block; width: 34px; height: 34px; object-fit: contain; border-radius: 10px; background: var(--brand-700); }
+.workspace-wordmark { font-size: 22px; line-height: 1; font-weight: 700; letter-spacing: -.05em; color: var(--text); }
+.workspace-wordmark > span { color: var(--brand-600); }
 
-.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
-.tile { background: var(--surface); border: 1px solid var(--border); padding: 22px 22px 18px; position: relative; overflow: hidden; }
-.tile::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--accent, var(--led)); opacity: .9; }
-.tile .lab { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
-.tile .num { font-family: var(--font-display); font-size: 40px; color: #fff; line-height: 1.1; margin-top: 8px; }
-.tile .cmp { font-size: 11.5px; margin-top: 6px; color: var(--muted-2); }
-.tile .cmp b { color: var(--led); font-weight: 600; }
+header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
+.head-l { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.eyebrow { margin: 0 0 8px; color: var(--muted); font: 500 10px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
+h1 { margin: 0; font-size: clamp(28px,4vw,36px); line-height: 1; letter-spacing: -.06em; font-weight: 700; }
+h1 em { color: var(--brand-600); font-style: normal; }
+.sub { font: 500 10px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+.header-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; padding: 0 16px; background: var(--brand-700); color: #fff; font: 600 13px var(--font-body); border: 0; border-radius: var(--radius-sm); cursor: pointer; text-decoration: none; box-shadow: 0 4px 10px color-mix(in srgb, var(--brand-700) 15%, transparent); }
+.btn:hover:not(:disabled) { background: var(--brand-600); }
+.btn.ghost { background: var(--surface); color: var(--muted); border: 1px solid var(--line-strong); box-shadow: none; }
+.btn.ghost:hover { color: var(--brand-700); border-color: var(--brand-600); }
+
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; margin-bottom: 14px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--accent, var(--brand-600)); border-radius: var(--radius-md); padding: 19px; box-shadow: var(--shadow-sm); min-width: 0; }
+.tile .lab { font: 500 10px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--muted); }
+.tile .num { font-size: 30px; line-height: 1; letter-spacing: -.06em; font-weight: 700; margin-top: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile .cmp { font-size: 12px; margin-top: 7px; color: var(--muted); }
+.tile .cmp b { color: var(--brand-600); font-weight: 600; }
+
+.filters { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.filter-label { display: block; color: var(--muted); font: 500 10px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; margin-bottom: 7px; }
+.filter-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.filter-btn { background: var(--surface); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 999px; padding: 9px 13px; cursor: pointer; font: 500 12px var(--font-body); }
+.filter-btn:hover { border-color: var(--brand-600); color: var(--brand-700); }
+.filter-btn.active { background: var(--brand-700); border-color: var(--brand-700); color: #fff; font-weight: 600; }
+.select { background: var(--surface); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 10px 14px; font: inherit; min-width: 190px; }
 
 .row2 { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 14px; }
-.card { background: var(--surface); border: 1px solid var(--border); padding: 24px; }
-.card h2 { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted-2); margin-bottom: 4px; }
-.card .hint { font-size: 11px; color: var(--muted); margin-bottom: 18px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 24px; box-shadow: var(--shadow-sm); min-width: 0; }
+.card h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
+.card .hint { font-size: 12px; color: var(--muted); margin: 6px 0 18px; }
 
-.legend { display: flex; gap: 18px; font-size: 11px; color: var(--muted-2); margin-bottom: 14px; }
-.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; }
+.legend { display: flex; gap: 18px; font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; }
 
-.chart { display: flex; align-items: flex-end; gap: 4px; height: 210px; border-bottom: 1px solid var(--border-2); padding-bottom: 0; }
+.chart { display: flex; align-items: flex-end; gap: 4px; height: 210px; border-bottom: 1px solid var(--line-strong); }
 .day { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 2px; height: 100%; position: relative; cursor: default; }
-.day .bar-v { width: 100%; background: var(--led); opacity: .85; min-height: 1px; box-shadow: 0 0 10px rgba(209,106,196,.3); }
-.day .bar-w { width: 100%; background: var(--wa); opacity: .9; min-height: 0; }
+.day .bar-v { width: 100%; background: var(--brand-600); opacity: .85; min-height: 1px; border-radius: 3px 3px 0 0; }
+.day .bar-w { width: 100%; background: var(--success); opacity: .9; min-height: 0; border-radius: 3px 3px 0 0; }
 .day:hover .bar-v { opacity: 1; }
 .day .tip {
     position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
-    background: #000; border: 1px solid var(--border-2); padding: 8px 10px;
-    font-size: 11px; white-space: nowrap; z-index: 5; display: none; line-height: 1.5;
+    background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px;
+    font-size: 11px; white-space: nowrap; z-index: 5; display: none; line-height: 1.5; box-shadow: var(--shadow-md);
 }
 .day:hover .tip { display: block; }
 .xlabels { display: flex; gap: 4px; margin-top: 8px; }
 .xlabels span { flex: 1; font-size: 8.5px; color: var(--muted); text-align: center; overflow: hidden; }
+.chart-scroll { overflow-x: auto; padding-bottom: 4px; }
+.chart-scroll .chart, .chart-scroll .xlabels { min-width: 620px; }
 
 .klist { display: flex; flex-direction: column; gap: 0; }
-.krow { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.krow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .krow:last-child { border-bottom: none; }
-.krow .k { color: var(--muted-2); }
-.krow .v { font-weight: 700; color: #fff; }
-.krow .v.led { color: var(--led); }
-.krow .v.wa { color: var(--wa); }
+.krow .k { color: var(--muted); }
+.krow .v { font-weight: 700; color: var(--text); }
+.krow .v.led { color: var(--brand-600); }
+.krow .v.wa { color: var(--success); }
+.plan-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
 
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-th { text-align: left; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); padding: 10px 8px; border-bottom: 1px solid var(--border-2); }
-td { padding: 9px 8px; border-bottom: 1px solid var(--border); color: var(--muted-2); }
+th { text-align: left; font: 500 10px var(--font-mono); letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted); padding: 10px 8px; border-bottom: 1px solid var(--line-strong); }
+td { padding: 9px 8px; border-bottom: 1px solid var(--line); color: var(--muted); }
 td:first-child { color: var(--text); }
 td.r, th.r { text-align: right; }
-td .pill { display: inline-block; min-width: 34px; text-align: center; padding: 2px 8px; font-weight: 700; }
-.pill.v { background: rgba(209,106,196,.12); color: var(--led); }
-.pill.w { background: rgba(37,211,102,.1); color: var(--wa); }
+td .pill { display: inline-block; min-width: 34px; text-align: center; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+.pill.v { background: var(--violet-soft); color: var(--brand-600); }
+.pill.w { background: var(--success-soft); color: var(--success); }
 
-.status { font-size: 11px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; }
-.status.err { color: #ff5470; }
-.filters { display:flex; align-items:end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:14px; }
-.filter-label { display:block; color:var(--muted); font-size:10px; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:7px; }
-.select { background:var(--surface-2); color:var(--text); border:1px solid var(--border-2); border-radius:999px; padding:10px 14px; font:inherit; min-width:190px; }
-.filter-actions { display:flex; gap:8px; flex-wrap:wrap; }
-.filter-btn { background:transparent; color:var(--muted-2); border:1px solid var(--border-2); border-radius:999px; padding:9px 13px; cursor:pointer; font:inherit; font-size:11px; }
-.filter-btn.active, .filter-btn:hover { color:#12021a; background:var(--led); border-color:var(--led); }
-.chart-scroll { overflow-x:auto; padding-bottom:4px; }
-.chart-scroll .chart, .chart-scroll .xlabels { min-width:620px; }
+.status { font: 500 10px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.status.err { color: var(--danger); }
 .foot { margin-top: 30px; font-size: 11px; color: var(--muted); line-height: 1.7; }
-.foot b { color: var(--muted-2); }
+.foot b { color: var(--text); font-weight: 600; }
+
+#auth-gate { position: fixed; inset: 0; z-index: 99; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 82% 12%, color-mix(in srgb, var(--gold) 17%, transparent), transparent 27%), radial-gradient(circle at 14% 88%, color-mix(in srgb, var(--brand-600) 10%, transparent), transparent 28%), var(--canvas); }
+.auth-card { width: min(420px,100%); padding: 32px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+.auth-brand { display: flex; margin: 0 0 28px; }
+.auth-card h2 { margin: 0 0 8px; font-size: 26px; letter-spacing: -.05em; }
+.auth-card .login-copy { margin: 0 0 22px; color: var(--muted); }
+.auth-card label { display: grid; gap: 7px; margin: 0 0 14px; color: var(--muted); font: 500 12px var(--font-body); }
+.auth-card input { width: 100%; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 12px; background: var(--surface); color: var(--text); font: inherit; outline: 0; }
+.auth-card input:focus { border-color: var(--brand-600); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-600) 14%, transparent); }
 
 .loading { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
@@ -144,48 +155,62 @@ td .pill { display: inline-block; min-width: 34px; text-align: center; padding: 
     .row2 { grid-template-columns: 1fr; }
     .xlabels span:nth-child(odd) { visibility: hidden; }
 }
-
-h1, .tile .num, .krow .v { font-weight: 800; }
-h1 { font-style: italic; letter-spacing: -.5px; }
-.btn { color: #12021a; font-weight: 700; border-radius: 100px; }
-.btn.ghost { border-radius: 100px; }
-.tile, .card { border-radius: 14px; }
-.tile::after { border-radius: 14px 14px 0 0; }
-.pill { border-radius: 100px; }
 </style>
 </head>
 <body>
-<div id="auth-gate" style="position:fixed;inset:0;z-index:99;background:#0b0610;display:grid;place-items:center;padding:24px">
-  <form id="login-form" class="card" style="width:min(420px,100%);padding:32px">
-    <div style="font-size:28px;font-weight:800;font-style:italic;color:#fff;margin-bottom:8px">scale<span style="color:#d16ac4;font-style:normal">®</span></div>
-    <h1 style="font-size:24px;margin:0 0 8px">Acceso privado</h1>
-    <p style="color:var(--muted);margin:0 0 22px">Control Scale · panel de métricas</p>
-    <label class="filter-label" for="auth-email">Correo</label>
-    <input id="auth-email" type="email" autocomplete="username" required style="width:100%;box-sizing:border-box;background:var(--surface-2);color:var(--text);border:1px solid var(--border-2);border-radius:10px;padding:12px;margin:0 0 14px;font:inherit">
-    <label class="filter-label" for="auth-password">Contraseña</label>
-    <input id="auth-password" type="password" autocomplete="current-password" required style="width:100%;box-sizing:border-box;background:var(--surface-2);color:var(--text);border:1px solid var(--border-2);border-radius:10px;padding:12px;margin:0 0 18px;font:inherit">
+<div id="auth-gate">
+  <form id="login-form" class="auth-card">
+    <div class="auth-brand"><a class="workspace-brand" href="https://app.scaleparaguay.com/"><img src="https://app.scaleparaguay.com/brand/icon-192.png" width="34" height="34" alt="Scale OS"><span class="workspace-wordmark">scale<span>OS</span></span></a></div>
+    <p class="eyebrow">Panel interno</p>
+    <h2>Acceso privado</h2>
+    <p class="login-copy">Métricas y señales del sitio.</p>
+    <label for="auth-email">Correo<input id="auth-email" type="email" autocomplete="username" required></label>
+    <label for="auth-password">Contraseña<input id="auth-password" type="password" autocomplete="current-password" required></label>
     <button class="btn" style="width:100%" type="submit">Iniciar sesión</button>
     <p id="auth-error" class="status err" style="margin:14px 0 0;display:none"></p>
   </form>
 </div>
-<div class="grid-bg"></div>
 <div class="wrap">
     <header>
         <div class="head-l">
-            <a href="/" style="font-family:'Outfit',sans-serif;font-weight:800;font-style:italic;font-size:28px;color:#fff;text-decoration:none;letter-spacing:-1.5px;">scale<span style="color:#d16ac4;font-style:normal;">®</span></a>
+            <a class="workspace-brand" href="https://app.scaleparaguay.com/"><img src="https://app.scaleparaguay.com/brand/icon-192.png" width="34" height="34" alt="Scale OS"><span class="workspace-wordmark">scale<span>OS</span></span></a>
             <div>
+                <p class="eyebrow">Panel interno</p>
                 <h1>Control <em>Scale</em></h1>
                 <div class="sub">métricas, señales y actividad del sitio</div>
             </div>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;">
+        <div class="header-actions">
             <span class="status loading" id="status">Cargando datos…</span>
-            <button class="btn ghost" onclick="loadAll()">↻ Actualizar</button>
-            <button class="btn ghost" onclick="logout()">Cerrar sesión</button><a href="/" class="btn">Ver sitio →</a>
+            <button class="btn ghost" onclick="loadAll()">Actualizar</button>
+            <button class="btn ghost" onclick="logout()">Cerrar sesión</button><a href="/" class="btn">Ver sitio</a>
         </div>
     </header>
 
-    <div class="card filters">
+    <div class="tiles">
+        <div class="tile" style="--accent:var(--brand-600)">
+            <div class="lab">Cargas hoy</div>
+            <div class="num" id="t-hoy">—</div>
+            <div class="cmp" id="c-hoy"></div>
+        </div>
+        <div class="tile" style="--accent:var(--brand-600)">
+            <div class="lab">Últimos 7 días</div>
+            <div class="num" id="t-sem">—</div>
+            <div class="cmp" id="c-sem"></div>
+        </div>
+        <div class="tile" style="--accent:var(--brand-600)">
+            <div class="lab">Mes seleccionado</div>
+            <div class="num" id="t-mes">—</div>
+            <div class="cmp" id="c-mes"></div>
+        </div>
+        <div class="tile" style="--accent:var(--success)">
+            <div class="lab">WhatsApp (mes)</div>
+            <div class="num" id="t-wa">—</div>
+            <div class="cmp" id="c-wa"></div>
+        </div>
+    </div>
+
+    <div class="card filters" style="margin-bottom:14px">
         <div>
             <span class="filter-label">Período visible</span>
             <div class="filter-actions">
@@ -196,41 +221,13 @@ h1 { font-style: italic; letter-spacing: -.5px; }
         <label><span class="filter-label">Mes</span><select id="month-select" class="select" onchange="setMonth(this.value)"></select></label>
     </div>
 
-    <div class="card" style="margin-bottom:14px;border-color:rgba(209,106,196,.35);background:linear-gradient(135deg,rgba(209,106,196,.10),rgba(26,10,36,.92));">
-        <h2>Lectura rápida</h2>
-        <p class="hint" style="margin:6px 0 0">Este panel muestra actividad del sitio, intención comercial y conversiones. Si una fuente externa no responde, el panel lo informa y conserva el último estado disponible.</p>
-    </div>
-
-    <div class="tiles">
-        <div class="tile" style="--accent:#d16ac4">
-            <div class="lab">Cargas hoy</div>
-            <div class="num" id="t-hoy">—</div>
-            <div class="cmp" id="c-hoy"></div>
-        </div>
-        <div class="tile" style="--accent:#d16ac4">
-            <div class="lab">Últimos 7 días</div>
-            <div class="num" id="t-sem">—</div>
-            <div class="cmp" id="c-sem"></div>
-        </div>
-        <div class="tile" style="--accent:#d16ac4">
-            <div class="lab">Mes seleccionado</div>
-            <div class="num" id="t-mes">—</div>
-            <div class="cmp" id="c-mes"></div>
-        </div>
-        <div class="tile" style="--accent:#25D366">
-            <div class="lab">WhatsApp (mes)</div>
-            <div class="num" id="t-wa">—</div>
-            <div class="cmp" id="c-wa"></div>
-        </div>
-    </div>
-
     <div class="row2">
         <div class="card">
             <h2 id="chart-title">Cargas por día — mes seleccionado</h2>
-            <p class="hint">Pasá el mouse por una barra para ver el detalle del día.</p>
+            <p class="hint">Pasá el mouse por una barra para ver el detalle del día. Si una fuente externa no responde, el panel lo informa y conserva el último estado disponible.</p>
             <div class="legend">
-                <span><i style="background:#d16ac4"></i>Cargas de página</span>
-                <span><i style="background:#25D366"></i>Clicks a WhatsApp</span>
+                <span><i style="background:var(--brand-600)"></i>Cargas de página</span>
+                <span><i style="background:var(--success)"></i>Clicks a WhatsApp</span>
             </div>
             <div class="chart-scroll"><div class="chart" id="chart"></div><div class="xlabels" id="xlabels"></div></div>
         </div>
@@ -244,10 +241,10 @@ h1 { font-style: italic; letter-spacing: -.5px; }
                 <div class="krow"><span class="k">Clicks a WhatsApp hoy</span><span class="v wa" id="k-wahoy">—</span></div>
                 <div class="krow"><span class="k">Formularios enviados (mes)</span><span class="v" id="k-form">—</span></div>
                 <div class="krow"><span class="k">Total histórico de cargas</span><span class="v led" id="k-total">—</span></div>
-                <div class="krow" style="border-top:2px solid var(--border-2);margin-top:6px;padding-top:14px;"><span class="k" style="text-transform:uppercase;font-size:10px;letter-spacing:2px;">Interés por plan (mes)</span><span></span></div>
-                <div class="krow"><span class="k">🥈 Silver</span><span class="v" id="k-silver">—</span></div>
-                <div class="krow"><span class="k">⭐ Gold</span><span class="v led" id="k-gold">—</span></div>
-                <div class="krow"><span class="k">💎 Diamond</span><span class="v" id="k-diamond">—</span></div>
+                <div class="krow" style="border-top:2px solid var(--line-strong);margin-top:6px;padding-top:14px;"><span class="k" style="text-transform:uppercase;font-size:10px;letter-spacing:2px;">Interés por plan (mes)</span><span></span></div>
+                <div class="krow"><span class="k"><span class="plan-dot" style="background:var(--line-strong)"></span>Silver</span><span class="v" id="k-silver">—</span></div>
+                <div class="krow"><span class="k"><span class="plan-dot" style="background:var(--gold)"></span>Gold</span><span class="v led" id="k-gold">—</span></div>
+                <div class="krow"><span class="k"><span class="plan-dot" style="background:var(--brand-600)"></span>Diamond</span><span class="v" id="k-diamond">—</span></div>
             </div>
         </div>
     </div>
@@ -271,6 +268,7 @@ h1 { font-style: italic; letter-spacing: -.5px; }
 
 <script>
 var API = '/api';
+var AUTH = '/api/auth';
 var DAYS = 14;
 var mode = 'month';
 var selectedMonth = fmtMonth(new Date());
@@ -408,9 +406,9 @@ function renderDaily(dates, v, w, tot) {
         var hV = Math.round(v[i] / peak * 175);
         var hW = Math.round(w[i] / peak * 175);
         day.innerHTML =
-            '<div class="tip"><b style="color:#fff">' + niceDate(dt) + '</b><br>' +
-            '<span style="color:var(--led)">●</span> ' + v[i] + ' cargas<br>' +
-            '<span style="color:#25D366">●</span> ' + w[i] + ' WhatsApp</div>' +
+            '<div class="tip"><b>' + niceDate(dt) + '</b><br>' +
+            '<span style="color:var(--brand-600)">●</span> ' + v[i] + ' cargas<br>' +
+            '<span style="color:var(--success)">●</span> ' + w[i] + ' WhatsApp</div>' +
             '<div class="bar-w" style="height:' + hW + 'px"></div>' +
             '<div class="bar-v" style="height:' + Math.max(hV, v[i] > 0 ? 2 : 1) + 'px"></div>';
         chart.appendChild(day);
