@@ -19,7 +19,7 @@ import { budgetSections } from './budget-sections.js';
 import { externalLink } from './media-policy.js';
 import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
-import { invitationEmail,resetEmail,verificationEmail } from './invitation-email.js';
+import { invitationEmail,resetEmail,verificationEmail,destructiveReauthEmail } from './invitation-email.js';
 import {financialForecast} from './forecast.js';
 import {commercialLifecycle} from './commercial-lifecycle.js';
 import {reports} from './reports.js';
@@ -89,6 +89,7 @@ async function sendInvitation(email, organizationName, role) {
 }
 async function sendReset(email,token){return emailDelivery.send({to:email,message:resetEmail({token,appUrl}),idempotencyKey:'reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function sendVerification(email,token){return emailDelivery.send({to:email,message:verificationEmail({token,appUrl}),idempotencyKey:'verify-'+crypto.createHash('sha256').update(token).digest('hex')});}
+async function sendDestructiveEmailCode(email,code){return emailDelivery.send({to:email,message:destructiveReauthEmail({code}),idempotencyKey:'destructive-reauth-'+crypto.createHash('sha256').update(code).digest('hex')});}
 async function sendClientPortalReset(email,token){return emailDelivery.send({to:email,message:clientPortalResetEmail({token}),idempotencyKey:'client-portal-reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function runOptionalMigration(filename,client=db) {
   try {
@@ -151,6 +152,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260913_ruc_collaboration.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260912_account_security.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_secure_deletion.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260914_destructive_email_reauth.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_client_commercial_lifecycle.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_inventory_storage_locations.sql'),'utf8'));
     await migration.query('commit');
@@ -252,7 +254,7 @@ const server = http.createServer(async (req,res) => {
     if(url.pathname==='/api/auth/email-status'&&req.method==='GET')return send(res,200,{email:publicEmailDeliveryStatus(emailDelivery.status)});
     if(await emailPasswordAuth({req,res,url,db,body,send,sendVerification,emailAvailable:emailDelivery.status.available,cookie,id}))return;
     if(await passwordAccess({req,res,url,db,body,send,sendReset,emailAvailable:emailDelivery.status.available}))return;
-    if(await accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie,throttle}))return;
+    if(await accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie,throttle,sendDestructiveEmailCode,emailAvailable:emailDelivery.status.available}))return;
     if(await financeControls({req,res,url,db,session,body,send}))return;
     if(await contentReview({req,res,url,db,session,body,send}))return;
     if(await productivity({req,res,url,db,session,body,send}))return;

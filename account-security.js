@@ -2,25 +2,31 @@ import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 
 const CLOSE_CONFIRMATION='CERRAR MI CUENTA';
-const DELETE_ACCOUNT_CONFIRMATION='ELIMINAR MI CUENTA';
+const DELETE_ACCOUNT_CONFIRMATION='Eliminar';
 const RECOVERY_DAYS=30;
 const PREVIEW_MINUTES=5;
 const PROOF_MINUTES=5;
+const EMAIL_CODE_MINUTES=5;
+const EMAIL_CODE_DIGITS=8;
 
 function fail(message,status=400,code,details){throw Object.assign(new Error(message),{status,code,details});}
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const token=()=>crypto.randomBytes(32).toString('base64url');
+const emailCode=()=>String(crypto.randomInt(0,10**EMAIL_CODE_DIGITS)).padStart(EMAIL_CODE_DIGITS,'0');
 const same=(a,b)=>String(a??'')===String(b??'');
 const googleOnlyPasswordHash=value=>typeof value==='string'&&value.startsWith('!');
 const isDemoOrganization=organization=>organization.demo_owner_user_id!==null||organization.demo_source_id!==null||organization.slug==='scale-demo-controles-20260908';
+const isDemoAccountState=row=>row.is_demo_guest||isDemoOrganization(row);
 
 function stateHash(value){return hash(JSON.stringify(value));}
 function organizationIds(rows){return [...new Set(rows.map(row=>String(row.organization_id)))].sort((a,b)=>Number(a)-Number(b));}
 
 async function accountState(c,userId,{lock=false}={}){
  const suffix=lock?' for update of m,o':'';
- const mine=(await c.query(`select m.organization_id,m.user_id,m.role,m.active,m.removed_at,o.name,o.active as organization_active,o.deleted_at
-  from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 order by m.organization_id${suffix}`,[userId])).rows;
+ const mine=(await c.query(`select m.organization_id,m.user_id,m.role,m.active,m.removed_at,o.name,o.slug,o.active as organization_active,o.deleted_at,
+  o.demo_owner_user_id,o.demo_source_id,u.is_demo_guest from organization_members m join organizations o on o.id=m.organization_id
+  join users u on u.id=m.user_id where m.user_id=$1 order by m.organization_id${suffix}`,[userId])).rows;
+ if(mine.some(isDemoAccountState))fail('El Demo no permite eliminar cuentas.',403,'DEMO_ACCOUNT_DELETE_FORBIDDEN');
  const ids=organizationIds(mine);let all=[];
  if(ids.length)all=(await c.query(`select organization_id,user_id,role,active,removed_at from organization_members
   where organization_id=any($1::bigint[]) order by organization_id,user_id${lock?' for update':''}`,[ids])).rows;
@@ -48,7 +54,7 @@ async function companyState(c,userId,organizationId,{lock=false}={}){
  const members=(await c.query(`select organization_id,user_id,role,active,removed_at from organization_members where organization_id=$1 order by user_id${lock?' for update':''}`,[organizationId])).rows;
  const active=members.filter(row=>row.active&&row.removed_at===null);
  const canonical={organization:{id:String(org.id),name:org.name,active:org.active,deletedAt:org.deleted_at?new Date(org.deleted_at).toISOString():null},members:members.map(row=>({userId:String(row.user_id),role:row.role,active:row.active,removedAt:row.removed_at?new Date(row.removed_at).toISOString():null}))};
- return {stateHash:stateHash(canonical),organization:{id:String(org.id),name:org.name,activeMemberCount:active.length},confirmation:`ELIMINAR ${org.name}`};
+ return {stateHash:stateHash(canonical),organization:{id:String(org.id),name:org.name,activeMemberCount:active.length},confirmation:DELETE_ACCOUNT_CONFIRMATION};
 }
 
 async function deriveState(c,userId,action,organizationId,options){
@@ -85,6 +91,40 @@ async function issueProof(c,preview,method){
  const saved=(await c.query(`insert into destructive_auth_proofs(token_hash,preview_token_hash,user_id,action,organization_id,method,expires_at)
   values($1,$2,$3,$4,$5,$6,now()+interval '${PROOF_MINUTES} minutes') returning expires_at`,[hash(raw),preview.token_hash,preview.user_id,preview.action,preview.organization_id,method])).rows[0];
  return {proof:raw,method,action:preview.action,organizationId:preview.organization_id===null?null:String(preview.organization_id),expiresAt:saved.expires_at};
+}
+
+async function createEmailChallenge(db,userId,rawPreview){
+ const c=await db.connect();
+ try{
+  await c.query('begin isolation level serializable');
+  const account=(await c.query('select email from users where id=$1 and deleted_at is null for update',[userId])).rows[0];
+  if(!account)fail('No pudimos confirmar la verificación por correo.',401,'EMAIL_REAUTH_INVALID');
+  const preview=await previewByRaw(c,userId,rawPreview,{lock:true});
+  await assertFreshPreview(c,preview,{lock:true});
+  await c.query('delete from destructive_email_challenges where preview_token_hash=$1 and user_id=$2 and consumed_at is null',[preview.token_hash,userId]);
+  const code=emailCode();
+  await c.query(`insert into destructive_email_challenges(code_hash,preview_token_hash,user_id,expires_at) values($1,$2,$3,now()+interval '${EMAIL_CODE_MINUTES} minutes')`,[await bcrypt.hash(code,12),preview.token_hash,userId]);
+  await c.query('commit');return {email:account.email,code};
+ }catch(error){await c.query('rollback');throw error;}finally{c.release();}
+}
+
+async function consumeEmailChallenge(db,userId,rawPreview,code){
+ const c=await db.connect();
+ try{
+  await c.query('begin isolation level serializable');
+  const account=(await c.query('select id from users where id=$1 and deleted_at is null for update',[userId])).rows[0];
+  if(!account)fail('No pudimos confirmar la verificación por correo.',401,'EMAIL_REAUTH_INVALID');
+  let preview;
+  try{preview=await previewByRaw(c,userId,rawPreview,{lock:true});}
+  catch(error){if(error.code==='DELETION_PREVIEW_INVALID')fail('No pudimos confirmar la verificación por correo.',401,'EMAIL_REAUTH_INVALID');throw error;}
+  await assertFreshPreview(c,preview,{lock:true});
+  const challenge=(await c.query(`select * from destructive_email_challenges where preview_token_hash=$1 and user_id=$2
+   and consumed_at is null and expires_at>now() order by created_at desc limit 1 for update`,[preview.token_hash,userId])).rows[0];
+  if(!challenge||!await bcrypt.compare(code,challenge.code_hash))fail('No pudimos confirmar la verificación por correo.',401,'EMAIL_REAUTH_INVALID');
+  await c.query('update destructive_email_challenges set consumed_at=now() where id=$1',[challenge.id]);
+  const proof=await issueProof(c,preview,'email');
+  await c.query('commit');return proof;
+ }catch(error){await c.query('rollback');throw error;}finally{c.release();}
 }
 
 export async function googleRecentAuthBinding(db,userId,rawPreview){
@@ -126,6 +166,7 @@ async function executeAccountDeletion(c,userId,current){
  await c.query('delete from sessions where user_id=$1',[userId]);
  await c.query('delete from oauth_states where recent_auth_user_id=$1',[userId]);
  await c.query('delete from destructive_google_handoffs where user_id=$1',[userId]);
+ await c.query('delete from destructive_email_challenges where user_id=$1',[userId]);
  await c.query('update destructive_auth_proofs set consumed_at=coalesce(consumed_at,now()) where user_id=$1',[userId]);
  await optionalUpdate(c,'oauth_handoffs','delete from oauth_handoffs where user_id=$1',[userId]);
  await optionalUpdate(c,'user_personal_identities',"update user_personal_identities set full_name='Deleted account',photo_url=null,updated_at=now() where user_id=$1",[userId]);
@@ -168,7 +209,7 @@ async function executeDeletion({db,user,previewId,recentAuthProof,confirmation,e
  }catch(error){await c.query('rollback');throw error;}finally{c.release();}
 }
 
-export async function accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie,throttle}){
+export async function accountSecurity({req,res,url,db,session,body,send,parseCookies,cookie,throttle,sendDestructiveEmailCode,emailAvailable=true}){
  const companyMatch=url.pathname.match(/^\/api\/auth\/organizations\/(\d+)\/deletion(?:\/preview)?$/);
  if(!url.pathname.startsWith('/api/auth/account')&&!companyMatch)return false;
  if(url.pathname==='/api/auth/account/recent-auth/google/start')return false;
@@ -198,6 +239,20 @@ export async function accountSecurity({req,res,url,db,session,body,send,parseCoo
    if(!account||account.password_hash.startsWith('!'))fail('Esta cuenta debe confirmar su identidad con Google.',409,'PASSWORD_REAUTH_UNAVAILABLE');
    if(typeof value?.password!=='string'||!value.password||!await bcrypt.compare(value.password,account.password_hash))fail('No pudimos confirmar tu contraseña.',401,'PASSWORD_REAUTH_FAILED');
    return send(res,200,await issueProof(db,preview,'password'));
+  }
+  if(url.pathname==='/api/auth/account/recent-auth/email/request'&&req.method==='POST'){
+   const value=await body(req);
+   if(!emailAvailable||typeof sendDestructiveEmailCode!=='function')fail('La verificación por correo todavía no está disponible. Usá Google para confirmar esta operación.',503,'EMAIL_REAUTH_UNAVAILABLE');
+   if(!await limit(db,'destructive-email-reauth-send:'+user.id,3))fail('Demasiados intentos. Esperá 15 minutos.',429,'EMAIL_REAUTH_RATE_LIMITED');
+   const challenge=await createEmailChallenge(db,user.id,value?.previewId||'');
+   if(!await sendDestructiveEmailCode(challenge.email,challenge.code).catch(()=>false))fail('No pudimos enviar la verificación por correo. Intentá nuevamente en unos minutos.',503,'EMAIL_REAUTH_UNAVAILABLE');
+   return send(res,202,{ok:true,message:'Si podemos confirmar esta operación, enviamos un código a tu correo registrado.'});
+  }
+  if(url.pathname==='/api/auth/account/recent-auth/email/complete'&&req.method==='POST'){
+   const value=await body(req),code=typeof value?.code==='string'?value.code:'';
+   if(!/^\d{8}$/.test(code))fail('No pudimos confirmar la verificación por correo.',401,'EMAIL_REAUTH_INVALID');
+   if(!await limit(db,'destructive-email-reauth-attempt:'+user.id,5))fail('Demasiados intentos. Esperá 15 minutos.',429,'EMAIL_REAUTH_RATE_LIMITED');
+   return send(res,200,await consumeEmailChallenge(db,user.id,value?.previewId||'',code));
   }
   if(url.pathname==='/api/auth/account/recent-auth/google/complete'&&req.method==='POST'){
    const value=await body(req),raw=value?.ticket;

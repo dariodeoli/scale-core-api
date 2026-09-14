@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {invitationEmail,resetEmail} from './invitation-email.js';
+import {invitationEmail,resetEmail,destructiveReauthEmail} from './invitation-email.js';
 const message=invitationEmail({email:'test@example.invalid',organizationName:'Agency & Partners <Test>\r\n',role:'editor',appUrl:'https://app.scaleparaguay.com'});
 assert.equal(message.subject,'Invitación a Agency & Partners <Test> · Scale OS');
 assert.ok(!message.subject.includes('\n'));
@@ -39,7 +39,10 @@ const cleanReset=resetEmail({token,appUrl:input.appUrl+'/?invite=stale#fragment'
 assert.ok(cleanReset.text.includes(resetUrl));
 assert.ok(!cleanReset.text.includes('stale')&&!cleanReset.text.includes('#fragment'));
 for(const token of ['',null,123,'a'.repeat(63),'a'.repeat(65),'A'.repeat(64),'<img src=x>'])assert.throws(()=>resetEmail({token,appUrl:input.appUrl}));
-for(const result of [message,linked,reset]){
+const destructive=destructiveReauthEmail({code:'01234567'});
+assert.ok(destructive.text.includes('01234567')&&/vence en 5 minutos/i.test(destructive.text));
+for(const code of ['',null,123,'1234567','123456789','abcdefgh'])assert.throws(()=>destructiveReauthEmail({code}));
+for(const result of [message,linked,reset,destructive]){
  assert.deepEqual(Object.keys(result).sort(),['html','subject','text']);
  assert.ok(!/display\s*:\s*none|visibility\s*:\s*hidden|<img|<script|<iframe/i.test(result.html));
  assert.ok(result.html.length<12000);

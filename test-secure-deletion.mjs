@@ -11,8 +11,10 @@ await pg.exec(await read('./schema.sql'));
 await pg.exec(await read('./migrations/20260908_google_oauth.sql'));
 await pg.exec(await read('./migrations/20260911_google_profile_photo.sql'));
 await pg.exec(await read('./migrations/20260910_demo_sessions.sql'));
+await pg.exec(await read('./migrations/20260910_invite_links.sql'));
 await pg.exec('alter table organization_members add column if not exists active boolean not null default true; alter table organization_members add column if not exists removed_at timestamptz;');
 await pg.exec(await read('./migrations/20260914_secure_deletion.sql'));
+await pg.exec(await read('./migrations/20260914_destructive_email_reauth.sql'));
 
 const query=(sql,params)=>pg.query(sql,params);
 const db={query,connect:async()=>({query,release(){}})};
@@ -35,15 +37,19 @@ async function newSession(user,org){
  return id;
 }
 function actor(user,org,role='owner'){return {id:user,organization_id:org,role};}
-async function call(path,{method='POST',payload={},as=null,sessionId=''}={}){
+const rateCounts=new Map();
+async function rateLimit(_db,key,max){const count=(rateCounts.get(key)||0)+1;rateCounts.set(key,count);return count<=max;}
+async function call(path,{method='POST',payload={},as=null,sessionId='',throttle=async()=>true}={}){
  const result={status:0,data:null,headers:{}};
  await accountSecurity({
   req:{method,headers:{cookie:sessionId?`scale_session=${sessionId}`:''},payload,socket:{remoteAddress:'test'}},
-  res:{},url:new URL(path,'https://api.example.invalid'),db,session:async()=>as,body,parseCookies,cookie,throttle:async()=>true,
+  res:{},url:new URL(path,'https://api.example.invalid'),db,session:async()=>as,body,parseCookies,cookie,throttle,
+  emailAvailable:true,sendDestructiveEmailCode:async(email,code)=>{sentCodes.push({email,code});return true;},
   send:(_res,status,data,headers={})=>{result.status=status;result.data=data;result.headers=headers;}
  });
  return result;
 }
+const sentCodes=[];
 async function previewAccount(as,payload={memberships:[{organizationId:'attacker-controlled'}],count:999,role:'owner'}){
  const response=await call('/api/auth/account/deletion/preview',{payload,as});
  assert.equal(response.status,200,JSON.stringify(response.data));return response.data.preview;
@@ -77,6 +83,7 @@ await member(derivedShared,derivedPeer,'owner');
 const retainedSoleClient=await insert("insert into agency_clients(organization_id,name) values($1,'Retained sole tenant data')",[derivedSole]);
 let as=actor(derivedUser,derivedSole);
 let preview=await previewAccount(as);
+assert.equal(preview.confirmation,'Eliminar');
 assert.equal(preview.memberships.length,2);
 assert.deepEqual(preview.memberships.map(row=>row.consequence).sort(),['membership_deactivation','organization_soft_delete']);
 assert.equal(preview.memberships.find(row=>row.organizationId===String(derivedShared)).activeMemberCount,2);
@@ -149,7 +156,31 @@ await member(demoOrganization,demoOwner,'owner');
 as=actor(demoOwner,demoOrganization);
 response=await call(`/api/auth/organizations/${demoOrganization}/deletion/preview`,{as});
 assert.equal(response.status,403);assert.equal(response.data.code,'DEMO_ORGANIZATION_DELETE_FORBIDDEN');
+response=await call('/api/auth/account/deletion/preview',{as});
+assert.equal(response.status,403);assert.equal(response.data.code,'DEMO_ACCOUNT_DELETE_FORBIDDEN');
 assert.equal((await query('select active from organizations where id=$1',[demoOrganization])).rows[0].active,true);
+
+// Direct API callers cannot delete demo guests, even from an otherwise real organization.
+const demoGuest=await makeUser('demo-guest-delete@example.invalid');
+const demoGuestOrganization=await makeOrg('demo-guest-delete-org');await member(demoGuestOrganization,demoGuest,'owner');
+await query('update users set is_demo_guest=true where id=$1',[demoGuest]);
+as=actor(demoGuest,demoGuestOrganization);
+response=await call('/api/auth/account/deletion/preview',{as});
+assert.equal(response.status,403);assert.equal(response.data.code,'DEMO_ACCOUNT_DELETE_FORBIDDEN');
+assert.equal((await query('select deleted_at from users where id=$1',[demoGuest])).rows[0].deleted_at,null);
+
+// Final execution re-derives demo state, so a preview/proof issued before a demo transition cannot be replayed.
+const demoTransitionUser=await makeUser('demo-transition@example.invalid');
+const demoTransitionOrganization=await makeOrg('demo-transition-org');await member(demoTransitionOrganization,demoTransitionUser,'owner');
+as=actor(demoTransitionUser,demoTransitionOrganization);preview=await previewAccount(as);
+response=await passwordProof(as,preview);assert.equal(response.status,200);proof=response.data.proof;
+await query('update organizations set demo_owner_user_id=$1 where id=$2',[demoTransitionUser,demoTransitionOrganization]);
+response=await passwordProof(as,preview);
+assert.equal(response.status,403);assert.equal(response.data.code,'DEMO_ACCOUNT_DELETE_FORBIDDEN');
+response=await executeAccount(as,preview,proof);
+assert.equal(response.status,403);assert.equal(response.data.code,'DEMO_ACCOUNT_DELETE_FORBIDDEN');
+assert.equal((await query('select deleted_at from users where id=$1',[demoTransitionUser])).rows[0].deleted_at,null);
+assert.equal((await query('select active from organizations where id=$1',[demoTransitionOrganization])).rows[0].active,true);
 
 // A membership race after re-authentication makes the preview stale and leaves all rows untouched.
 const staleUser=await makeUser('stale@example.invalid');
@@ -197,13 +228,13 @@ response=await call(`/api/auth/organizations/${companyOrg}/deletion/preview`,{as
 assert.equal(response.status,403);assert.equal(response.data.code,'ORGANIZATION_DELETE_FORBIDDEN');
 as=actor(companyOwner,companyOrg);
 preview=await previewCompany(as,companyOrg);
-assert.equal(preview.confirmation,'ELIMINAR Acme Norte');
+assert.equal(preview.confirmation,'Eliminar');
 assert.equal(preview.organization.activeMemberCount,2);
 assert.equal(preview.consequences.tenantDataWillBeRetained,true);
 response=await passwordProof(as,preview);assert.equal(response.status,200);proof=response.data.proof;
 const ownerSession=await newSession(companyOwner,companyOrg);
 await newSession(companyMember,companyOrg);
-response=await executeCompany(as,companyOrg,preview,proof,'ELIMINAR acme norte');
+response=await executeCompany(as,companyOrg,preview,proof,'eliminar');
 assert.equal(response.status,400);assert.equal(response.data.code,'CONFIRMATION_MISMATCH');
 assert.equal((await query('select active from organizations where id=$1',[companyOrg])).rows[0].active,true);
 response=await executeCompany(as,companyOrg,preview,proof);
@@ -249,6 +280,45 @@ response=await executeAccount(as,preview,proof);
 assert.equal(response.status,200);
 response=await call('/api/auth/account/recent-auth/google/complete',{payload:{ticket:handoff.ticket},as});
 assert.equal(response.status,401);assert.equal(response.data.code,'GOOGLE_REAUTH_INVALID');
+
+// Passwordless users can confirm a preview through a one-use, preview-bound
+// email code. Raw codes are sent only to the mailer and are never persisted.
+const emailUser=await makeUser('email-reauth@example.invalid',{googleOnly:true});
+const emailOrg=await makeOrg('email-reauth-org');await member(emailOrg,emailUser,'owner');
+as=actor(emailUser,emailOrg);preview=await previewAccount(as);
+response=await call('/api/auth/account/recent-auth/email/request',{payload:{previewId:preview.id},as});
+assert.equal(response.status,202);const firstEmail=sentCodes.at(-1);assert.equal(firstEmail.email,'email-reauth@example.invalid');assert.match(firstEmail.code,/^\d{8}$/);
+assert.equal((await query('select count(*)::int as count from destructive_email_challenges where code_hash=$1',[firstEmail.code])).rows[0].count,0);
+response=await call('/api/auth/account/recent-auth/email/complete',{payload:{previewId:preview.id,code:firstEmail.code},as});
+assert.equal(response.status,200);assert.equal(response.data.method,'email');proof=response.data.proof;
+response=await executeAccount(as,preview,proof);assert.equal(response.status,200);
+response=await call('/api/auth/account/recent-auth/email/complete',{payload:{previewId:preview.id,code:firstEmail.code},as});
+assert.equal(response.status,401);assert.equal(response.data.code,'EMAIL_REAUTH_INVALID');
+
+// Resends replace the previous code; a code cannot cross preview/user boundaries.
+const emailReplayUser=await makeUser('email-replay@example.invalid',{googleOnly:true});
+const emailReplayOrg=await makeOrg('email-replay-org');await member(emailReplayOrg,emailReplayUser,'owner');
+as=actor(emailReplayUser,emailReplayOrg);preview=await previewAccount(as);
+response=await call('/api/auth/account/recent-auth/email/request',{payload:{previewId:preview.id},as});assert.equal(response.status,202);const staleEmail=sentCodes.at(-1);
+response=await call('/api/auth/account/recent-auth/email/request',{payload:{previewId:preview.id},as});assert.equal(response.status,202);const currentEmail=sentCodes.at(-1);assert.notEqual(staleEmail.code,currentEmail.code);
+response=await call('/api/auth/account/recent-auth/email/complete',{payload:{previewId:preview.id,code:staleEmail.code},as});assert.equal(response.status,401);
+const anotherPreview=await previewAccount(as);
+response=await call('/api/auth/account/recent-auth/email/complete',{payload:{previewId:anotherPreview.id,code:currentEmail.code},as});assert.equal(response.status,401);
+const otherEmailUser=await makeUser('email-other@example.invalid',{googleOnly:true});
+response=await call('/api/auth/account/recent-auth/email/complete',{payload:{previewId:preview.id,code:currentEmail.code},as:actor(otherEmailUser,emailReplayOrg)});assert.equal(response.status,401);
+
+// Wrong numeric codes are throttled, while expiration never issues a proof.
+const emailExpiryUser=await makeUser('email-expiry@example.invalid',{googleOnly:true});
+const emailExpiryOrg=await makeOrg('email-expiry-org');await member(emailExpiryOrg,emailExpiryUser,'owner');
+as=actor(emailExpiryUser,emailExpiryOrg);preview=await previewAccount(as);
+response=await call('/api/auth/account/recent-auth/email/request',{payload:{previewId:preview.id},as});assert.equal(response.status,202);const expiryEmail=sentCodes.at(-1);
+await query('update destructive_email_challenges set expires_at=now()-interval \'1 second\' where preview_token_hash=$1',[hashToken(preview.id)]);
+response=await call('/api/auth/account/recent-auth/email/complete',{payload:{previewId:preview.id,code:expiryEmail.code},as});assert.equal(response.status,401);
+const emailThrottleUser=await makeUser('email-throttle@example.invalid',{googleOnly:true});
+const emailThrottleOrg=await makeOrg('email-throttle-org');await member(emailThrottleOrg,emailThrottleUser,'owner');
+as=actor(emailThrottleUser,emailThrottleOrg);preview=await previewAccount(as);await call('/api/auth/account/recent-auth/email/request',{payload:{previewId:preview.id},as});
+for(let attempt=0;attempt<5;attempt++){response=await call('/api/auth/account/recent-auth/email/complete',{payload:{previewId:preview.id,code:'00000000'},as,throttle:rateLimit});assert.equal(response.status,401);}
+response=await call('/api/auth/account/recent-auth/email/complete',{payload:{previewId:preview.id,code:'00000000'},as,throttle:rateLimit});assert.equal(response.status,429);assert.equal(response.data.code,'EMAIL_REAUTH_RATE_LIMITED');
 
 // A late database failure rolls back organization, membership, session, preview and proof mutations.
 const rollbackUser=await makeUser('rollback@example.invalid');

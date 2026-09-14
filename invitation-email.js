@@ -39,3 +39,12 @@ export function verificationEmail({token,appUrl}){
  const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main style="font:16px/1.6 Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><p>Scale OS</p><h1>Verificá tu correo</h1><p>${instructions}</p><p><a href="${escape(url.href)}">Verificar correo</a></p><p style="font-size:13px;overflow-wrap:anywhere">Si el botón no abre, copiá esta dirección en tu navegador:<br>${escape(url.href)}</p></main></body></html>`;
  return{subject,text,html};
 }
+
+export function destructiveReauthEmail({code}){
+ if(typeof code!=='string'||!/^\d{8}$/.test(code))throw new Error('Invalid destructive reauthentication code');
+ const subject='Código para confirmar una eliminación en Scale OS';
+ const instructions='Usá este código de un solo uso para confirmar la eliminación. Vence en 5 minutos. Si no iniciaste esta operación, ignorá este correo.';
+ const text=`Confirmación de eliminación en Scale OS\n\n${instructions}\n\nCódigo: ${code}\n\nScale OS · Gestión de agencias\nNotificación de acceso enviada por Owncoding.`;
+ const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main style="font:16px/1.6 Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><p>Scale OS</p><h1>Confirmá la eliminación</h1><p>${instructions}</p><p style="font-size:28px;font-weight:bold;letter-spacing:0.12em">${escape(code)}</p><hr><p style="font-size:12px">Scale OS · Gestión de agencias<br>Notificación de acceso enviada por Owncoding.</p></main></body></html>`;
+ return{subject,text,html};
+}
