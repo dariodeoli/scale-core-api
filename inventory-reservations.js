@@ -13,6 +13,7 @@ const identifier=value=>{
  const n=BigInt(value);if(n<=0n||n>=9223372036854775807n)fail('Identificador inválido');return String(n);
 };
 const optionalId=value=>value===null||value===undefined||value===''?null:identifier(value);
+const categoryIcons=['camera','video','mic','lamp','lightbulb','monitor','laptop','speaker','hard-drive','battery-charging','package','home'];
 const inventoryPayload=row=>({...row,barcode_payload:`SCALE-INVENTORY:${row.inventory_code}`});
 const storageLocationName=value=>text(value||'',100);
 function identifiers(values,label,max=50){
@@ -64,7 +65,7 @@ async function reservation(c,org,key){
 function ownReservation(user,row){if(!roleCan(user,'inventory.manage')&&String(row.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
 
 async function catalog(c,org){
- return (await c.query(`select i.*,cat.name as category_name,cat.active as category_active,loc.name as storage_location_name,loc.active as storage_location_active,
+ return (await c.query(`select i.*,cat.name as category_name,cat.active as category_active,cat.icon as category_icon,loc.name as storage_location_name,loc.active as storage_location_active,
   live.id as active_reservation_id,live.title as production_name,p.name as project_name,
   live.custodian_user_id as current_custodian_user_id,coalesce(nullif(up.full_name,''),u.email) as current_custodian_name,
   live.return_user_id,coalesce(nullif(rp.full_name,''),ru.email) as return_user_name,live.ends_at as expected_return_at,
@@ -301,7 +302,13 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
     const b=await body(req),old=key?(await c.query('select * from agency_inventory_categories where id=$1 and organization_id=$2',[key,org])).rows[0]:{};
     if(!old)fail('Categoría no encontrada',404);const name=text(b.name??old.name,80);if(!name)fail('Ingresá el nombre de la categoría');
     const active=b.active??old.active??true;if(typeof active!=='boolean')fail('Estado de categoría inválido');
-    const row=key?(await c.query('update agency_inventory_categories set name=$1,active=$2 where id=$3 and organization_id=$4 returning *',[name,active,key,org])).rows[0]:(await c.query('insert into agency_inventory_categories(organization_id,name,active) values($1,$2,$3) returning *',[org,name,active])).rows[0];
+    let icon=old.icon??null;
+    if(b.icon!==undefined){
+     if(b.icon===null)icon=null;
+     else if(typeof b.icon==='string'&&categoryIcons.includes(b.icon))icon=b.icon;
+     else fail('Ícono de categoría no reconocido');
+    }
+    const row=key?(await c.query('update agency_inventory_categories set name=$1,active=$2,icon=$3 where id=$4 and organization_id=$5 returning *',[name,active,icon,key,org])).rows[0]:(await c.query('insert into agency_inventory_categories(organization_id,name,active,icon) values($1,$2,$3,$4) returning *',[org,name,active,icon])).rows[0];
     if(key)await c.query('update agency_inventory set category=$1 where category_id=$2 and organization_id=$3',[name,key,org]);
     result={category:row};status=key?200:201;
    }else fail('Método no permitido',405);
