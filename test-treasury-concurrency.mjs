@@ -57,6 +57,7 @@ try{
  pgTool('initdb',['-D',data,'-U',user,'--no-locale','-E','UTF8']);
  pgTool('pg_ctl',['-D',data,'-l',path.join(temporary,'postgres.log'),'-o',`-p ${port} -h 127.0.0.1 -F -c max_connections=40 -c listen_addresses=127.0.0.1`,'-w','-t','60','start'],60000);
  const pool=new pg.Pool({host:'127.0.0.1',port,user,database:'postgres'});
+ pool.on('error',()=>{});
  const query=(sql,args)=>pool.query(sql,args);
  const db={query,connect:async()=>{const client=await pool.connect();return{query:(sql,args)=>client.query(sql,args),release:()=>client.release()};}};
  for(const [name,content] of sources){await pool.query(content);}
@@ -69,6 +70,7 @@ try{
  const invoice=(await query("insert into agency_invoices(organization_id,client_id,number,currency,total) values($1,$2,'F-CONC','PYG',100) returning id",[org,client])).rows[0].id;
  const accountA=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Caja A','bank','PYG',50) returning id",[org])).rows[0].id;
  const accountB=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Caja B','bank','PYG',0) returning id",[org])).rows[0].id;
+ const accountC=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Caja C','bank','PYG',50) returning id",[org])).rows[0].id;
  const actor={id:uid,email:'treasury@example.invalid',organization_id:org,role:'owner',organization_name:'Treasury fixture'};
  const session=async()=>actor;
  async function call(method,pathname,payload){
@@ -81,18 +83,18 @@ try{
  // Two concurrent payments of 60 against a 100 invoice: exactly one can win.
  const payments=await Promise.all([call('POST','/api/agency/payments',{invoiceId:invoice,accountId:accountA,amount:60}),call('POST','/api/agency/payments',{invoiceId:invoice,accountId:accountA,amount:60})]);
  const paymentStatuses=payments.map(p=>p.status).sort();
- console.log('DEBUG payment statuses',paymentStatuses,'paid',(await query('select paid_amount from agency_invoices where id=$1',[invoice])).rows[0].paid_amount);
+ 
  assert.deepEqual(paymentStatuses,[201,400],`one payment wins, the other is rejected: ${JSON.stringify(payments)}`);
  const paid=(await query('select paid_amount from agency_invoices where id=$1',[invoice])).rows[0].paid_amount;
  assert.equal(Number(paid),60,'the invoice never overpays under concurrency');
  // Two concurrent transfers of 40 from an account with 50: no negative balance.
- const transfers=await Promise.all([call('POST','/api/agency/transfers',{fromAccountId:accountA,toAccountId:accountB,amount:40}),call('POST','/api/agency/transfers',{fromAccountId:accountA,toAccountId:accountB,amount:40})]);
+ const transfers=await Promise.all([call('POST','/api/agency/transfers',{fromAccountId:accountC,toAccountId:accountB,amount:40}),call('POST','/api/agency/transfers',{fromAccountId:accountC,toAccountId:accountB,amount:40})]);
  const transferStatuses=transfers.map(t=>t.status).sort();
- console.log('DEBUG transfer statuses',transferStatuses,'balances',(await query('select id,balance from bank_accounts where organization_id=$1 order by id',[org])).rows);
+ 
  assert.deepEqual(transferStatuses,[201,400],`one transfer wins, the other is rejected: ${JSON.stringify(transfers)}`);
  const balances=(await query('select id,balance from bank_accounts where organization_id=$1 order by id',[org])).rows;
- assert.equal(Number(balances.find(row=>Number(row.id)===Number(accountA)).balance),10,'source account never goes negative under concurrency');
+ assert.equal(Number(balances.find(row=>Number(row.id)===Number(accountC)).balance),10,'source account never goes negative under concurrency');
  assert.equal(Number(balances.find(row=>Number(row.id)===Number(accountB)).balance),40,'destination receives exactly one transfer');
  console.log('PASS: concurrent payments cannot overpay an invoice and concurrent transfers cannot overdraw an account');
-}catch(error){console.error(error);process.exitCode=1;if(process.env.SCALE_TEST_KEEP_CLUSTER)await new Promise(r=>setTimeout(r,30000));}
-finally{cleanupCluster();}
+}catch(error){console.error(error);process.exitCode=1;}
+finally{try{await pool.end();}catch{/* pool may already be closed */}cleanupCluster();}
