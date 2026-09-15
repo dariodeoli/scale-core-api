@@ -10,7 +10,7 @@ import {agencyReport,reports} from './reports.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_planned_expense_kind.sql','20260915_expenses.sql']) {
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_planned_expense_kind.sql','20260915_expenses.sql','20260915_client_terms_end_date.sql']) {
  await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 }
 // Startup migrations must be repeatable.
@@ -20,6 +20,7 @@ await pg.exec(await fs.readFile(new URL('./migrations/20260914_client_terms_and_
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_optional_commission_terms.sql',import.meta.url),'utf8'));
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_planned_expense_kind.sql',import.meta.url),'utf8'));
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_planned_expense_kind.sql',import.meta.url),'utf8'));
+await pg.exec(await fs.readFile(new URL('./migrations/20260915_client_terms_end_date.sql',import.meta.url),'utf8'));
 await identitySchema(pg);
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
@@ -75,19 +76,28 @@ await query("insert into organization_members(organization_id,user_id,role) valu
 const financeUser={id:financeId,organization_id:org,role:'finance'},managementUser={id:managementId,organization_id:org,role:'management'};
 const commercialPlan=(await query("insert into agency_plans(organization_id,name,currency,items) values($1,'Plan recurrente','PYG','[]') returning id",[org])).rows[0].id;
 const termsPath=`/api/agency/clients/${client}/commercial-terms`;
-const terms={planId:String(commercialPlan),recurringAmount:'1000',currency:'PYG',startsOn:'2026-09-15',invoiceRequired:true,commissionRecipientId:String(salaryPyg.collaborator.id),commissionMode:'percentage',commissionValue:'10'};
+const terms={planId:String(commercialPlan),recurringAmount:'1000',currency:'PYG',startsOn:'2026-09-15',endsOn:null,invoiceRequired:true,commissionRecipientId:String(salaryPyg.collaborator.id),commissionMode:'percentage',commissionValue:'10'};
 assert.equal((await call(termsPath,'GET',{},financeUser)).terms,null,'finance can read an empty commercial profile');
 assert.equal((await call(termsPath,'PATCH',terms,financeUser)).status,403,'finance is read-only for commercial terms');
 for(const recurringAmount of [0,-1,'1000.5',true,Number.MAX_SAFE_INTEGER+1])assert.equal((await call(termsPath,'PATCH',{...terms,recurringAmount},managementUser)).status,400,`terms reject recurring amount ${String(recurringAmount)}`);
 for(const commissionValue of [0,'10.5',101])assert.equal((await call(termsPath,'PATCH',{...terms,commissionValue},managementUser)).status,400,`terms reject commission ${String(commissionValue)}`);
 let savedTerms=await call(termsPath,'PATCH',terms,managementUser);
 assert.equal(savedTerms.status,200);assert.deepEqual({amount:savedTerms.terms.recurringAmount,currency:savedTerms.terms.currency,startsOn:savedTerms.terms.startsOn,invoiceRequired:savedTerms.terms.invoiceRequired,recipient:savedTerms.terms.commissionRecipientId,mode:savedTerms.terms.commissionMode,value:savedTerms.terms.commissionValue},{amount:1000,currency:'PYG',startsOn:'2026-09-15',invoiceRequired:true,recipient:String(salaryPyg.collaborator.id),mode:'percentage',value:10});
-assert.deepEqual(Object.keys(savedTerms.terms).sort(),['clientId','commissionMode','commissionRecipientId','commissionRecipientName','commissionValue','currency','invoiceRequired','planId','planName','recurringAmount','startsOn','updatedAt'].sort(),'commercial terms response has the documented stable shape');
+assert.deepEqual(Object.keys(savedTerms.terms).sort(),['clientId','commissionMode','commissionRecipientId','commissionRecipientName','commissionValue','currency','endsOn','invoiceRequired','planId','planName','recurringAmount','startsOn','updatedAt'].sort(),'commercial terms response has the documented stable shape');
 assert.equal((await call(termsPath,'GET',{},financeUser)).terms.planId,String(commercialPlan),'finance reads effective terms for LTV');
 const noneTerms=await call(termsPath,'PATCH',{...terms,commissionMode:'none',commissionRecipientId:null,commissionValue:null},managementUser);
 assert.equal(noneTerms.status,200);
 assert.deepEqual({recipient:noneTerms.terms.commissionRecipientId,name:noneTerms.terms.commissionRecipientName,mode:noneTerms.terms.commissionMode,value:noneTerms.terms.commissionValue},{recipient:null,name:null,mode:'none',value:null},'a contract can exist without commission');
 assert.equal((await call(termsPath,'PATCH',{...terms,commissionMode:'none'},managementUser)).status,400,'none rejects leftover recipient/value');
+assert.equal((await call(termsPath,'PATCH',{...terms,endsOn:'2026-09-10'},managementUser)).status,400,'an end before the start is rejected');
+const ended=await call(termsPath,'PATCH',{...terms,endsOn:'2026-09-20'},managementUser);
+assert.equal(ended.status,200);assert.equal(ended.terms.endsOn,'2026-09-20','the effective terms carry the end date');
+const contractedSeptember=await call('/api/agency/forecast?month=2026-09');
+assert.deepEqual(contractedSeptember.contracted_recurring.records,[{currency:'PYG',client_count:1,amount:1000}],'an agreement ending inside the month still counts that month');
+assert.equal(contractedSeptember.contracted_clients.records.find(row=>String(row.client_id)===String(client))?.ends_on,'2026-09-20','contracted clients expose their end date');
+const contractedOctober=await call('/api/agency/forecast?month=2026-10');
+assert.deepEqual(contractedOctober.contracted_recurring.records,[],'an ended agreement leaves the following month without contracted income');
+assert.equal((await call(termsPath,'PATCH',{...terms,endsOn:null},managementUser)).terms.endsOn,null,'the end date can be cleared');
 assert.equal((await call(termsPath,'PATCH',{...terms,commissionMode:'none',commissionRecipientId:null,commissionValue:'10'},managementUser)).status,400,'none rejects a value without recipient');
 await call(termsPath,'PATCH',terms,managementUser);
 
@@ -172,7 +182,7 @@ assert.equal(Number((await call('/api/agency/forecast?month=2026-12')).records[0
 for(const months of ['0','13','1.5','abc'])assert.equal((await call(`/api/agency/forecast?month=2026-09&months=${months}`)).status,400,`months rejects ${months}`);
 const contractClient=(await query("insert into agency_clients(organization_id,name) values($1,'Contrato sin factura') returning id",[org])).rows[0].id;
 const contractTermsPath=`/api/agency/clients/${contractClient}/commercial-terms`;
-assert.equal((await call(contractTermsPath,'PATCH',{planId:String(commercialPlan),recurringAmount:'300',currency:'USD',startsOn:'2026-09-01',invoiceRequired:true,commissionRecipientId:null,commissionMode:'none',commissionValue:null},managementUser)).status,200);
+assert.equal((await call(contractTermsPath,'PATCH',{planId:String(commercialPlan),recurringAmount:'300',currency:'USD',startsOn:'2026-09-01',endsOn:null,invoiceRequired:true,commissionRecipientId:null,commissionMode:'none',commissionValue:null},managementUser)).status,200);
 const usdAccount=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Cobros USD','bank','USD',1000) returning id",[org])).rows[0].id;
 const octInvoice=await invoice({total:500,issued:'2026-10-05'});
 await query("insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference) values($1,$2,$3,500,'2026-10-08','Cobro octubre')",[org,octInvoice,usdAccount]);

@@ -170,6 +170,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_client_invoice_flags.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_planned_expense_kind.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_expenses.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260915_client_terms_end_date.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_platform_admin_roles.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}

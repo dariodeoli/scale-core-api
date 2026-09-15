@@ -3,7 +3,7 @@ import {roleCan} from './permissions.js';
 
 const timezone='America/Asuncion';
 const kinds=['unknown','company','professional','individual','other'];
-const termFields=['planId','recurringAmount','currency','startsOn','invoiceRequired','commissionRecipientId','commissionMode','commissionValue'];
+const termFields=['planId','recurringAmount','currency','startsOn','endsOn','invoiceRequired','commissionRecipientId','commissionMode','commissionValue'];
 const expenseFields=['cadence','effectiveMonth','category','amount','currency','note','kind'];
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const dateString=value=>value instanceof Date?value.toISOString().slice(0,10):value;
@@ -21,6 +21,10 @@ function wholeAmount(value,label='Importe') {
 function requiredDate(value,label) {
  if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(Date.parse(value))||new Date(value).toISOString().slice(0,10)!==value)fail(`${label} inválida`);
  return value;
+}
+function optionalDate(value,label) {
+ if(value===null||value===''||value===undefined)return null;
+ return requiredDate(value,label);
 }
 const monthDate=value=>`${forecastMonth(value)}-01`;
 const validateFields=(input,fields,label)=>{
@@ -104,7 +108,7 @@ async function commercialTerms(db,org,id) {
   from agency_clients c where c.organization_id=$1 and c.id=$2`,[org,id])).rows[0];
  if(!client)fail('Cliente no encontrado',404);
   const terms=(await db.query(`select t.client_id::text as "clientId",t.plan_id::text as "planId",p.name as "planName",t.recurring_amount::text as "recurringAmount",t.currency,
-  t.starts_on::text as "startsOn",t.invoice_required as "invoiceRequired",t.commission_recipient_id::text as "commissionRecipientId",c.full_name as "commissionRecipientName",
+  t.starts_on::text as "startsOn",t.ends_on::text as "endsOn",t.invoice_required as "invoiceRequired",t.commission_recipient_id::text as "commissionRecipientId",c.full_name as "commissionRecipientName",
   t.commission_mode as "commissionMode",t.commission_value::text as "commissionValue",t.updated_at as "updatedAt"
   from agency_client_commercial_terms t join agency_plans p on p.organization_id=t.organization_id and p.id=t.plan_id
   left join agency_collaborators c on c.organization_id=t.organization_id and c.id=t.commission_recipient_id
@@ -121,6 +125,8 @@ async function validateTerms(db,org,input) {
  const planId=id(input.planId,'Plan'),recurringAmount=wholeAmount(input.recurringAmount,'El importe recurrente');
  const currency=['PYG','USD'].includes(input.currency)?input.currency:fail('Moneda inválida');
  const startsOn=requiredDate(input.startsOn,'Fecha de inicio');
+ const endsOn=optionalDate(input.endsOn,'Fecha de fin');
+ if(endsOn&&endsOn<startsOn)fail('La fecha de fin no puede ser anterior al inicio');
  if(typeof input.invoiceRequired!=='boolean')fail('invoiceRequired debe ser booleano');
  const commissionMode=['percentage','fixed','none'].includes(input.commissionMode)?input.commissionMode:fail('Modo de comisión inválido');
  let recipientId=null,commissionValue=null;
@@ -136,7 +142,7 @@ async function validateTerms(db,org,input) {
  const plan=(await db.query(`select id from agency_plans p where p.organization_id=$1 and p.id=$2 and p.active
   and not exists(select 1 from agency_archived_records a where a.organization_id=p.organization_id and a.kind='plans' and a.record_id=p.id) for share`,[org,planId])).rows[0];
  if(!plan)fail('Plan no disponible en esta empresa');
- return {planId,recipientId,recurringAmount,currency,startsOn,invoiceRequired:input.invoiceRequired,commissionMode,commissionValue};
+ return {planId,recipientId,recurringAmount,currency,startsOn,endsOn,invoiceRequired:input.invoiceRequired,commissionMode,commissionValue};
 }
 async function plannedExpenses(db,org,month) {
  const records=(await db.query(`select id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note,kind,
@@ -209,8 +215,8 @@ export async function reports({req,res,url,db,session,body,send}) {
    // contract stores append-only history, so reconcile both by writing the
    // open row instead of relying on a full-table unique constraint.
    const open=(await c.query('select id from agency_client_commercial_terms where organization_id=$1 and client_id=$2 and effective_until is null for update',[user.organization_id,id])).rows[0];
-   if(open)await c.query(`update agency_client_commercial_terms set plan_id=$3,recurring_amount=$4,currency=$5,starts_on=$6::date,invoice_required=$7,commission_recipient_id=$8,commission_mode=$9,commission_value=$10,updated_at=clock_timestamp() where organization_id=$1 and client_id=$2 and effective_until is null`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue]);
-   else await c.query(`insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,invoice_required,commission_recipient_id,commission_mode,commission_value) values($1,$2,$3,$4,$5,$6::date,$7,$8,$9,$10)`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue]);
+   if(open)await c.query(`update agency_client_commercial_terms set plan_id=$3,recurring_amount=$4,currency=$5,starts_on=$6::date,ends_on=$7::date,invoice_required=$8,commission_recipient_id=$9,commission_mode=$10,commission_value=$11,updated_at=clock_timestamp() where organization_id=$1 and client_id=$2 and effective_until is null`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.endsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue]);
+   else await c.query(`insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,ends_on,invoice_required,commission_recipient_id,commission_mode,commission_value) values($1,$2,$3,$4,$5,$6::date,$7::date,$8,$9,$10,$11)`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.endsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue]);
    const result=await commercialTerms(c,user.organization_id,id);await c.query('commit');c.release();c=null;send(res,200,result);return true;
   }
   if(req.method==='GET'){send(res,200,await metadata(db,user.organization_id,id));return true;}
