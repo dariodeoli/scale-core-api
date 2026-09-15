@@ -22,10 +22,14 @@ export async function passwordAccess({req,res,url,db,body,send,sendReset,emailAv
    if(!emailAvailable){send(res,503,{error:'La recuperación por correo todavía no está disponible. Usá Google o contactá al administrador.'});return true;}
    const email=typeof b.email==='string'?b.email.trim().toLowerCase():'';
    const limited=await throttle(db,'reset:'+email,3);
-   if(limited&&!email.endsWith('@demo.example.invalid')&&/^\S+@\S+\.\S+$/.test(email)){
+   const validInput=!email.endsWith('@demo.example.invalid')&&/^\S+@\S+\.\S+$/.test(email);
+   let accountFound=false,tokenCreated=false,deliveryAccepted=null;
+   if(limited&&validInput){
     const account=(await db.query('select id from users where email=$1 and exists(select 1 from organization_members m where m.user_id=users.id and m.active=true)',[email])).rows[0];
-    if(account){const token=crypto.randomBytes(32).toString('hex');await db.query("insert into password_resets(token_hash,user_id,expires_at) values($1,$2,now()+interval '1 hour')",[hash(token),account.id]);await sendReset(email,token).catch(()=>false);}
+    accountFound=Boolean(account);
+    if(account){const token=crypto.randomBytes(32).toString('hex');await db.query("insert into password_resets(token_hash,user_id,expires_at) values($1,$2,now()+interval '1 hour')",[hash(token),account.id]);tokenCreated=true;deliveryAccepted=await sendReset(email,token).catch(()=>false);}
    }
+   console.info(JSON.stringify({event:'password_reset_delivery',validInput,throttleAllowed:limited,accountFound,tokenCreated,deliveryAccepted}));
    send(res,202,{message:'Si ese correo tiene acceso, recibirá un enlace para establecer su contraseña.'});return true;
   }
   if(typeof b.token!=='string'||!/^[a-f0-9]{64}$/.test(b.token)){send(res,400,{error:'El enlace no es válido.'});return true;}
