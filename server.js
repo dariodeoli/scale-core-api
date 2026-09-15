@@ -45,7 +45,7 @@ import {notifications} from './notifications.js';
 import {automationApi,startAutomation} from './automation.js';
 import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
 import {trialDetails,trialDetailsFromInput,registerTrial} from './trial-registration.js';
-import {platformAdmin,bootstrapInitialPlatformAdmin} from './platform-admin.js';
+import {platformAdmin,bootstrapInitialPlatformAdmin,ensurePlatformOwnerAdmin} from './platform-admin.js';
 import {rolePermissions,roleCan} from './permissions.js';
 import {createEmailDelivery,publicEmailDeliveryStatus} from './email-delivery.js';
 import {acceptClientPortalGoogleInvite,clientPortal,clientPortalGoogleInvite,clientPortalResetEmail,clientPortalUrl} from './client-portal.js';
@@ -173,6 +173,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_expenses.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_client_terms_end_date.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_platform_admin_roles.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260915_platform_owner_admin.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_inventory_photos.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_inventory_category_icons.sql'),'utf8'));
     await migration.query('commit');
@@ -187,6 +188,7 @@ async function init() {
   await provisionOwner(scaleOsOwnerEmail, scaleOsOwnerPassword);
   await provisionOwnerForOrganization(dadooOwnerEmail, dadooOwnerPassword, 'dadoo-capital');
   await bootstrapInitialPlatformAdmin(db,initialPlatformAdminEmail);
+  await ensurePlatformOwnerAdmin(db,initialPlatformAdminEmail);
 }
 async function provisionOwnerForOrganization(email, password, slug) {
   if (!email || !password) return;

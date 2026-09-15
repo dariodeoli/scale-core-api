@@ -231,3 +231,18 @@ export async function bootstrapInitialPlatformAdmin(db,value){
  await db.query("insert into platform_bootstrap_audit_log(target_user_id,action) values($1,'initial_admin_granted') on conflict(target_user_id,action) do nothing",[target.id]);
  return {...await platformBootstrapStatus(db,value),activated:true,state:'activated'};
 }
+// The configured owner email is always an active global admin, even after the
+// platform was initialized. Idempotent and audited: it repairs a lockout where
+// no admin can grant access, without weakening the write gating.
+export async function ensurePlatformOwnerAdmin(db,value){
+ const email=platformBootstrapEmail(value);
+ if(!email)return false;
+ const target=(await db.query(`select u.id from users u where u.email=$1 and u.email_verified_at is not null and u.is_demo_guest=false
+   and exists(select 1 from organization_members m where m.user_id=u.id and m.active=true and m.removed_at is null) limit 1`,[email])).rows[0];
+ if(!target)return false;
+ const granted=await db.query(`insert into platform_administrators(user_id,role,active,created_by_user_id) values($1,'admin',true,null)
+   on conflict(user_id) do update set role='admin',active=true where platform_administrators.role<>'admin' or platform_administrators.active=false returning user_id`,[target.id]);
+ if(!granted.rows.length)return false;
+ await db.query("insert into platform_bootstrap_audit_log(target_user_id,action) values($1,'owner_admin_ensured') on conflict(target_user_id,action) do nothing",[target.id]);
+ return true;
+}

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
-import {platformAdmin,platformBootstrapEmail,platformBootstrapStatus,bootstrapInitialPlatformAdmin} from './platform-admin.js';
+import {platformAdmin,platformBootstrapEmail,platformBootstrapStatus,bootstrapInitialPlatformAdmin,ensurePlatformOwnerAdmin} from './platform-admin.js';
 const pg=new PGlite();
 await pg.exec(`
  create table users(id bigint primary key,email text not null,created_at timestamptz not null default now(),email_verified_at timestamptz,is_demo_guest boolean not null default false);
@@ -17,6 +17,7 @@ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migra
 await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260912_platform_admin_bootstrap.sql',import.meta.url),'utf8'));
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260913_platform_admin_vertical_slice.sql',import.meta.url),'utf8'));
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_platform_admin_roles.sql',import.meta.url),'utf8'));
+ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_platform_owner_admin.sql',import.meta.url),'utf8'));
  await pg.exec(`
   create table sessions(id bigint primary key,user_id bigint,organization_id bigint);
   create table oauth_states(id bigint primary key,recent_auth_user_id bigint);
@@ -81,6 +82,16 @@ await pg.query('delete from platform_administrators');
 bootstrap=await bootstrapInitialPlatformAdmin(db,'unverified@scale.example');
 assert.equal(bootstrap.activated,false);
 assert.equal(bootstrap.state,'awaiting_eligible_user');
+assert.equal((await ensurePlatformOwnerAdmin(db,'not-an-email')).valueOf(),false,'an invalid owner email never grants access');
+assert.equal((await ensurePlatformOwnerAdmin(db,'unverified@scale.example')).valueOf(),false,'an unverified user is never forced into admin');
+await pg.query("insert into users(id,email,email_verified_at,is_demo_guest) values(12,'dario@scale.example',now(),false)");
+await pg.query("insert into organization_members(organization_id,user_id,role) values(10,12,'owner')");
+assert.equal((await ensurePlatformOwnerAdmin(db,'dario@scale.example')).valueOf(),true,'the configured owner becomes global admin after initialization');
+assert.equal((await pg.query("select role,active from platform_administrators where user_id=12")).rows[0].role,'admin','the owner grant is an active admin role');
+assert.equal((await ensurePlatformOwnerAdmin(db,'dario@scale.example')).valueOf(),false,'the owner grant is idempotent');
+await pg.query("update platform_administrators set active=false where user_id=12");
+assert.equal((await ensurePlatformOwnerAdmin(db,'dario@scale.example')).valueOf(),true,'the owner grant reactivates a revoked row');
+await pg.query('delete from platform_administrators');
 const hiddenStatus=await platformBootstrapStatus(db,'invalid');
 assert.deepEqual(hiddenStatus,{configured:true,valid:false,initialized:false,state:'invalid_configuration'});
 await pg.query("insert into platform_administrators(user_id,role) values(2,'admin')");
