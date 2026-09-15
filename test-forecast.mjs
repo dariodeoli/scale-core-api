@@ -10,7 +10,7 @@ import {agencyReport,reports} from './reports.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_billing_cadence_and_coupons.sql','20260915_planned_expense_kind.sql','20260915_expenses.sql','20260915_client_terms_end_date.sql']) {
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_billing_cadence_and_coupons.sql','20260915_planned_expense_kind.sql','20260915_expenses.sql','20260915_client_terms_end_date.sql','20260915_salary_override_signed.sql']) {
  await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 }
 // Startup migrations must be repeatable.
@@ -21,6 +21,7 @@ await pg.exec(await fs.readFile(new URL('./migrations/20260915_optional_commissi
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_planned_expense_kind.sql',import.meta.url),'utf8'));
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_planned_expense_kind.sql',import.meta.url),'utf8'));
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_client_terms_end_date.sql',import.meta.url),'utf8'));
+await pg.exec(await fs.readFile(new URL('./migrations/20260915_salary_override_signed.sql',import.meta.url),'utf8'));
 await identitySchema(pg);
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
@@ -45,7 +46,7 @@ async function invoice({currency='USD',total=100,status='issued',issued='2026-09
  return (await query('insert into agency_invoices(organization_id,client_id,number,currency,total,status,issued_on,budget_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning id',[organization,customer,`F-${++number}`,currency,total,status,issued,budgetId])).rows[0].id;
 }
 const path='/api/agency/forecast?month=2026-09';
-const invalidSalaryAmounts=[true,null,'','no es un importe','1250.5',1.5,0,-1,Number.MAX_SAFE_INTEGER+1];
+const invalidSalaryAmounts=[true,null,'','no es un importe','1250.5','-1250.5',1.5,0,1000000000000,-1000000000000,Number.MAX_SAFE_INTEGER+1];
 assert.equal(forecastMonth(null,new Date('2026-10-01T02:59:59Z')),'2026-09');
 assert.equal(forecastMonth(null,new Date('2026-10-01T03:00:00Z')),'2026-10');
 for(const invalid of ['2026-00','2026-13','26-09','2026-09-01','','9999-01'])assert.throws(()=>forecastMonth(invalid));
@@ -67,8 +68,20 @@ assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}
 let personnel=(await call(path)).personnel;
 assert.equal(personnel.month,'2026-09');assert.equal(personnel.included_headcount,2);
 const salaryPygRow=personnel.records.find(row=>row.currency==='PYG'),salaryUsdRow=personnel.records.find(row=>row.currency==='USD');
-assert.deepEqual({headcount:salaryPygRow.included_headcount,baseCount:salaryPygRow.base_count,base:salaryPygRow.base_amount,overrideCount:salaryPygRow.override_count,override:salaryPygRow.override_amount,expense:salaryPygRow.expected_end_of_month_expense},{headcount:1,baseCount:1,base:1000,overrideCount:0,override:0,expense:1000});
+assert.deepEqual({headcount:salaryPygRow.included_headcount,baseCount:salaryPygRow.base_count,base:salaryPygRow.base_amount,overrideCount:salaryPygRow.override_count,override:salaryPygRow.override_amount,expense:salaryPygRow.expected_end_of_month_expense},{headcount:1,baseCount:1,base:1000,overrideCount:1,override:1250,expense:2250});
 assert.deepEqual({headcount:salaryUsdRow.included_headcount,baseCount:salaryUsdRow.base_count,base:salaryUsdRow.base_amount,overrideCount:salaryUsdRow.override_count,override:salaryUsdRow.override_amount,expense:salaryUsdRow.expected_end_of_month_expense},{headcount:1,baseCount:1,base:200,overrideCount:0,override:0,expense:200});
+assert.equal(Array.isArray(salaryPygRow.members)&&salaryPygRow.members.length,1,'each currency row carries its per-person members');
+const salaryPygMember=salaryPygRow.members.find(member=>String(member.collaborator_id)===String(salaryPyg.collaborator.id));
+assert.deepEqual({name:salaryPygMember.name,type:salaryPygMember.compensation_type,base:salaryPygMember.base_amount,override:salaryPygMember.override_amount,currency:salaryPygMember.currency},{name:'Salario PYG',type:'fixed',base:1000,override:1250,currency:'PYG'},'members expose name, compensation and projected amounts');
+const salaryUsdMember=salaryUsdRow.members.find(member=>String(member.collaborator_id)===String(salaryUsd.collaborator.id));
+assert.deepEqual({name:salaryUsdMember.name,base:salaryUsdMember.base_amount,override:salaryUsdMember.override_amount},{name:'Salario USD',base:200,override:0});
+assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides`,'PATCH',{month:'2026-09',amount:'-500',note:'Descuento puntual'})).override.amount,'-500','signed discounts are accepted');
+assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides?month=2026-09`)).override.note,'Descuento puntual','GET roundtrips the signed override');
+const negativeRow=(await call(path)).personnel.records.find(row=>row.currency==='PYG');
+assert.deepEqual({overrideCount:negativeRow.override_count,override:negativeRow.override_amount,expense:negativeRow.expected_end_of_month_expense},{overrideCount:1,override:-500,expense:500},'a negative override reduces the expected month expense');
+assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides?month=2026-09`,'DELETE')).override,null);
+const clearedRow=(await call(path)).personnel.records.find(row=>row.currency==='PYG');
+assert.deepEqual({overrideCount:clearedRow.override_count,override:clearedRow.override_amount,expense:clearedRow.expected_end_of_month_expense},{overrideCount:0,override:0,expense:1000},'deleting the override restores the base-only expense');
 
 const financeId=(await query("insert into users(email,password_hash) values('forecast-finance@example.invalid','unused') returning id")).rows[0].id;
 const managementId=(await query("insert into users(email,password_hash) values('forecast-management@example.invalid','unused') returning id")).rows[0].id;
@@ -313,4 +326,4 @@ await pg.exec(await fs.readFile(new URL('./migrations/20260915_expenses.sql',imp
 assert.equal((await query('select balance from bank_accounts where id=$1',[expenseAccount])).rows[0].balance,'99960.00','migration replay never rewrites balances');
 assert.equal((await query("select count(*)::int as n from agency_cash_movements where movement_type in ('expense','expense_reversal')")).rows[0].n,6,'the cash movement view keeps expense receipts after replay');
 await pg.close();
-console.log('PASS: forecast dates, timezone, fixed-salary authorization and legacy month overrides, commercial-term role and integer validation, auditable planned-expense recurrence, revenue/payment segregation, leap/year boundaries, exact totals, zero, no pipeline, invoice/budget dedup, cancelled/draft/archive exclusion, role and tenant isolation; multi-month cash projection and estimated result per currency, contracted versus invoiced per client, six default currencies, partial settings, new versus existing records, real expenses with debits, cash movements, idempotent reversals and tenant isolation, no external writes');
+console.log('PASS: forecast dates, timezone, fixed-salary authorization, signed salary overrides and per-person members, commercial-term role and integer validation, auditable planned-expense recurrence, revenue/payment segregation, leap/year boundaries, exact totals, zero, no pipeline, invoice/budget dedup, cancelled/draft/archive exclusion, role and tenant isolation; multi-month cash projection and estimated result per currency, contracted versus invoiced per client, six default currencies, partial settings, new versus existing records, real expenses with debits, cash movements, idempotent reversals and tenant isolation, no external writes');

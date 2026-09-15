@@ -9,7 +9,7 @@ const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
 for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_client_payment_status.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_client_invoice_flags.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 for(const file of ['20260910_productivity.sql','20260910_profile_identity.sql','20260912_comment_mentions.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
-for(const file of ['20260910_currencies.sql','20260910_company_currency.sql','20260914_salary_forecast.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
+for(const file of ['20260910_currencies.sql','20260910_company_currency.sql','20260914_salary_forecast.sql','20260915_salary_override_signed.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 await identitySchema(pg);
 const sql=(s,v)=>pg.query(s,v);
 const org=(await sql("select id from organizations where slug='scale'")).rows[0].id;

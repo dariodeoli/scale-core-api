@@ -13,6 +13,7 @@ const identifier = value => /^\d+$/.test(String(value)) && Number(value)>0 ? Str
 const optionalId = value => value===null || value===undefined || value==='' ? null : identifier(value);
 function money(value, zero=false) { const n=Number(value); if(!Number.isFinite(n)||n<0||(!zero&&n===0)||n>999999999999) fail('Importe inválido'); return Math.round(n*100)/100; }
 function monthlySalary(value) { const raw=typeof value==='string'?value.trim():value;if((typeof raw!=='number'&&typeof raw!=='string')||(typeof raw==='string'&&!/^\d+$/.test(raw)))fail('El salario mensual debe ser un importe entero válido');const n=Number(raw);if(!Number.isSafeInteger(n)||n<=0||n>999999999999)fail('El salario mensual debe ser un importe entero válido');return n; }
+function salaryOverrideAmount(value) { const raw=typeof value==='string'?value.trim():value;if((typeof raw!=='number'&&typeof raw!=='string')||(typeof raw==='string'&&!/^-?\d+$/.test(raw)))fail('El ajuste del mes debe ser un importe entero distinto de cero');const n=Number(raw);if(!Number.isSafeInteger(n)||n===0||Math.abs(n)>999999999999)fail('El ajuste del mes debe ser un importe entero distinto de cero');return n; }
 function date(value) { if(!value) return null; const parsed=new Date(value); if(!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==value) fail('Fecha inválida'); return value; }
 const option = (value, choices) => choices.includes(value) ? value : fail('Opción inválida');
 const email = value => !value ? null : /^\S+@\S+\.\S+$/.test(value) ? text(value,254).toLowerCase() : fail('Email inválido');
@@ -81,8 +82,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     const month=forecastMonth(url.searchParams.get('month'));
     result={month,override:(await c.query('select amount::text as amount,note from agency_salary_month_overrides where organization_id=$1 and collaborator_id=$2 and month=$3::date',[org,collaborator.id,`${month}-01`])).rows[0]||null};
    } else if(req.method==='PATCH'){
-    const b=await body(req),month=forecastMonth(b.month),amount=monthlySalary(b.amount);
-    if(amount===null)fail('Indicá el importe del ajuste mensual');
+    const b=await body(req),month=forecastMonth(b.month),amount=salaryOverrideAmount(b.amount);
     result={month,override:(await c.query(`insert into agency_salary_month_overrides(organization_id,collaborator_id,month,amount,note)
      values($1,$2,$3::date,$4,$5) on conflict(organization_id,collaborator_id,month) do update set amount=excluded.amount,note=excluded.note,updated_at=now()
      returning amount::text as amount,note`,[org,collaborator.id,`${month}-01`,amount,text(b.note||'',1000)||null])).rows[0]};

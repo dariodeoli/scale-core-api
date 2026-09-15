@@ -1,0 +1,2 @@
+alter table agency_salary_month_overrides drop constraint if exists agency_salary_month_overrides_amount_check;
+alter table agency_salary_month_overrides add constraint agency_salary_month_overrides_amount_check check (amount<>0);

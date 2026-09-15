@@ -35,6 +35,8 @@ export function wholeMoney(value) {
 
 const projectMoney=(record,fields)=>Object.fromEntries(Object.entries(record).map(([key,value])=>[key,fields.includes(key)?wholeMoney(value):value]));
 
+const projectPersonnel=rows=>rows.map(row=>({...projectMoney(row,['base_amount','override_amount','expected_end_of_month_expense']),members:(row.members||[]).map(member=>projectMoney(member,['base_amount','override_amount']))}));
+
 const monthSeries=(start,count)=>Array.from({length:count},(_,offset)=>{const [year,index]=start.split('-').map(Number);const total=index-1+offset;return `${year+Math.floor(total/12)}-${String((total%12)+1).padStart(2,'0')}`;});
 
 const forecastSnapshot=async(db,organizationId,label)=>{
@@ -65,18 +67,26 @@ const forecastSnapshot=async(db,organizationId,label)=>{
   from entries group by currency order by currency`,[organizationId,`${label}-01`,forecastTimezone]);
  const personnel=await db.query(`
   with included as (
-   select c.currency as currency,c.compensation_amount as base_amount
+   select c.id as collaborator_id,c.user_id as user_id,
+    coalesce(nullif(c.full_name,''),u.email) as name,
+    p.photo_url as photo_url,
+    c.currency as currency,c.compensation_type as compensation_type,
+    case when c.compensation_type='fixed' and c.compensation_amount>0 then c.compensation_amount else 0 end as base_amount,
+    coalesce((select sum(o.amount) from agency_salary_month_overrides o where o.organization_id=c.organization_id and o.collaborator_id=c.id and o.month=$2::date),0) as override_amount
    from agency_collaborators c
-   where c.organization_id=$1 and c.active=true and c.compensation_type='fixed' and c.compensation_amount>0 and ${visibleRecord('c','collaborators')}
+   left join users u on u.id=c.user_id
+   left join agency_user_profiles p on p.user_id=c.user_id and p.organization_id=c.organization_id
+   where c.organization_id=$1 and c.active=true and ${visibleRecord('c','collaborators')}
     and (c.started_on is null or c.started_on<($2::date+interval '1 month')::date)
     and (c.ended_on is null or c.ended_on>=$2::date)
   )
   select currency,count(*)::int as included_headcount,
-   count(*)::int as base_count,
+   count(*) filter(where base_amount>0)::int as base_count,
    coalesce(sum(base_amount),0)::text as base_amount,
-   0::int as override_count,
-   '0'::text as override_amount,
-   coalesce(sum(base_amount),0)::text as expected_end_of_month_expense
+   count(*) filter(where override_amount<>0)::int as override_count,
+   coalesce(sum(override_amount),0)::text as override_amount,
+   coalesce(sum(base_amount+override_amount),0)::text as expected_end_of_month_expense,
+   json_agg(json_build_object('collaborator_id',collaborator_id,'user_id',user_id,'name',name,'photo_url',photo_url,'currency',currency,'compensation_type',compensation_type,'base_amount',base_amount,'override_amount',override_amount) order by name,collaborator_id) as members
   from included group by currency order by currency`,[organizationId,`${label}-01`]);
  const [contractedRecurring,collectedActual,commissionForecast,plannedExpenses]=await Promise.all([
   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(coalesce(t.recurring_amount,round(case when t.discount_type='percent' then t.monthly_price*(1-t.discount_value/100) when t.discount_type='fixed' then greatest(t.monthly_price-t.discount_value,0) else t.monthly_price end)::bigint)),0)::text as amount
@@ -104,7 +114,7 @@ const projectionFor=(snapshots,openingBalance)=>{
  const months=snapshots.map(({label,records,personnel,collectedActual,commissionForecast,plannedExpenses})=>({
   label,
   issued:records.rows.map(row=>projectMoney(row,['issued_total','accepted_uninvoiced_total','expected_total'])),
-  personnel:personnel.rows.map(row=>projectMoney(row,['base_amount','override_amount','expected_end_of_month_expense'])),
+  personnel:projectPersonnel(personnel.rows),
   collected:collectedActual.rows.map(row=>projectMoney(row,['amount'])),
   commissions:commissionForecast.rows.map(row=>projectMoney(row,['amount'])),
   planned:plannedExpenses.rows.map(row=>projectMoney(row,['amount']))
@@ -143,7 +153,7 @@ export async function financialForecast({req,res,url,db,session,send}) {
   const first=snapshots[0];
   const projectedRecords=first.records.rows.map(row=>projectMoney(row,['issued_total','accepted_uninvoiced_total','expected_total']));
   const invoiced=projectedRecords.filter(row=>row.issued_total!==0).map(row=>({currency:row.currency,amount:row.issued_total,invoice_count:row.invoice_count}));
-  const projectedPersonnel=first.personnel.rows.map(row=>projectMoney(row,['base_amount','override_amount','expected_end_of_month_expense']));
+  const projectedPersonnel=projectPersonnel(first.personnel.rows);
   const projectedSeries=series=>series.rows.map(row=>projectMoney(row,['amount']));
   const openingBalance=projectedSeries(await db.query('select currency,coalesce(sum(balance),0)::text as amount from bank_accounts where organization_id=$1 and active=true group by currency order by currency',[user.organization_id]));
   const contractedClients=(await db.query(`
@@ -181,7 +191,7 @@ export async function financialForecast({req,res,url,db,session,send}) {
     contracted_recurring:'Solo acuerdos mensuales fijos de clientes activos al cierre del mes: empezaron antes de fin de mes y no tienen fecha de fin, o su fin cae dentro del mes. Contratos por única vez o cada varios meses no se proyectan como ingreso mensual. Es ingreso contractual y no representa una factura ni un cobro.',
     invoiced:'Facturas emitidas en el mes. Se informa por separado del ingreso contractual y de los cobros.',
     collected_actual:'Cobros efectivamente registrados por fecha de cobro, menos reversiones registradas en el mes. No se suma al ingreso contractual.',
-    personnel:'Solo incluye colaboradores activos dentro de las fechas laborales, con modalidad fijo mensual e importe acordado mayor a cero. No incluye pagos, comisiones, compensaciones variables ni ajustes mensuales históricos.',
+    personnel:'Incluye colaboradores activos dentro de las fechas laborales de cada mes. El salario base corresponde a la modalidad fijo mensual con importe acordado; los ajustes del mes son extras o descuentos por persona para ese mes. No incluye pagos, comisiones ni compensaciones de otras modalidades.',
     commission_forecast:'Comisiones previstas de acuerdos vigentes de clientes y destinatarios activos; las porcentuales se redondean al entero más cercano.',
     planned_expenses:'Gastos mensuales del mes seleccionado y gastos recurrentes vigentes desde su mes efectivo; no son pagos reales.',
     opening_balance:'Saldo actual de las cuentas activas por moneda; es la base de caja del primer mes de la proyección.',
