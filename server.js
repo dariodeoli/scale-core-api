@@ -175,6 +175,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_platform_admin_roles.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_platform_owner_admin.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_inventory_photos.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260915_inventory_location_pipeline.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_inventory_category_icons.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_salary_override_signed.sql'),'utf8'));
     await migration.query('commit');
