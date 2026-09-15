@@ -1,10 +1,7 @@
 import {forecastMonth,wholeMoney} from './forecast.js';
+import {roleCan} from './permissions.js';
 
 const timezone='America/Asuncion';
-const reportRoles=['owner','admin','finance'];
-const editRoles=['owner','admin','management','sales'];
-const metadataRoles=[...editRoles,'finance'];
-const expenseRoles=['owner','admin','finance'];
 const kinds=['unknown','company','professional','individual','other'];
 const termFields=['planId','recurringAmount','currency','startsOn','invoiceRequired','commissionRecipientId','commissionMode','commissionValue'];
 const expenseFields=['cadence','effectiveMonth','category','amount','currency','note'];
@@ -88,11 +85,11 @@ export async function agencyReport(db,organizationId,options={},now=new Date()) 
    financial:r.financial.map(item=>projectMoney(item,['invoiced','collected','averageTicket','averageRevenuePerClient']))}))};
 }
 
-async function authorize(db,user,roles) {
+async function authorize(db,user,capability) {
  if(!user)fail('No autenticado',401);
- if(!roles.includes(user.role))fail('Tu rol no permite esta operación',403);
+ if(!roleCan(user,capability))fail('Tu rol no permite esta operación',403);
  const member=(await db.query('select m.role from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and m.organization_id=$2 and m.active and m.removed_at is null and o.active',[user.id,user.organization_id])).rows[0];
- if(!member||!roles.includes(member.role))fail('Sin acceso a esta empresa',403);
+ if(!member||!roleCan({role:member.role,capabilities:user.capabilities},capability))fail('Sin acceso a esta empresa',403);
 }
 async function metadata(db,org,id) {
  const row=(await db.query(`select c.id::text,c.customer_kind,c.service_plan_id::text,c.relationship_started_on::text,c.reporting_version::text,c.updated_at,
@@ -161,7 +158,7 @@ export async function reports({req,res,url,db,session,body,send}) {
  let c;
  try {
   const user=await session(req);
-  await authorize(db,user,aggregate?reportRoles:expenseMatch?expenseRoles:(match||termsMatch)&&req.method==='PATCH'?editRoles:metadataRoles);
+  await authorize(db,user,aggregate?'reports.view':expenseMatch?'expenses.manage':(match||termsMatch)&&req.method==='PATCH'?'commercial-terms.manage':'billing.view');
   if(aggregate){
    if(req.method!=='GET')fail('Método no permitido',405);
    send(res,200,await agencyReport(db,user.organization_id,{month:url.searchParams.get('month'),months:url.searchParams.get('months')}));return true;
@@ -170,14 +167,14 @@ export async function reports({req,res,url,db,session,body,send}) {
    const month=forecastMonth(url.searchParams.get('month'));
    if(req.method==='GET'){send(res,200,await plannedExpenses(db,user.organization_id,month));return true;}
    if(req.method==='POST'&&!expenseMatch[1]){
-    const value=await validateExpense(await body(req));c=await db.connect();await c.query('begin');await authorize(c,user,expenseRoles);
+    const value=await validateExpense(await body(req));c=await db.connect();await c.query('begin');await authorize(c,user,'expenses.manage');
     await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
     const expense=(await c.query(`insert into agency_planned_expenses(organization_id,cadence,effective_month,category,amount,currency,note,created_by_user_id)
      values($1,$2,$3::date,$4,$5,$6,$7,$8) returning id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note`,[user.organization_id,value.cadence,value.effectiveMonth,value.category,value.amount,value.currency,value.note,user.id])).rows[0];
     await c.query('commit');c.release();c=null;send(res,201,{expense:projectMoney(expense,['amount'])});return true;
    }
    if((req.method==='PATCH'||req.method==='DELETE')&&expenseMatch[1]){
-    c=await db.connect();await c.query('begin');await authorize(c,user,expenseRoles);
+    c=await db.connect();await c.query('begin');await authorize(c,user,'expenses.manage');
     await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
     const existing=(await c.query('select id from agency_planned_expenses where organization_id=$1 and id=$2 for update',[user.organization_id,expenseMatch[1]])).rows[0];if(!existing)fail('Gasto planificado no encontrado',404);
     if(req.method==='DELETE'){await c.query('delete from agency_planned_expenses where organization_id=$1 and id=$2',[user.organization_id,expenseMatch[1]]);await c.query('commit');c.release();c=null;send(res,200,{deleted:true});return true;}
@@ -192,7 +189,7 @@ export async function reports({req,res,url,db,session,body,send}) {
   if(termsMatch){
    if(req.method==='GET'){send(res,200,await commercialTerms(db,user.organization_id,id));return true;}
    if(req.method!=='PATCH')fail('Método no permitido',405);
-   c=await db.connect();await c.query('begin');await authorize(c,user,editRoles);
+   c=await db.connect();await c.query('begin');await authorize(c,user,'commercial-terms.manage');
    await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
    const client=(await c.query(`select c.id from agency_clients c where c.organization_id=$1 and c.id=$2 and not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='clients' and a.record_id=c.id) for update`,[user.organization_id,id])).rows[0];
    if(!client)fail('Cliente no disponible',404);
@@ -217,7 +214,7 @@ export async function reports({req,res,url,db,session,body,send}) {
    if(typeof v!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(v)||v<'1900-01-01'||!Number.isFinite(Date.parse(v))||new Date(v).toISOString().slice(0,10)!==v)fail('Fecha de inicio inválida');
   }
   c=await db.connect();await c.query('begin');
-  await authorize(c,user,editRoles);
+  await authorize(c,user,'commercial-terms.manage');
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
   const row=(await c.query('select *,relationship_started_on::text as relationship_started_on from agency_clients where organization_id=$1 and id=$2 for update',[user.organization_id,id])).rows[0];
   if(!row)fail('Cliente no encontrado',404);

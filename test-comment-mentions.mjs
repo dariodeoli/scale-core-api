@@ -4,12 +4,13 @@ import {PGlite} from '@electric-sql/pglite';
 import {identitySchema} from './scripts/test-identity-schema.mjs';
 import {operations} from './operations.js';
 import {productivity} from './productivity.js';
+import {notifications} from './notifications.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
 await identitySchema(pg);
-for(const name of ['20260910_productivity','20260910_profile_identity','20260910_demo_sessions','20260910_notifications','20260910_project_assignees','20260911_assignment_notifications','20260912_comment_mentions'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
+for(const name of ['20260910_productivity','20260910_profile_identity','20260910_demo_sessions','20260910_work_checklists','20260910_notifications','20260910_project_assignees','20260911_assignment_notifications','20260911_drive_links','20260912_comment_mentions','20260913_ruc_collaboration','20260914_production_traceability'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
 const query=(sql,values)=>pg.query(sql,values),db={query,connect:async()=>({query,release(){}})};
 const insert=async(sql,values)=>(await query(sql+' returning id',values)).rows[0].id;
 const org=await insert("insert into organizations(slug,name) values('mention-a','Mention A')");
@@ -33,6 +34,14 @@ response=await call(productivity,`/api/agency/productivity/orders/${order}/comme
 assert.equal(response.status,201);
 assert.equal((await query('select count(*)::int n from agency_order_comment_mentions where organization_id=$1 and order_comment_id=$2 and mentioned_user_id=$3',[org,response.comment.id,recipient])).rows[0].n,1);
 assert.equal((await query("select count(*)::int n from agency_notifications where organization_id=$1 and user_id=$2 and kind='comment'",[org,recipient])).rows[0].n,2);
+// Order-comment mentions deep-link: the stored notice carries the exact comment.
+const orderNotice=(await query("select comment_id,work_order_id from agency_notifications where organization_id=$1 and user_id=$2 and kind='comment' and work_order_id=$3",[org,recipient,order])).rows[0];
+assert.equal(String(orderNotice.comment_id),String(response.comment.id),'order comment notice stores its comment deep-link');
+let inbox;
+assert.equal(await notifications({req:{method:'GET',socket:{}},res:{},url:new URL('https://test/api/agency/notifications?status=all'),db,session:async()=>({id:recipient,organization_id:org,role:'editor'}),body:async()=>({}),send:(_,status,data)=>inbox={status,...data}}),true);
+assert.ok(inbox.notifications.some(n=>String(n.comment_id)===String(response.comment.id)),'inbox rows expose comment_id for deep links');
+const projectNotice=(await query("select comment_id,work_order_id from agency_notifications where organization_id=$1 and user_id=$2 and kind='comment' and work_order_id is null",[org,recipient])).rows[0];
+assert.equal(projectNotice.comment_id,null,'project mentions keep comment_id null');
 const commentsBefore=(await query('select count(*)::int n from agency_project_comments where organization_id=$1',[org])).rows[0].n;
 response=await call(operations,`/api/agency/projects/${project}/comments`,{body:'@Camila No permitido',mentioned_user_ids:[String(outsider)]});
 assert.equal(response.status,400);

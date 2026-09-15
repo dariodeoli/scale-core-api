@@ -1,13 +1,14 @@
 import {attributeActors} from './actor-identity.js';
+import {roleCan} from './permissions.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {fail,text,id,optId,date,option,owned,link} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {profilePhoto} from './media-policy.js';
 import {historyPage,historyResult} from './history-page.js';
 import {saveCommentMentions} from './comment-mentions.js';
-const makers=['owner','admin','management','production','editor'];
-const managers=['owner','admin','management','production'];
-const finance=['owner','admin','finance'];
+
+
+
 async function assignee(c,key,org){if(key&&!(await c.query('select 1 from organization_members where organization_id=$1 and user_id=$2 and active=true and removed_at is null',[org,key])).rows.length)fail('Responsable sin acceso activo a esta empresa');return key;}
 export function templateItems(raw){
  if(!Array.isArray(raw)||!raw.length||raw.length>40)fail('Agregá entre 1 y 40 piezas');
@@ -20,17 +21,17 @@ export async function productivity({req,res,url,db,session,body,send}){
  try{
   const user=await session(req);if(!user)fail('No autenticado',401);
   const [,kind,key,action]=match,org=user.organization_id;
-  if(kind!=='profile'&&req.method!=='GET'&&!(kind==='templates'?managers:makers).includes(user.role))fail('Sin permiso para esta acción',403);
-  if(kind==='templates'&&!managers.includes(user.role))fail('Sin permiso para plantillas',403);
-  if(kind==='source-events'&&req.method!=='GET'&&!['owner','admin'].includes(user.role))fail('Solo administración puede importar actividad',403);
+  if(kind!=='profile'&&req.method!=='GET'&&!roleCan(user,kind==='templates'?'work-orders.manage':'work-orders.edit'))fail('Sin permiso para esta acción',403);
+  if(kind==='templates'&&!roleCan(user,'work-orders.manage'))fail('Sin permiso para plantillas',403);
+  if(kind==='source-events'&&req.method!=='GET'&&!roleCan(user,'activity.view'))fail('Solo administración puede importar actividad',403);
   c=await db.connect();await c.query('begin');tx=true;
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true),set_config('app.current_organization',$3,true)",[String(user.id),req.socket.remoteAddress||'',String(org)]);
   let result,status=200;
   if(kind==='history'&&req.method==='GET'){
    const page=historyPage(url.searchParams);
    const person=optId(url.searchParams.get('userId'));
-   if(person&&person!==String(user.id)&&!managers.includes(user.role))fail('Sin permiso para historial de otra persona',403);
-   const actor=person||(!managers.includes(user.role)?String(user.id):null);
+   if(person&&person!==String(user.id)&&!roleCan(user,'work-orders.manage'))fail('Sin permiso para historial de otra persona',403);
+   const actor=person||(!roleCan(user,'work-orders.manage')?String(user.id):null);
    result=historyResult((await c.query(`select a.id,a.table_name,a.action,coalesce(nullif(trim(i.full_name),''),i.email,nullif(a.actor,''),'Sistema') as actor_name,
     i.user_id as actor_user_id,i.photo_url as actor_photo_url,(i.user_id is not null) as actor_verified,a.created_at,
     coalesce(a.after_state->>'title',a.before_state->>'title',a.after_state->>'name',a.before_state->>'name','Comentario') as title,
@@ -113,12 +114,12 @@ export async function productivity({req,res,url,db,session,body,send}){
    const client=await owned(c,'agency_clients',key,org);
    const projects=(await c.query(`select p.* from agency_projects p where p.client_id=$1 and p.organization_id=$2 and ${visibleRecord('p','projects')} order by p.id desc`,[key,org])).rows;
    const orders=(await c.query(`select o.* from agency_work_orders o join agency_projects p on p.id=o.project_id where p.client_id=$1 and o.organization_id=$2 and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} order by o.updated_at desc limit 100`,[key,org])).rows;
-   result={client,projects,orders,financeAllowed:finance.includes(user.role)};
-   if(finance.includes(user.role)){
+   result={client,projects,orders,financeAllowed:roleCan(user,'finance.view')};
+   if(roleCan(user,'finance.view')){
     result.invoices=(await c.query('select id,number,currency,total,paid_amount,due_on from agency_invoices where organization_id=$1 and client_id=$2 order by id desc limit 100',[org,key])).rows;
     result.payments=(await c.query('select p.id,p.amount,p.received_on,p.received_by_user_id,a.name as account_name,a.currency,u.email as received_by_email from agency_payments p join agency_invoices i on i.id=p.invoice_id join bank_accounts a on a.id=p.account_id left join users u on u.id=p.received_by_user_id where p.organization_id=$1 and i.client_id=$2 order by p.id desc limit 100',[org,key])).rows;
    }
-   if([...finance,'management','sales'].includes(user.role))result.budgets=(await c.query(`select b.id,b.title,b.number,b.status,b.currency,b.total from agency_budgets b where b.organization_id=$1 and b.client_id=$2 and ${visibleRecord('b','budgets')} order by b.id desc limit 100`,[org,key])).rows;
+   if(roleCan(user,'billing.view'))result.budgets=(await c.query(`select b.id,b.title,b.number,b.status,b.currency,b.total from agency_budgets b where b.organization_id=$1 and b.client_id=$2 and ${visibleRecord('b','budgets')} order by b.id desc limit 100`,[org,key])).rows;
   }else fail('Método no permitido',405);
   await enrichWorkOrderAssignees(c,org,result.orders||result.order);
   await attributeActors(c,org,[

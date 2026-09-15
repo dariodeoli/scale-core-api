@@ -8,6 +8,7 @@ await pg.exec(`create table organizations(id bigint primary key,active boolean d
  create table users(id bigint primary key);
  create table organization_members(organization_id bigint,user_id bigint,role text,active boolean default true,removed_at timestamptz);
  create table organization_person_identity(organization_id bigint,user_id bigint,full_name text,photo_url text,email text);
+ create table agency_operation_audit(id bigserial primary key,organization_id bigint,table_name text not null,action text not null,actor text,ip text,before_state jsonb,after_state jsonb,created_at timestamptz not null default now());
  insert into organizations(id) values(1),(2);insert into users values(1),(2),(3);
  insert into organization_members(organization_id,user_id,role) values(1,1,'owner'),(1,2,'editor'),(2,3,'owner');
  insert into organization_person_identity values(1,1,'Dueño',null,'owner@example.invalid'),(1,2,'Colaborador',null,'editor@example.invalid'),(2,3,'Otra empresa',null,'other@example.invalid');`);
@@ -43,6 +44,26 @@ assert.equal((await call({as:owner})).records.length,0);
 assert.equal((await call({as:owner,scope:'team'})).records.length,1);
 assert.equal((await call({as:other,scope:'team'})).records.length,0);
 assert.equal((await call({week:'2026-09-14'})).records.length,0);
+// Automatic counts derive from audit transitions: once per order, attributed to
+// the transition actor, with system actors and other weeks excluded. The
+// declared PUT flow (versioning and 409) stays unchanged.
+await pg.exec(`insert into agency_operation_audit(organization_id,table_name,action,actor,ip,before_state,after_state,created_at) values
+ (1,'agency_work_orders','UPDATE','2','127.0.0.1','{"status":"review","id":10}','{"status":"approved","id":10,"work_type":"video"}','2026-09-08T12:00:00-03:00'),
+ (1,'agency_work_orders','UPDATE','2','127.0.0.1','{"status":"review","id":10}','{"status":"published","id":10,"work_type":"video"}','2026-09-09T12:00:00-03:00'),
+ (1,'agency_work_orders','UPDATE','system','127.0.0.1','{"status":"review","id":11}','{"status":"published","id":11,"work_type":"foto"}','2026-09-08T12:00:00-03:00'),
+ (1,'agency_work_orders','UPDATE','2','127.0.0.1','{"status":"review","id":12}','{"status":"approved","id":12,"work_type":"foto"}','2026-08-31T12:00:00-03:00'),
+ (1,'agency_work_orders','UPDATE','1','127.0.0.1','{"status":"review","id":13}','{"status":"published","id":13}','2026-09-08T12:00:00-03:00')`);
+r=await call({as:editor});
+assert.equal(r.records.length,1);assert.ok(Array.isArray(r.automatic),'automatic array present on GET');
+assert.equal(r.automatic.length,1);assert.equal(String(r.automatic[0].user_id),'2','transition actor, not assignee');
+assert.equal(r.automatic[0].counts.video,1,'double transition in one week counts exactly once');
+assert.equal(r.automatic[0].counts.foto,0,'transitions from other weeks never count');
+assert.equal(r.automatic[0].counts.untyped,0);assert.equal(r.automatic[0].actor_name,'Colaborador');
+const teamAutomatic=(await call({as:owner,scope:'team'})).automatic;
+assert.equal(teamAutomatic.length,2,'team scope shares per-collaborator automatic counts');
+assert.equal(Object.fromEntries(teamAutomatic.map(row=>[String(row.user_id),row]))['1'].counts.untyped,1,'orders without work_type count under untyped');
+r=await call({method:'PUT'});assert.equal(r.status,409,'stale declared update still conflicts');
+assert.equal((await call()).automatic.length,1,'PUT conflicts never disturb the automatic section');
 failAttribution=true;
 assert.equal((await call({method:'PUT',payload:{...input,version:1,notes:'Must roll back'}})).status,500);
 failAttribution=false;

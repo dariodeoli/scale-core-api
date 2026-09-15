@@ -1,8 +1,9 @@
 import {currencies} from './currencies.js';
+import {roleCan} from './permissions.js';
 import {amount,date,fail,id,option,text} from './suite-validation.js';
 
-const commercialRoles=['owner','admin','management','finance','sales'];
-const financialRoles=['owner','admin','finance'];
+
+
 const discountTypes=['none','percent','fixed'];
 const currentTerm=`effective_from<=current_date and (effective_until is null or effective_until>=current_date)`;
 const sqlDate=value=>value instanceof Date?value.toISOString().slice(0,10):String(value).slice(0,10);
@@ -77,14 +78,14 @@ export async function commercialLifecycle({req,res,url,db,session,body,send}){
  try{
   const user=await session(req);if(!user)fail('No autenticado',401);
   const [,rawClientId,rawTermId]=route;
-  if(!commercialRoles.includes(user.role))fail('Tu rol no permite esta operación',403);
+  if(!roleCan(user,'commercial.manage'))fail('Tu rol no permite esta operación',403);
   if(!['GET','POST'].includes(req.method))fail('Método no permitido',405);
   connection=await db.connect();await connection.query('begin');transaction=true;
   const organization=user.organization_id;
   let result,status=200;
   if(url.pathname==='/api/agency/control-center'){
    if(req.method!=='GET')fail('Método no permitido',405);
-   result=await controlCenter(connection,organization,financialRoles.includes(user.role));
+   result=await controlCenter(connection,organization,roleCan(user,'finance.view'));
   }else{
    const clientId=id(rawClientId);
    const requestedTermId=rawTermId?id(rawTermId):null;
@@ -92,7 +93,7 @@ export async function commercialLifecycle({req,res,url,db,session,body,send}){
     if(requestedTermId)fail('Método no permitido',405);
     const record=await client(connection,organization,clientId);
     result={client:record,...await commercialProfile(connection,organization,clientId)};
-    result.ltv=financialRoles.includes(user.role)?{available:true,records:await ltv(connection,organization,clientId)}:{available:false,reason:'permission'};
+    result.ltv=roleCan(user,'finance.view')?{available:true,records:await ltv(connection,organization,clientId)}:{available:false,reason:'permission'};
    }else if(!requestedTermId){
     const existing=(await connection.query('select id from agency_client_commercial_terms where organization_id=$1 and client_id=$2 and effective_until is null for update',[organization,clientId])).rows[0];
     if(existing)fail('El cliente ya tiene un término comercial vigente; registrá una enmienda',409);

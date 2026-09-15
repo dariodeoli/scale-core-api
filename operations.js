@@ -1,11 +1,12 @@
 import {currencies} from './currencies.js';
+import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 import {companyCurrency,forecastMonth} from './forecast.js';
 import { collaboratorAccess } from './collaborator-access.js';
 import { profilePhoto } from './media-policy.js';
 import {visibleRecord,assertRecordAvailable} from './record-lifecycle.js';
 import {saveCommentMentions} from './comment-mentions.js';
-const financeRoles = ['owner','admin','finance'];
+
 function fail(message, status=400) { throw Object.assign(new Error(message),{status}); }
 const text = (value, max=2000) => typeof value==='string' && value.length<=max ? value.trim() : fail('Texto inválido');
 const identifier = value => /^\d+$/.test(String(value)) && Number(value)>0 ? String(value) : fail('Identificador inválido');
@@ -28,7 +29,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
  if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!salaryOverrideMatch&&!commissionMatch&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
  const user=await session(req);
  if(!user) {send(res,401,{error:'No autenticado'});return true;}
- const allowed=commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? ['owner','admin'].includes(user.role) : financeRoles.includes(user.role);
+ const allowed=commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? roleCan(user,'members.manage') : roleCan(user,'finance.view');
  if(!allowed) {send(res,403,{error:'Tu rol no permite esta operación'});return true;}
  const c=await db.connect();
  try {
@@ -101,7 +102,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
      await c.query('select id from organizations where id=$1 for update',[org]);
      if((await c.query('select id from agency_collaborators where organization_id=$1 and lower(trim(email))=$2',[org,contact])).rows.length)fail('Esta persona ya tiene un perfil en la empresa. Buscalo en Equipo o restauralo desde Papelera.',409);
     }
-    if(uid&&String(uid)!==String(previous.user_id||'')&&!['owner','admin'].includes(user.role))fail('Solo administración puede vincular accesos',403);
+    if(uid&&String(uid)!==String(previous.user_id||'')&&!roleCan(user,'members.manage'))fail('Solo administración puede vincular accesos',403);
     if(uid&&!(await c.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[org,uid])).rows.length) fail('El acceso debe pertenecer a esta empresa');
     if(uid&&contact){const linked=(await c.query('select email from users where id=$1',[uid])).rows[0];if(linked.email!==contact){if(incoming.user_id)fail('El acceso debe coincidir con el correo de contacto');uid=null;}}
     const jobId=optionalId(b.job_role_id);let jobTitle=text(b.job_title||'',120);

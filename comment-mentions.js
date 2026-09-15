@@ -28,9 +28,10 @@ export async function saveCommentMentions(c,{organizationId,commentKind,commentI
  await c.query(`insert into ${table}(organization_id,${column},mentioned_user_id)
    select $1,$2,member_id from unnest($3::bigint[]) as member_id
    on conflict do nothing`,[organizationId,commentId,parsed]);
- const dedupe=(commentKind==='project'?'agency_project_comments:':'agency_order_comments:')+commentId;
- for(const recipient of parsed){
-  await c.query("select enqueue_agency_notification($1,$2,'comment',$3,$4,$5,$6,$7)",[organizationId,recipient,title,body,workOrderId,projectId,dedupe]);
- }
+  const dedupe=(commentKind==='project'?'agency_project_comments:':'agency_order_comments:')+commentId;
+  const commentKey=commentKind==='order'?commentId:null;
+  for(const recipient of parsed){
+   await c.query("select enqueue_agency_notification($1,$2,'comment',$3,$4,$5,$6,$7,$8)",[organizationId,recipient,title,body,workOrderId,projectId,dedupe,commentKey]);
+  }
  return parsed;
 }

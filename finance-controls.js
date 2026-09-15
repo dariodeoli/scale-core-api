@@ -1,4 +1,5 @@
 import {fail,text,id,optId,amount,date,owned} from './suite-validation.js';
+import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 const today=()=>new Date().toISOString().slice(0,10);
 async function retryRecord(c,table,org,key){
@@ -12,7 +13,7 @@ export async function financeControls({req,res,url,db,session,body,send}){
  let c,tx=false;
  try{
   const user=await session(req);if(!user)fail('No autenticado',401);
-  if(!['owner','admin','finance'].includes(user.role))fail('Tu rol no permite operar las cuentas',403);
+  if(!roleCan(user,'accounts.manage'))fail('Tu rol no permite operar las cuentas',403);
   c=await db.connect();await c.query('begin');tx=true;
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const org=user.organization_id,kind=route[1],key=route[2],action=route[3];let result,status=200;

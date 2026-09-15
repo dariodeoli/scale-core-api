@@ -45,6 +45,7 @@ import {automationApi,startAutomation} from './automation.js';
 import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
 import {trialDetails,trialDetailsFromInput,registerTrial} from './trial-registration.js';
 import {platformAdmin,bootstrapInitialPlatformAdmin} from './platform-admin.js';
+import {rolePermissions,roleCan} from './permissions.js';
 import {createEmailDelivery,publicEmailDeliveryStatus} from './email-delivery.js';
 import {acceptClientPortalGoogleInvite,clientPortal,clientPortalGoogleInvite,clientPortalResetEmail,clientPortalUrl} from './client-portal.js';
 import {accountSecurity,googleRecentAuthBinding,issueGoogleRecentAuthHandoff} from './account-security.js';
@@ -161,6 +162,8 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_inventory_storage_locations.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_salary_forecast.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_client_terms_and_planned_expenses.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260914_role_permissions.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260914_production_traceability.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
@@ -191,7 +194,12 @@ async function session(req) {
     if(!identity)return null;
     Object.assign(user,identity);
   }
-  if(user)delete user.has_personal_identity;
+  if(user){delete user.has_personal_identity;
+   try{
+    const overrides=(await db.query('select capability,allowed from agency_role_permissions where organization_id=$1 and role=$2',[user.organization_id,user.role])).rows;
+    if(overrides.length)user.capabilities=Object.fromEntries(overrides.map(row=>[row.capability,row.allowed]));
+   }catch{/* Permission table not provisioned in this environment; defaults apply. */}
+  }
   if(user?.demo_owner_user_id){const preview=(await db.query('select demo_role from sessions where id=$1',[token])).rows[0];if(preview?.demo_role)user.role=preview.demo_role;}
   if(user?.organization_slug==='scale-demo-controles-20260908'){
     const c=await db.connect();try{
@@ -205,7 +213,6 @@ async function session(req) {
   }
   return user;
 }
-function can(user, roles) { return Boolean(user && roles.includes(user.role)); }
 async function auditContext(client,user,req){await client.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);}
 async function auditedQuery(user,req,sql,params){const c=await db.connect();try{await c.query('begin');await auditContext(c,user,req);const r=await c.query(sql,params);await c.query('commit');return r;}catch(e){await c.query('rollback');throw e;}finally{c.release();}}
 function security(res, extra={}) { res.setHeader('X-Content-Type-Options','nosniff'); res.setHeader('X-Frame-Options','DENY'); res.setHeader('Referrer-Policy','no-referrer'); res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()'); res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains'); res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline' data:; img-src 'self' data:; script-src 'self' 'unsafe-inline' data:; connect-src 'self' https://scaleparaguay.com https://www.scaleparaguay.com https://app.scaleparaguay.com"); Object.entries(extra).forEach(([k,v])=>res.setHeader(k,v)); }
@@ -229,6 +236,7 @@ const server = http.createServer(async (req,res) => {
     if(url.pathname.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
     if(await subscriptionBilling({req,res,url,db,session,body,send}))return;
     if(await platformAdmin({req,res,url,db,session,body,send,bootstrapValue:initialPlatformAdminEmail}))return;
+    if(await rolePermissions({req,res,url,db,session,body,send}))return;
     // Billing is separate from membership: suspended owners retain billing,
     // logout and company switching, but no private operational reads/writes.
     if(url.pathname.startsWith('/api/agency/')||url.pathname==='/api/metrics'||url.pathname==='/api/hub/overview'||(url.pathname==='/api/auth/organizations'&&req.method==='POST')){
@@ -440,7 +448,7 @@ const server = http.createServer(async (req,res) => {
       return send(res,200,await setDefaultOrganization(db,user,await body(req)));
     }
     if(url.pathname==='/api/auth/organizations'&&req.method==='POST'){
-      const user=await session(req);if(!can(user,['owner','admin']))return send(res,403,{error:'Solo administración puede crear una empresa'});
+      const user=await session(req);if(!roleCan(user,'company.create'))return send(res,403,{error:'Solo administración puede crear una empresa'});
       const b=await body(req),name=typeof b.name==='string'?b.name.trim():'',slug=typeof b.slug==='string'?b.slug.trim().toLowerCase():'';
       if(name.length<2||name.length>160||!/^\w[\w-]{2,59}$/.test(slug))return send(res,400,{error:'Nombre y código de empresa inválidos'});
       if(b.billingCurrency!==undefined&&!['USD','PYG'].includes(b.billingCurrency))return send(res,400,{error:'Elegí USD o PYG para la suscripción'});
@@ -468,7 +476,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/metrics' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      if(!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      if(!roleCan(user,'metrics.view')) return send(res,403,{error:'Sin permiso'});
       const from=url.searchParams.get('from') || new Date(Date.now()-366*86400000).toISOString().slice(0,10);
       const to=url.searchParams.get('to') || new Date().toISOString().slice(0,10);
       if(!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return send(res,400,{error:'Rango inválido'});
@@ -476,7 +484,7 @@ const server = http.createServer(async (req,res) => {
       return send(res,200,{events:r.rows});
     }
     if (url.pathname === '/api/hub/organizations' && req.method === 'GET') {
-      const user=await session(req); if(!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'company.create')) return send(res,403,{error:'Sin permiso'});
       const r=await db.query('select o.slug,o.name,o.active,m.role from organizations o join organization_members m on m.organization_id=o.id where m.user_id=$1 and m.active=true and m.removed_at is null order by o.name',[user.id]);
       return send(res,200,{organizations:r.rows});
     }
@@ -514,7 +522,7 @@ const server = http.createServer(async (req,res) => {
       finally { client.release(); }
     }
     if (url.pathname === '/api/agency/client-payment-status' && req.method === 'GET') {
-      const user=await session(req); if(!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'billing.view')) return send(res,403,{error:'Sin permiso'});
       const status=url.searchParams.get('status');
       const statuses=['up_to_date','due_soon','late','severe'];
       if(status && !statuses.includes(status)) return send(res,400,{error:'Estado de cobro inválido'});
@@ -527,7 +535,7 @@ const server = http.createServer(async (req,res) => {
       return send(res,200,{clients:r.rows});
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'POST') {
-      const user = await session(req); if (!can(user,['owner','admin','management','sales'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!roleCan(user,'clients.manage')) return send(res,403,{error:'Sin permiso'});
       const {name='',email=null,phone=null,notes=null,logo_url=null,color_key='violet',tax_id='',legal_name=''}=await body(req);
       if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 120) return send(res,400,{error:'Nombre inválido'});
       const logo=await clientLogo(logo_url),color=clientColor(color_key);
@@ -546,7 +554,7 @@ const server = http.createServer(async (req,res) => {
       return send(res,200,{projects:r.rows});
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'POST') {
-      const user = await session(req); if (!can(user,['owner','admin','management','sales','production'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!roleCan(user,'projects.manage')) return send(res,403,{error:'Sin permiso'});
       const {name='',clientId,driveUrl:rawDriveUrl=null,urgency=null}=await body(req);
       const driveUrl=externalLink(rawDriveUrl);
       if (typeof name !== 'string' || name.trim().length < 2 || !Number.isInteger(Number(clientId))) return send(res,400,{error:'Proyecto inválido'});
@@ -562,23 +570,27 @@ const server = http.createServer(async (req,res) => {
       return send(res,200,{workOrders:r.rows});
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {
-      const user = await session(req); if (!can(user,['owner','admin','management','production','editor'])) return send(res,403,{error:'Sin permiso'});
-      const {title='',projectId,status='to_record',description=null,driveUrl:rawDriveUrl=null,urgency=null}=await body(req);
+      const user = await session(req); if (!roleCan(user,'work-orders.edit')) return send(res,403,{error:'Sin permiso'});
+      const {title='',projectId,status='to_record',description=null,driveUrl:rawDriveUrl=null,urgency=null,work_type=null,due_time=null}=await body(req);
       const driveUrl=externalLink(rawDriveUrl);
+      const workType=work_type===undefined||work_type===null||work_type===''?null:['video','reedicion','foto','produccion','entregable'].includes(work_type)?work_type:null;
+      if(work_type!==undefined&&work_type!==null&&work_type!==''&&workType===null) return send(res,400,{error:'Tipo de trabajo inválido'});
+      const dueTime=due_time===undefined||due_time===null||due_time===''?null:/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(String(due_time))?String(due_time).slice(0,5):null;
+      if((due_time!==undefined&&due_time!==null&&due_time!=='')&&dueTime===null) return send(res,400,{error:'Hora de entrega inválida'});
       const allowedStatuses=['blocked','to_record','recorded','editing','review'];
       if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(projectId)) || !allowedStatuses.includes(status)) return send(res,400,{error:'Orden inválida'});
       const project=await db.query(`select p.id from agency_projects p join agency_clients c on c.id=p.client_id where p.id=$1 and p.organization_id=$2 and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')}`,[Number(projectId),user.organization_id]);
       if(!project.rows[0]) return send(res,404,{error:'Proyecto no encontrado'});
-      const r=await auditedQuery(user,req,'insert into agency_work_orders(title,project_id,status,description,drive_url,organization_id,urgency) values($1,$2,$3,$4,$5,$6,$7) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null,user.organization_id,normalizeUrgency(urgency)]);
+      const r=await auditedQuery(user,req,'insert into agency_work_orders(title,project_id,status,description,drive_url,organization_id,urgency,work_type,due_time) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *',[title.trim(),Number(projectId),status,description||null,driveUrl||null,user.organization_id,normalizeUrgency(urgency),workType,dueTime]);
       return send(res,201,{workOrder:r.rows[0]});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'GET') {
-      const user = await session(req); if (!user) return send(res,401,{error:'No autenticado'}); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!user) return send(res,401,{error:'No autenticado'}); if (!roleCan(user,'members.manage')) return send(res,403,{error:'Sin permiso'});
       const r = await db.query('select u.id,u.email,m.role,m.active,m.created_at from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 and m.removed_at is null order by m.created_at asc',[user.organization_id]);
       return send(res,200,{members:r.rows});
     }
     if (url.pathname === '/api/agency/members' && req.method === 'POST') {
-      const user = await session(req); if (!user) return send(res,401,{error:'No autenticado'}); if (!can(user,['owner','admin'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!user) return send(res,401,{error:'No autenticado'}); if (!roleCan(user,'members.manage')) return send(res,403,{error:'Sin permiso'});
       const {email='',password='',role='viewer'} = await body(req); const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
       if (!/^\S+@\S+\.\S+$/.test(normalizedEmail) || (password && (typeof password !== 'string' || password.length < 12)) || !memberRoles.includes(role) || (role === 'owner' && user.role !== 'owner')) return send(res,400,{error:'Datos de invitación inválidos'});
       const client = await db.connect();
@@ -601,12 +613,12 @@ const server = http.createServer(async (req,res) => {
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'GET') {
-      const user = await session(req); if (!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!roleCan(user,'commercial.manage')) return send(res,403,{error:'Sin permiso'});
       const r = await db.query(`select b.*,c.name as client_name,count(i.id)::int as item_count from agency_budgets b join agency_clients c on c.id=b.client_id left join agency_budget_items i on i.budget_id=b.id where b.organization_id=$1 and ${visibleRecord('b','budgets')} group by b.id,c.name order by b.created_at desc`,[user.organization_id]);
       return send(res,200,{budgets:r.rows});
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {
-      const user = await session(req); if (!can(user,['owner','admin','management','finance','sales'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!roleCan(user,'commercial.manage')) return send(res,403,{error:'Sin permiso'});
       const {title='',clientId,currency=user.default_currency??'PYG',items=[],notes=null,validUntil=null,tax_rate=.1,sections=null} = await body(req);
       const normalizedSections=budgetSections(sections);
       if(![0,.05,.1].includes(Number(tax_rate)))return send(res,400,{error:'IVA inválido'});
@@ -631,12 +643,12 @@ const server = http.createServer(async (req,res) => {
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
     }
     if (url.pathname === '/api/agency/accounts' && req.method === 'GET') {
-      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'accounts.manage')) return send(res,403,{error:'Sin permiso'});
       const r=await db.query(`select a.*,u.email as custodian_email from bank_accounts a left join users u on u.id=a.custodian_user_id where a.organization_id=$1 and ${visibleRecord('a','accounts')} order by a.active desc,a.name`,[user.organization_id]);
       return send(res,200,{accounts:r.rows});
     }
     if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {
-      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'accounts.manage')) return send(res,403,{error:'Sin permiso'});
       const {name='',accountType='bank',currency=user.default_currency??'PYG',institution=null,accountNumber=null,holderName=null,custodianUserId=null}=await body(req);
       if(typeof name !== 'string' || name.trim().length<2 || !['bank','cash','digital','investment'].includes(accountType) || !currencies.includes(currency)) return send(res,400,{error:'Cuenta inválida'});
       const custodianId=custodianUserId === null || custodianUserId === '' ? null : Number(custodianUserId);
@@ -645,12 +657,12 @@ const server = http.createServer(async (req,res) => {
       return send(res,201,{account:r.rows[0]});
     }
     if (url.pathname === '/api/agency/custodians' && req.method === 'GET') {
-      const user=await session(req); if(!can(user,['owner','admin','management','finance','production','editor','sales'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'custodians.view')) return send(res,403,{error:'Sin permiso'});
       const r=await db.query('select u.id,u.email,m.role from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 and m.active=true order by u.email',[user.organization_id]);
       return send(res,200,{members:r.rows});
     }
     if (url.pathname === '/api/agency/invoices' && req.method === 'GET') {
-      const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'invoices.manage')) return send(res,403,{error:'Sin permiso'});
       const requested=new URL(url,'https://scale.local').searchParams.get('limit');
       if(requested==='all'){
         const r=await db.query('select i.*,c.name as client_name from agency_invoices i join agency_clients c on c.id=i.client_id where i.organization_id=$1 order by i.created_at desc',[user.organization_id]);
@@ -660,7 +672,7 @@ const server = http.createServer(async (req,res) => {
       return send(res,200,{invoices:r.rows.slice(0,20),hasMore:r.rows.length>20});
     }
     if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {
-      const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'invoices.manage')) return send(res,403,{error:'Sin permiso'});
       const {clientId,total,currency=user.default_currency??'PYG',dueOn=null,notes=null}=await body(req); const amount=Number(total);
       if(!Number.isInteger(Number(clientId)) || !Number.isFinite(amount) || amount<0 || !currencies.includes(currency)) return send(res,400,{error:'Factura inválida'});
       const client=await db.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[Number(clientId),user.organization_id]); if(!client.rows[0]) return send(res,404,{error:'Cliente no encontrado'});
@@ -669,13 +681,13 @@ const server = http.createServer(async (req,res) => {
       return send(res,201,{invoice:r.rows[0]});
     }
     if (url.pathname === '/api/agency/payments' && req.method === 'GET') {
-      const user=await session(req); if(!can(user,['owner','admin','finance','management','sales'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'billing.view')) return send(res,403,{error:'Sin permiso'});
       const r=await db.query('select p.*,i.number as invoice_number,c.name as client_name,a.name as account_name,a.account_type,a.currency,u.email as received_by_email from agency_payments p join agency_invoices i on i.id=p.invoice_id join agency_clients c on c.id=i.client_id join bank_accounts a on a.id=p.account_id left join users u on u.id=p.received_by_user_id where p.organization_id=$1 order by p.received_on desc,p.id desc',[user.organization_id]);
       await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'received_by_user_id',fallback:['received_by_email']}]);
       return send(res,200,{payments:r.rows});
     }
     if (url.pathname === '/api/agency/payments' && req.method === 'POST') {
-      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'payments.manage')) return send(res,403,{error:'Sin permiso'});
       const {invoiceId,accountId,amount,receivedOn=null,reference=null,receivedByUserId=null}=await body(req); const paid=Number(amount);
       if(!Number.isInteger(Number(invoiceId)) || !Number.isInteger(Number(accountId)) || !Number.isFinite(paid) || paid<=0) return send(res,400,{error:'Pago inválido'});
       const valid=await db.query('select i.currency,i.total,i.paid_amount from agency_invoices i join bank_accounts a on a.id=$2 and a.organization_id=i.organization_id and a.currency=i.currency where i.id=$1 and i.organization_id=$3',[Number(invoiceId),Number(accountId),user.organization_id]);
@@ -688,13 +700,13 @@ const server = http.createServer(async (req,res) => {
       return send(res,201,{payment:r.rows[0]});
     }
     if (url.pathname === '/api/agency/transfers' && req.method === 'GET') {
-      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'transfers.manage')) return send(res,403,{error:'Sin permiso'});
       const r=await db.query('select t.*,f.name as from_account_name,d.name as to_account_name,u.email as created_by_email from account_transfers t join bank_accounts f on f.id=t.from_account_id join bank_accounts d on d.id=t.to_account_id left join users u on u.id=t.created_by_user_id where t.organization_id=$1 order by t.transferred_on desc,t.id desc',[user.organization_id]);
       await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'created_by_user_id',fallback:['created_by_email']}]);
       return send(res,200,{transfers:r.rows});
     }
     if (url.pathname === '/api/agency/transfers' && req.method === 'POST') {
-      const user=await session(req); if(!can(user,['owner','admin','finance'])) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'transfers.manage')) return send(res,403,{error:'Sin permiso'});
       const {fromAccountId,toAccountId,amount,transferredOn=null,reference=null,notes=null}=await body(req); const transferAmount=Number(amount);
       if(!Number.isInteger(Number(fromAccountId)) || !Number.isInteger(Number(toAccountId)) || Number(fromAccountId)===Number(toAccountId) || !Number.isFinite(transferAmount) || transferAmount<=0) return send(res,400,{error:'Transferencia inválida'});
       const accounts=await db.query('select id,currency,balance from bank_accounts where organization_id=$1 and id=any($2::bigint[])',[user.organization_id,[Number(fromAccountId),Number(toAccountId)]]);
@@ -707,7 +719,7 @@ const server = http.createServer(async (req,res) => {
     }
     const orderMatch = url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)$/);
     if (orderMatch && req.method === 'PATCH') {
-      const user = await session(req); if (!can(user,['owner','admin','management','production','editor'])) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!roleCan(user,'work-orders.edit')) return send(res,403,{error:'Sin permiso'});
       const { status } = await body(req);
       const allowedStatuses=['blocked','to_record','recorded','editing','review','approved','published'];
       if (!allowedStatuses.includes(status)) return send(res,400,{error:'Estado inválido'});
@@ -721,8 +733,8 @@ const server = http.createServer(async (req,res) => {
       // Operational signals respect the same visibility as their modules: a
       // role that cannot open the source list receives null, never a number.
       const summary={...r.rows[0]};
-      if(!['owner','admin','management','finance','sales'].includes(user.role))summary.unanswered_budgets=null;
-      if(!['owner','admin','management','production','finance','editor','viewer'].includes(user.role))summary.unverified_inventory=null;
+      if(!roleCan(user,'commercial.manage'))summary.unanswered_budgets=null;
+      if(!roleCan(user,'inventory.view'))summary.unverified_inventory=null;
       return send(res,200,{summary});
     }
     if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); return res.end(await fs.readFile(path.join(root,'public/index.html'))); }

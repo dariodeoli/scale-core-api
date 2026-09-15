@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 export const accessRoles=['owner','admin','management','finance','sales','production','editor','viewer'];
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
@@ -65,7 +66,7 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
  try{
   if(!match){if(req.method!=='GET')fail('Método no permitido',405);send(res,200,await resolveInvite(db,url.searchParams.get('token'),{countVisit:true}));return true;}
   const user=await session(req);if(!user)fail('Ingresá a tu cuenta',401);
-  if(!['owner','admin'].includes(user.role))fail('Sin permiso para gestionar accesos',403);
+  if(!roleCan(user,'members.manage'))fail('Sin permiso para gestionar accesos',403);
   if(user.demo_owner_user_id)fail('El Demo no crea enlaces ni accesos externos',403);
   c=await db.connect();await c.query('begin');
   await c.query("select set_config('app.current_user',$1,true)",[String(user.id)]);

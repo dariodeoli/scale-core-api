@@ -5,7 +5,7 @@ import {workOrderLinks} from './work-order-links.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile('schema.sql','utf8'));
-for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls','20260910_productivity','20260910_client_lifecycle','20260913_ruc_collaboration'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
+for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls','20260910_productivity','20260910_client_lifecycle','20260910_work_checklists','20260910_demo_sessions','20260910_notifications','20260913_ruc_collaboration','20260914_production_traceability'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
 const query=(sql,values)=>pg.query(sql,values),db={query,connect:async()=>({query,release(){}})};
 const insert=async(sql,values)=>(await query(sql+' returning id',values)).rows[0].id;
 const org=await insert("insert into organizations(slug,name) values('links-a','Links A')");
@@ -19,10 +19,24 @@ const order=await insert("insert into agency_work_orders(organization_id,project
 const user={id:editor,organization_id:org,role:'editor'};
 async function call(path,as=user,method='GET',payload={}){let response;await workOrderLinks({req:{method,socket:{}},res:{},url:new URL('https://test/api/agency/'+path),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>response={status,...data}});return response;}
 let response=await call(`work-orders/${order}/links`,user,'POST',{label:'Brief',url:'https://drive.example/brief'});assert.equal(response.status,201);const link=response.link;
+assert.equal(link.visible_to_client,false,'links default to private');
 response=await call(`work-orders/${order}/links`);assert.equal(response.status,200);assert.deepEqual(response.links.map(row=>row.label),['Brief']);
-response=await call(`work-orders/${order}/links`,user,'POST',{label:'Nuevo brief',url:'https://drive.example/brief'});assert.equal(response.status,201);assert.equal(response.link.id,link.id,'same URL updates metadata instead of embedding a duplicate in text');
+assert.equal(response.links[0].visible_to_client,false);
+assert.equal((await call(`work-orders/${order}/links/${link.id}`,user,'PATCH',{visible_to_client:true})).status,200);
+assert.equal((await call(`work-orders/${order}/links`)).links[0].visible_to_client,true,'visibility toggle applies immediately');
+assert.equal((await call(`work-orders/${order}/links/${link.id}`,user,'PATCH',{visible_to_client:false})).status,200);
+assert.equal((await call(`work-orders/${order}/links`)).links[0].visible_to_client,false,'removing visibility applies immediately');
+for(const payload of [{},{visible_to_client:'true'},{visible_to_client:true,url:'https://drive.example/x'}])assert.equal((await call(`work-orders/${order}/links/${link.id}`,user,'PATCH',payload)).status,400);
+assert.equal((await call(`work-orders/${order}/links/${link.id}`,{...user,id:viewer,role:'viewer'},'PATCH',{visible_to_client:true})).status,403,'readers never toggle visibility');
+assert.equal((await call(`work-orders/${order}/links/${link.id}`,{...user,organization_id:other},'PATCH',{visible_to_client:true})).status,404);
+response=await call(`work-orders/${order}/links`,user,'POST',{label:'Nuevo brief',url:'https://drive.example/brief',visible_to_client:true});assert.equal(response.status,201);assert.equal(response.link.id,link.id,'same URL updates metadata instead of embedding a duplicate in text');
+assert.equal(response.link.visible_to_client,false,'upsert preserves the stored visibility flag');
+const visibleLink=(await call(`work-orders/${order}/links`,user,'POST',{label:'Aprobación',url:'https://drive.example/aprobacion',visible_to_client:true})).link;
+assert.equal(visibleLink.visible_to_client,true,'POST accepts the visibility flag on a new link');
+assert.deepEqual((await call(`work-orders/${order}/links`)).links.map(row=>row.visible_to_client),[false,true]);
 assert.equal((await call(`work-orders/${order}/links`,{...user,id:viewer,role:'viewer'},'POST',{label:'No',url:'https://drive.example/no'})).status,403);
 assert.equal((await call(`work-orders/${order}/links/${link.id}`,{...user,organization_id:other},'DELETE')).status,404);
 assert.equal((await call(`work-orders/${order}/links/${link.id}`,user,'DELETE')).status,200);
+assert.equal((await call(`work-orders/${order}/links/${visibleLink.id}`,user,'DELETE')).status,200);
 assert.equal((await call(`work-orders/${order}/links`)).links.length,0);
-await pg.close();console.log('PASS: work-order named links are relational, HTTPS-only, role-gated, and tenant-scoped');
+await pg.close();console.log('PASS: work-order named links are relational, HTTPS-only, role-gated, tenant-scoped, and client visibility is private by default with writer-only toggling');

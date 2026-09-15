@@ -1,10 +1,11 @@
 import {attributeActors} from './actor-identity.js';
+import {roleCan} from './permissions.js';
 import {fail,text} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 
-const managers=['owner','admin','management'];
-const bookers=[...managers,'production'];
-const readers=[...bookers,'finance','editor','viewer'];
+
+
+
 const productionTypes=['video','podcast','ads','fotografia','streaming','otro'];
 
 const identifier=value=>{
@@ -25,12 +26,12 @@ export function studioTimestamp(value){
 const version=(value,current)=>{if(!Number.isInteger(value)||value!==current)fail('La reserva cambió. Recargá antes de guardar.',409);};
 
 async function authorize(connection,user,allowed,write){
- if(!allowed.includes(user.role))fail('Tu rol no permite esta operación',403);
+ if(!roleCan(user,allowed))fail('Tu rol no permite esta operación',403);
  const organization=identifier(user.organization_id);
  const company=(await connection.query(`select id from organizations where id=$1 and active ${write?'for update':'for share'}`,[organization])).rows[0];
  if(!company)fail('Sin acceso a esta empresa',403);
  const membership=(await connection.query('select role from organization_members where organization_id=$1 and user_id=$2 and active and removed_at is null for share',[organization,identifier(user.id)])).rows[0];
- if(!membership||!allowed.includes(membership.role))fail('Sin acceso activo para esta operación',403);
+ if(!membership||!roleCan({role:membership.role,capabilities:user.capabilities},allowed))fail('Sin acceso activo para esta operación',403);
  return organization;
 }
 async function activeMembers(connection,organization,ids){
@@ -51,11 +52,11 @@ async function studioReservation(connection,organization,id){
  const reservation=(await connection.query('select * from agency_studio_reservations where id=$1 and organization_id=$2 for update',[id,organization])).rows[0];
  if(!reservation)fail('Reserva de estudio no encontrada',404);return reservation;
 }
-function ownReservation(user,reservation){if(!managers.includes(user.role)&&String(reservation.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
+function ownReservation(user,reservation){if(!roleCan(user,'studio.manage')&&String(reservation.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
 
 async function context(connection,organization,user){
- const canReserve=bookers.includes(user.role);
- return {user_id:String(user.id),role:user.role,time_zone:'America/Asuncion',can_manage:managers.includes(user.role),can_reserve:canReserve,
+ const canReserve=roleCan(user,'inventory.book');
+ return {user_id:String(user.id),role:user.role,time_zone:'America/Asuncion',can_manage:roleCan(user,'studio.manage'),can_reserve:canReserve,
   members:canReserve?(await connection.query(`select m.user_id::text as id,coalesce(nullif(p.full_name,''),u.email) as name,p.photo_url
    from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=m.user_id and p.organization_id=m.organization_id
    where m.organization_id=$1 and m.active and m.removed_at is null order by name`,[organization])).rows:[],
@@ -113,8 +114,8 @@ export async function studioReservations({req,res,url,db,session,body,send}){
   const user=await session(req);if(!user)fail('No autenticado',401);
   const [,kind,rawId,action]=route,id=rawId?identifier(rawId):null,write=req.method!=='GET';
   if(!['GET','POST','PATCH'].includes(req.method))fail('Método no permitido',405);
-  const allowed=write?(kind==='studio-spaces'?managers:bookers):readers;
-  if(!allowed.includes(user.role))fail('Tu rol no permite esta operación',403);
+  const allowed=write?(kind==='studio-spaces'?'studio.manage':'inventory.book'):'inventory.view';
+  if(!roleCan(user,allowed))fail('Tu rol no permite esta operación',403);
   connection=await db.connect();await connection.query('begin isolation level read committed');transaction=true;
   const organization=await authorize(connection,user,allowed,write);
   if(write)await connection.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);

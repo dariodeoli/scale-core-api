@@ -1,12 +1,13 @@
 import {attributeActors} from './actor-identity.js';
+import {roleCan} from './permissions.js';
 import {fail,text,amount,date,option} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {currencies} from './currencies.js';
 import {companyCurrency} from './forecast.js';
 
-const managers=['owner','admin','management'];
-const bookers=[...managers,'production'];
-const readers=[...bookers,'finance','editor','viewer'];
+
+
+
 const identifier=value=>{
  if(!['string','number'].includes(typeof value)||!/^\d{1,19}$/.test(String(value))||typeof value==='number'&&!Number.isSafeInteger(value))fail('Identificador inválido');
  const n=BigInt(value);if(n<=0n||n>=9223372036854775807n)fail('Identificador inválido');return String(n);
@@ -28,8 +29,8 @@ export function inventoryTimestamp(value){
 }
 const version=(value,current)=>{if(!Number.isInteger(value)||value!==current)fail('La reserva cambió. Recargá antes de guardar.',409);};
 
-async function authorize(c,user,allowed,write){
- if(!allowed.includes(user.role))fail('Tu rol no permite esta operación',403);
+async function authorize(c,user,capability,write){
+ if(!roleCan(user,capability))fail('Tu rol no permite esta operación',403);
  const org=identifier(user.organization_id);
  // All inventory mutations take this first, then membership/items in fixed order.
  // READ COMMITTED + a separate overlap query sees the previous committed writer.
@@ -37,7 +38,7 @@ async function authorize(c,user,allowed,write){
  if(!company)fail('Sin acceso a esta empresa',403);
  const membership=(await c.query('select role from organization_members where organization_id=$1 and user_id=$2 and active and removed_at is null for share',[org,identifier(user.id)])).rows[0];
  // Check both session role (including demo preview) and current membership.
- if(!membership||!allowed.includes(membership.role))fail('Sin acceso activo para esta operación',403);
+ if(!membership||!roleCan({role:membership.role,capabilities:user.capabilities},capability))fail('Sin acceso activo para esta operación',403);
  return org;
 }
 async function activeMembers(c,org,ids){
@@ -60,7 +61,7 @@ async function reservation(c,org,key){
  const row=(await c.query('select * from agency_inventory_reservations where id=$1 and organization_id=$2 for update',[key,org])).rows[0];
  if(!row)fail('Reserva no encontrada',404);return row;
 }
-function ownReservation(user,row){if(!managers.includes(user.role)&&String(row.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
+function ownReservation(user,row){if(!roleCan(user,'inventory.manage')&&String(row.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
 
 async function catalog(c,org){
  return (await c.query(`select i.*,cat.name as category_name,cat.active as category_active,loc.name as storage_location_name,loc.active as storage_location_active,
@@ -126,7 +127,7 @@ async function saveReservation(c,user,org,payload,key){
 }
 async function transition(c,user,org,key,action,payload){
  const row=await reservation(c,org,key);
- const assignedReturn=action==='return'&&bookers.includes(user.role)&&[row.return_user_id,row.custodian_user_id].some(id=>String(id)===String(user.id));
+ const assignedReturn=action==='return'&&roleCan(user,'inventory.book')&&[row.return_user_id,row.custodian_user_id].some(id=>String(id)===String(user.id));
  if(!assignedReturn)ownReservation(user,row);
  const target={checkout:'checked_out',return:'returned',cancel:'cancelled'}[action];
  if(row.status===target)return {reservation:(await listReservations(c,org,null,null,key))[0],alreadyRecorded:true};
@@ -283,17 +284,17 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
   const user=await session(req);if(!user)fail('No autenticado',401);
   const [,kind,rawKey,action]=route,key=rawKey?identifier(rawKey):null,write=req.method!=='GET';
   if(!['GET','POST','PATCH','DELETE'].includes(req.method))fail('Método no permitido',405);
-  const allowed=write?(kind==='inventory-reservations'?bookers:managers):readers;
-  if(!allowed.includes(user.role))fail('Tu rol no permite esta operación',403);
+  const capability=write?(kind==='inventory-reservations'?'inventory.book':'inventory.manage'):'inventory.view';
+  if(!roleCan(user,capability))fail('Tu rol no permite esta operación',403);
   c=await db.connect();await c.query('begin isolation level read committed');transaction=true;
-  const org=await authorize(c,user,allowed,write);
+  const org=await authorize(c,user,capability,write);
   if(write)await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
   let result,status=200;
   if(kind==='inventory-context'&&req.method==='GET'&&!key&&!action){
-   result={user_id:String(user.id),role:user.role,time_zone:'America/Asuncion',can_manage:managers.includes(user.role),can_reserve:bookers.includes(user.role),
+   result={user_id:String(user.id),role:user.role,time_zone:'America/Asuncion',can_manage:roleCan(user,'inventory.manage'),can_reserve:roleCan(user,'inventory.book'),
     // Viewer retains catalogue/calendar access, without gaining the member picker.
-    members:bookers.includes(user.role)?(await c.query(`select m.user_id::text as id,coalesce(nullif(p.full_name,''),u.email) as name from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=m.user_id and p.organization_id=m.organization_id where m.organization_id=$1 and m.active and m.removed_at is null order by name`,[org])).rows:[],
-    projects:bookers.includes(user.role)?(await c.query(`select p.id::text as id,p.name from agency_projects p join agency_clients a on a.id=p.client_id and a.organization_id=p.organization_id where p.organization_id=$1 and p.status='active' and a.active and ${visibleRecord('p','projects')} and ${visibleRecord('a','clients')} order by p.name`,[org])).rows:[]};
+    members:roleCan(user,'inventory.book')?(await c.query(`select m.user_id::text as id,coalesce(nullif(p.full_name,''),u.email) as name from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=m.user_id and p.organization_id=m.organization_id where m.organization_id=$1 and m.active and m.removed_at is null order by name`,[org])).rows:[],
+    projects:roleCan(user,'inventory.book')?(await c.query(`select p.id::text as id,p.name from agency_projects p join agency_clients a on a.id=p.client_id and a.organization_id=p.organization_id where p.organization_id=$1 and p.status='active' and a.active and ${visibleRecord('p','projects')} and ${visibleRecord('a','clients')} order by p.name`,[org])).rows:[]};
   }else if(kind==='inventory-categories'&&!action){
    if(req.method==='GET'&&!key)result={categories:(await c.query('select * from agency_inventory_categories where organization_id=$1 order by active desc,name',[org])).rows};
    else if(req.method==='POST'&&!key||req.method==='PATCH'&&key){

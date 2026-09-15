@@ -13,7 +13,7 @@ await pg.exec(await fs.readFile('migrations/20260910_client_links.sql','utf8'));
 for(const file of ['20260908_google_oauth.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_invite_links.sql','20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 await pg.exec(await fs.readFile('migrations/20260911_drive_links.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_project_assignees.sql','utf8'));
-for(const file of ['20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
+for(const file of ['20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260910_work_checklists.sql','20260910_notifications.sql','20260913_ruc_collaboration.sql','20260914_production_traceability.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('suite-other','Other') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('suite-owner@example.invalid','unused') returning id")).rows[0].id;

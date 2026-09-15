@@ -1,13 +1,14 @@
 import {fail,id,optId,date,owned} from './suite-validation.js';
+import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 import {templateItems,monthDate} from './productivity.js';
 import {notificationEmail} from './notifications.js';
 import {visibleRecord} from './record-lifecycle.js';
-const managers=['owner','admin','management','production'];
+
 export async function automationApi({req,res,url,db,session,body,send}){
  const match=url.pathname.match(/^\/api\/agency\/schedules(?:\/(\d+))?$/);if(!match)return false;let c;
  try{
-  const user=await session(req);if(!user)fail('No autenticado',401);if(!managers.includes(user.role))fail('Sin permiso para automatizaciones',403);
+  const user=await session(req);if(!user)fail('No autenticado',401);if(!roleCan(user,'work-orders.manage'))fail('Sin permiso para automatizaciones',403);
   c=await db.connect();await c.query('begin');await c.query("select set_config('app.current_user',$1,true)",[String(user.id)]);let result;
   if(req.method==='GET'&&!match[1])result={schedules:(await c.query('select s.*,t.name as template_name,p.name as project_name from agency_recurring_plans s join agency_work_templates t on t.id=s.template_id join agency_projects p on p.id=s.project_id where s.organization_id=$1 order by s.id desc',[user.organization_id])).rows};
   else if(req.method==='POST'&&!match[1]){
@@ -25,7 +26,7 @@ export async function automationApi({req,res,url,db,session,body,send}){
  }catch(e){if(c)await c.query('rollback');console.error(JSON.stringify({event:'schedule_error',status:e.status||500}));send(res,e.status||500,{error:e.status?e.message:'No se pudo guardar la programación'});return true;}finally{c?.release();}
 }
 export async function runMonthly(c){
- const plans=(await c.query(`select s.*,t.items from agency_recurring_plans s join agency_work_templates t on t.id=s.template_id and t.organization_id=s.organization_id join organizations org on org.id=s.organization_id join organization_members m on m.organization_id=s.organization_id and m.user_id=s.created_by join agency_projects p on p.id=s.project_id and p.organization_id=s.organization_id where s.active and org.active and org.demo_owner_user_id is null and m.active and m.removed_at is null and m.role=any($1) and p.status='active' and ${visibleRecord('p','projects')} and s.next_month<=date_trunc('month',now() at time zone 'America/Asuncion')::date order by s.id limit 30 for update of s skip locked`,[managers])).rows;
+ const plans=(await c.query(`select s.*,t.items from agency_recurring_plans s join agency_work_templates t on t.id=s.template_id and t.organization_id=s.organization_id join organizations org on org.id=s.organization_id join organization_members m on m.organization_id=s.organization_id and m.user_id=s.created_by join agency_projects p on p.id=s.project_id and p.organization_id=s.organization_id where s.active and org.active and org.demo_owner_user_id is null and m.active and m.removed_at is null and m.role=any($1) and p.status='active' and ${visibleRecord('p','projects')} and s.next_month<=date_trunc('month',now() at time zone 'America/Asuncion')::date order by s.id limit 30 for update of s skip locked`,[['owner','admin','management','production']])).rows;
  let created=0;
  const month=(await c.query("select to_char(now() at time zone 'America/Asuncion','YYYY-MM') as month")).rows[0].month;
  for(const s of plans){

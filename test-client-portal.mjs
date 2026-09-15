@@ -4,7 +4,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {clientPortal} from './client-portal.js';
 
 const pg=new PGlite();
-for(const file of ['schema.sql','migrations/20260908_treasury_ledger.sql','migrations/20260908_people_commissions_comments.sql','migrations/20260908_operations_complete.sql','migrations/20260908_referral_discounts.sql','migrations/20260908_collaborator_profiles.sql','migrations/20260908_agency_suite.sql','migrations/20260908_daily_controls.sql','migrations/20260912_client_portal.sql','migrations/20260912_client_portal_password_resets.sql','migrations/20260913_client_portal_vertical_slice.sql'])await pg.exec(await fs.readFile(file,'utf8'));
+for(const file of ['schema.sql','migrations/20260908_treasury_ledger.sql','migrations/20260908_people_commissions_comments.sql','migrations/20260908_operations_complete.sql','migrations/20260908_referral_discounts.sql','migrations/20260908_collaborator_profiles.sql','migrations/20260908_agency_suite.sql','migrations/20260908_daily_controls.sql','migrations/20260910_productivity.sql','migrations/20260910_work_checklists.sql','migrations/20260910_demo_sessions.sql','migrations/20260910_notifications.sql','migrations/20260912_client_portal.sql','migrations/20260912_client_portal_password_resets.sql','migrations/20260913_client_portal_vertical_slice.sql','migrations/20260913_ruc_collaboration.sql','migrations/20260914_production_traceability.sql'])await pg.exec(await fs.readFile(file,'utf8'));
 const query=(sql,params)=>pg.query(sql,params),db={query,connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const owner=(await query("insert into users(email,password_hash) values('portal-owner@example.invalid','unused') returning id")).rows[0].id;
@@ -44,7 +44,7 @@ const list=await call('/api/client-portal/deliveries',{actor:null,cookie:renewed
 assert.equal((await call(`/api/client-portal/deliveries/${orderB}`,{actor:null,cookie:renewedSessionCookie})).status,404,'work-order IDs are not portal delivery IDs');
 const deliveryId=list.deliveries[0].id;assert.equal((await call(`/api/client-portal/deliveries/999999`,{actor:null,cookie:renewedSessionCookie})).status,404);
 const detail=await call(`/api/client-portal/deliveries/${deliveryId}`,{actor:null,cookie:renewedSessionCookie});assert.equal(detail.status,200);assert.equal(Object.hasOwn(detail.delivery,'asset_url'),false,'asset URL stays behind the download redirect boundary');
-const download=await call(`/api/client-portal/deliveries/${deliveryId}/download`,{actor:null,cookie:renewedSessionCookie});assert.equal(download.status,302);assert.equal(download.headers.Location,'https://drive.google.com/a');assert.equal((await query('select count(*)::int as count from client_portal_delivery_downloads where delivery_id=$1',[deliveryId])).rows[0].count,1,'authorized download is audited before redirect');
+const download=await call(`/api/client-portal/deliveries/${deliveryId}/download`,{actor:null,cookie:renewedSessionCookie});assert.equal(download.status,302);assert.equal(download.headers.Location,'https://drive.google.com/a');assert.equal(download.content,undefined,'the agency server never streams or proxies the asset');assert.equal((await query('select count(*)::int as count from client_portal_delivery_downloads where delivery_id=$1',[deliveryId])).rows[0].count,1,'authorized download is audited before redirect');
 assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/comments`,{method:'POST',actor:null,cookie:renewedSessionCookie,payload:{body:'Listo para publicar'}})).status,201);
 assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/decision`,{method:'POST',actor:null,cookie:renewedSessionCookie,payload:{decision:'changes_requested'}})).status,400);
 assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/decision`,{method:'POST',actor:null,cookie:renewedSessionCookie,payload:{decision:'changes_requested',comment:'Ajustar el cierre del video'}})).status,200);
@@ -53,4 +53,38 @@ assert.equal((await call(`/api/client-portal/deliveries/${deliveryId}/comments`,
 const otherInvite=await call(`/api/agency/clients/${clientB}/client-portal-invites`,{method:'POST',payload:{email:'cliente@example.invalid'}});const otherToken=new URL(otherInvite.url).searchParams.get('token');assert.equal((await call('/api/client-portal/invites/accept',{method:'POST',actor:null,payload:{token:otherToken,fullName:'Cliente QA',password:replacementPassword}})).status,409,'one portal account cannot be attached to a second client');
 assert.equal((await call(`/api/agency/work-orders/${orderA}/client-portal-delivery`,{method:'PATCH',payload:{visible:false}})).status,200);
 assert.equal((await call('/api/client-portal/deliveries',{actor:null,cookie:renewedSessionCookie})).deliveries.length,0,'revoked delivery disappears immediately');
-assert.equal(session.length,64);await pg.close();console.log('PASS: isolated client identities, one-client accounts, authorized delivery downloads, comments, decisions and revocation');
+assert.equal(session.length,64);
+
+// CP-4: only links explicitly marked client-visible reach the portal detail.
+await query("insert into agency_work_order_links(organization_id,work_order_id,label,url,created_by_user_id) values($1,$2,'Oculto','https://drive.google.com/oculto',$3)",[org,orderA,owner]);
+await query("insert into agency_work_order_links(organization_id,work_order_id,label,url,created_by_user_id,visible_to_client) values($1,$2,'Aprobación','https://drive.google.com/aprobacion',$3,true)",[org,orderA,owner]);
+// CP-2: only owner/admin/management/production invite portal users.
+assert.equal((await call(`/api/agency/clients/${clientA}/client-portal-invites`,{method:'POST',payload:{email:'no-role@example.invalid'},actor:{...employee,role:'editor'}})).status,403,'viewer or editor roles cannot invite');
+// CP-3: a delivery in review can never be published to the portal.
+const orderReview=(await query("insert into agency_work_orders(organization_id,project_id,title,status) values($1,$2,'En revisión','review') returning id",[org,projectA])).rows[0].id;
+assert.equal((await call(`/api/agency/work-orders/${orderReview}/client-portal-delivery`,{method:'POST',payload:{assetUrl:'https://drive.google.com/review',assetName:'Revisión'}})).status,409,'review status is not publishable');
+// Republish bumps the version; the audited bump joins the activity log.
+assert.equal((await call(`/api/agency/work-orders/${orderA}/client-portal-delivery`,{method:'POST',payload:{assetUrl:'https://drive.google.com/a-v2',assetName:'Archivo A v2'}})).status,200);
+const activity=await call(`/api/client-portal/deliveries/${deliveryId}/activity`,{actor:null,cookie:renewedSessionCookie});
+assert.equal(activity.status,200);assert.ok(Array.isArray(activity.activity));
+const kinds=activity.activity.map(entry=>entry.kind);
+assert.ok(kinds.includes('comment'),'comments join the activity log');
+assert.ok(kinds.includes('decision'),'decisions join the activity log');
+assert.ok(kinds.includes('download'),'downloads join the activity log');
+assert.ok(kinds.includes('version'),'version bumps join the activity log');
+assert.equal(activity.activity.find(entry=>entry.kind==='version').version,2);
+for(let i=1;i<activity.activity.length;i++)assert.ok(new Date(activity.activity[i-1].at)<=new Date(activity.activity[i].at),'activity renders chronologically');
+const detailLinks=await call(`/api/client-portal/deliveries/${deliveryId}`,{actor:null,cookie:renewedSessionCookie});
+assert.deepEqual(detailLinks.links.map(link=>link.label),['Aprobación'],'unmarked links never reach the portal');
+assert.equal(Object.hasOwn(detailLinks.delivery,'asset_url'),false,'the asset URL stays behind the download redirect');
+// CP-1 empty log: a freshly published delivery has no activity entries.
+const orderSilent=(await query("insert into agency_work_orders(organization_id,project_id,title,status) values($1,$2,'Entrega silenciosa','approved') returning id",[org,projectA])).rows[0].id;
+assert.equal((await call(`/api/agency/work-orders/${orderSilent}/client-portal-delivery`,{method:'POST',payload:{assetUrl:'https://drive.google.com/silent',assetName:'Silenciosa'}})).status,200);
+const silentId=(await query('select id from client_portal_deliveries where work_order_id=$1',[orderSilent])).rows[0].id;
+const silentActivity=await call(`/api/client-portal/deliveries/${silentId}/activity`,{actor:null,cookie:renewedSessionCookie});
+assert.equal(silentActivity.status,200);assert.deepEqual(silentActivity.activity,[],'empty state renders for a delivery without activity');
+// CP-2 own-client scope: another client's delivery is unreachable.
+const deliveryB=(await query('select id from client_portal_deliveries where work_order_id=$1',[orderB])).rows[0].id;
+assert.equal((await call(`/api/client-portal/deliveries/${deliveryB}/activity`,{actor:null,cookie:renewedSessionCookie})).status,404,'a granted client never reads another client delivery');
+assert.equal((await call(`/api/client-portal/deliveries/${deliveryB}`,{actor:null,cookie:renewedSessionCookie})).status,404);
+assert.equal(session.length,64);await pg.close();console.log('PASS: isolated client identities, one-client accounts, authorized delivery downloads, comments, decisions and revocation, client-visible link filtering, scoped activity logs and private-by-default portal exposure');

@@ -1,3 +1,4 @@
+import {roleCan} from './permissions.js';
 import {fail,text} from './suite-validation.js';
 
 const defaultProviderUrl='https://ruc.sun.com.py/api/ruc';
@@ -83,7 +84,7 @@ export async function rucLookup({req,res,url,db,session,body,send,provider,confi
  let c,tx=false;
  try{
   const user=await session(req);if(!user)fail('No autenticado',401);
-  if(!['owner','admin','management','sales'].includes(user.role))fail('Sin permiso para gestionar clientes',403);
+  if(!roleCan(user,'clients.manage'))fail('Sin permiso para gestionar clientes',403);
   if(user.demo_owner_user_id)fail('El Demo no consume consultas reales de RUC. Usá esta función en tu agencia.',403);
   if(req.method!=='POST')fail('Método no permitido',405);
   const b=await body(req);

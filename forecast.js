@@ -1,4 +1,5 @@
 import {visibleRecord} from './record-lifecycle.js';
+import {roleCan} from './permissions.js';
 
 export const forecastRoles = ['owner','admin','finance'];
 export const forecastTimezone = 'America/Asuncion';
@@ -39,7 +40,7 @@ export async function financialForecast({req,res,url,db,session,send}) {
  try {
   const user=await session(req);
   if(!user)fail('No autenticado',401);
-  if(!forecastRoles.includes(user.role))fail('Tu rol no permite ver saldos',403);
+  if(!roleCan(user,'finance.view'))fail('Tu rol no permite ver saldos',403);
   if(req.method!=='GET')fail('Método no permitido',405);
   const month=forecastMonth(url.searchParams.get('month'));
   // A single database snapshot and numeric sums avoid races and float rounding.

@@ -12,11 +12,12 @@ import {clientLinks} from './client-links.js';
 import {setRecordAssignees} from './project-assignees.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {assertUniqueClientRuc} from './ruc-lookup.js';
+import {roleCan,roles} from './permissions.js';
 import {commercialProfile} from './commercial-lifecycle.js';
-const admin=['owner','admin'], commercial=[...admin,'management','finance','sales'], production=[...admin,'management','production'];
-const roles=[...admin,'management','finance','sales','production','editor','viewer'];
 const stages=['lead','contacted','proposal','negotiation','won','lost'];
 const driveLinks=value=>{if(value===undefined)return undefined;const rows=Array.isArray(value)?value:String(value||'').split(/\r?\n/).filter(Boolean).map(url=>({url}));if(rows.length>10)fail('Podés agregar hasta 10 enlaces');return rows.map(row=>{const url=link(row.url);return url?{url,label:text(row.label||'',80)||'Archivo o carpeta'}:null}).filter(Boolean);};
+const workTypeValue=value=>{if(value===undefined||value===null||value==='')return null;return option(value,['video','reedicion','foto','produccion','entregable']);};
+const dueTimeValue=value=>{if(value===undefined||value===null||value==='')return null;if(!/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(String(value)))fail('Hora de entrega inválida');return String(value).slice(0,5);};
 function patchDriveLinks(old,incoming){
  // Inspect the PATCH itself: merging with old hides omitted fields and legacy updates.
  let links;
@@ -57,9 +58,9 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
    else{res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(html);}return true;
   }
   const org=user.organization_id,kind=m[1],key=m[2],action=m[3];
-  const permitted=kind==='members'||kind==='activity'||kind==='settings'?admin:kind==='inventory'?req.method==='GET'?[...production,'finance','editor','viewer']:[...production,'finance']:['clients','projects','work-orders'].includes(kind)?req.method==='GET'?roles:kind==='clients'?[...admin,'management','sales']:kind==='work-orders'&&!action?[...production,'editor']:production:commercial;
-  if(!permitted.includes(user.role))fail('Tu rol no permite esta operación',403);
-  if(kind==='dashboard'&&!['owner','admin','finance'].includes(user.role))fail('Tu rol no permite ver saldos',403);
+  const capability=kind==='members'||kind==='activity'||kind==='settings'?'members.manage':kind==='inventory'?req.method==='GET'?'inventory.view':'inventory.manage':['clients','projects','work-orders'].includes(kind)?req.method==='GET'?null:kind==='clients'?'clients.manage':kind==='work-orders'&&!action?'work-orders.edit':'work-orders.manage':'commercial.manage';
+  if(capability&&!roleCan(user,capability))fail('Tu rol no permite esta operación',403);
+  if(kind==='dashboard'&&!roleCan(user,'finance.view'))fail('Tu rol no permite ver saldos',403);
   await c.query('begin');transaction=true;await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   let result,status=200;
   if(kind==='members'){
@@ -80,7 +81,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
     if(kind==='projects')identity=(await c.query('select name as client_name,logo_url as client_logo_url,color_key as client_color_key from agency_clients where id=$1 and organization_id=$2',[old.client_id,org])).rows[0]||{};
     if(kind==='work-orders')identity=(await c.query('select c.name as client_name,c.logo_url as client_logo_url,c.color_key as client_color_key from agency_projects p join agency_clients c on c.id=p.client_id where p.id=$1 and p.organization_id=$2',[old.project_id,org])).rows[0]||{};
     result={record:{...old,...identity}};
-    if(kind==='clients'&&commercial.includes(user.role))result.commercial=await commercialProfile(c,org,old.id);
+    if(kind==='clients'&&roleCan(user,'commercial.manage'))result.commercial=await commercialProfile(c,org,old.id);
    }
    else if(action&&kind==='work-orders'&&req.method==='POST'){
     const project=await owned(c,'agency_projects',old.project_id,org);
@@ -105,10 +106,10 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
      const state=option(b.status,['blocked','to_record','recorded','editing','review','approved','published']);let step=old.approval_step;
      if(state!==old.status){
       if(state==='published')await ensureClientApproval(c,old);
-      if(['approved','published'].includes(state)){if(!production.includes(user.role))fail('Solo gerencia o producción puede aprobar',403);const project=await owned(c,'agency_projects',old.project_id,org);if(state==='approved'&&(old.status!=='review'||old.approval_step+1<project.approval_levels))fail('Completá los niveles de aprobación desde el detalle');if(state==='published'&&old.status!=='approved')fail('Primero aprobá la pieza');step=project.approval_levels;}
+      if(['approved','published'].includes(state)){if(!roleCan(user,'work-orders.manage'))fail('Solo gerencia o producción puede aprobar',403);const project=await owned(c,'agency_projects',old.project_id,org);if(state==='approved'&&(old.status!=='review'||old.approval_step+1<project.approval_levels))fail('Completá los niveles de aprobación desde el detalle');if(state==='published'&&old.status!=='approved')fail('Primero aprobá la pieza');step=project.approval_levels;}
       else step=0;
      }
-     const assignee=optId(b.assigned_user_id);if(!unified)await member(c,assignee,org);const title=text(b.title,160);if(title.length<2)fail('Ingresá el título');const {links,primary}=patchDriveLinks(old,incoming);const record=(await c.query('update agency_work_orders set title=$1,description=$2,drive_url=$3,drive_links=$4,due_date=$5,assigned_user_id=$6,estimated_hours=$7,actual_hours=$8,status=$9,approval_step=$10,updated_at=now() where id=$11 returning *',[title,text(b.description||''),primary,JSON.stringify(links||[]),date(b.due_date),assignee,amount(b.estimated_hours||0),amount(b.actual_hours||0),state,step,key])).rows[0];result={record,workOrder:record};
+     const assignee=optId(b.assigned_user_id);if(!unified)await member(c,assignee,org);const title=text(b.title,160);if(title.length<2)fail('Ingresá el título');const {links,primary}=patchDriveLinks(old,incoming);const workType=Object.hasOwn(incoming,'work_type')?workTypeValue(incoming.work_type):old.work_type;const dueTime=Object.hasOwn(incoming,'due_time')?dueTimeValue(incoming.due_time):old.due_time;const record=(await c.query('update agency_work_orders set title=$1,description=$2,drive_url=$3,drive_links=$4,due_date=$5,assigned_user_id=$6,estimated_hours=$7,actual_hours=$8,status=$9,approval_step=$10,work_type=$11,due_time=$12,updated_at=now() where id=$13 returning *',[title,text(b.description||''),primary,JSON.stringify(links||[]),date(b.due_date),assignee,amount(b.estimated_hours||0),amount(b.actual_hours||0),state,step,workType,dueTime,key])).rows[0];result={record,workOrder:record};
     }
     if(unified){
      const assignees=await setRecordAssignees(c,user,kind,key,incoming.assignees);

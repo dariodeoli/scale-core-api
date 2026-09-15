@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 import {fail,text,link,owned} from './suite-validation.js';
 const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -14,7 +15,7 @@ export async function contentReview({req,res,url,db,session,body,send}){
  if(!pub&&!route)return false;let c,tx=false;
  try{
   const user=pub?null:await session(req);if(!pub&&!user)fail('No autenticado',401);
-  if(user&&!['owner','admin','management','production'].includes(user.role))fail('Sin permiso para compartir piezas',403);
+  if(user&&!roleCan(user,'portal.manage'))fail('Sin permiso para compartir piezas',403);
   c=await db.connect();await c.query('begin');tx=true;
   if(pub){
    let review=(await c.query('select * from agency_content_reviews where token_hash=$1',[hash(pub[1])])).rows[0];

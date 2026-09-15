@@ -1,17 +1,18 @@
 import {attributeActors} from './actor-identity.js';
-const administrators = ['owner','admin'];
-const production = [...administrators,'management','production'];
-const commercial = [...administrators,'management','finance','sales'];
+import {roleCan} from './permissions.js';
+
+
+
 export const archiveKinds = {
- clients: {table:'agency_clients',name:'name',roles:[...administrators,'management','sales']},
- projects: {table:'agency_projects',name:'name',roles:production},
- 'work-orders': {table:'agency_work_orders',name:'title',roles:production},
- leads: {table:'agency_leads',name:'name',roles:commercial},
- plans: {table:'agency_plans',name:'name',roles:commercial},
- inventory: {table:'agency_inventory',name:'name',roles:[...production,'finance']},
- budgets: {table:'agency_budgets',name:'title',roles:commercial},
- collaborators: {table:'agency_collaborators',name:'full_name',roles:[...administrators,'finance']},
- accounts: {table:'bank_accounts',name:'name',roles:[...administrators,'finance']},
+ clients: {table:'agency_clients',name:'name',capability:'clients.manage'},
+ projects: {table:'agency_projects',name:'name',capability:'projects.edit'},
+ 'work-orders': {table:'agency_work_orders',name:'title',capability:'work-orders.manage'},
+ leads: {table:'agency_leads',name:'name',capability:'commercial.manage'},
+ plans: {table:'agency_plans',name:'name',capability:'commercial.manage'},
+ inventory: {table:'agency_inventory',name:'name',capability:'inventory.manage'},
+ budgets: {table:'agency_budgets',name:'title',capability:'commercial.manage'},
+ collaborators: {table:'agency_collaborators',name:'full_name',capability:'members.manage'},
+ accounts: {table:'bank_accounts',name:'name',capability:'accounts.manage'},
 };
 export function visibleRecord(alias, kind) {
  if(!/^[a-z_]+$/.test(alias)||!Object.hasOwn(archiveKinds,kind))throw new Error('Invalid archive query');
@@ -36,8 +37,8 @@ export async function recordLifecycle({req,res,url,db,session,send}) {
  let c;
  try {
   const user=await session(req);if(!user)fail('No autenticado',401);
-  const allowedKinds=Object.entries(archiveKinds).filter(([,v])=>v.roles.includes(user.role));
-  if(trash&&!allowedKinds.length||match&&!(match[1]==='members'?administrators:archiveKinds[match[1]].roles).includes(user.role))fail('Tu rol no permite eliminar o restaurar este registro',403);
+  const allowedKinds=Object.entries(archiveKinds).filter(([,v])=>roleCan(user,v.capability));
+  if(trash&&!allowedKinds.length||match&&!roleCan(user,match[1]==='members'?'members.manage':archiveKinds[match[1]].capability))fail('Tu rol no permite eliminar o restaurar este registro',403);
   c=await db.connect();await c.query('begin');
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const org=user.organization_id;

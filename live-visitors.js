@@ -29,7 +29,7 @@ export async function liveVisitors({req,res,url,db,session,send}){
    // A same-origin GET may omit Origin; authentication and tenant filtering still apply.
    if(!adminHosts.has(host)||(origin!==undefined&&!adminOrigins.has(origin))||req.headers['sec-fetch-site']==='cross-site')fail('Origen no permitido',403);
    const user=await session(req);if(!user)fail('No autenticado',401);
-   if(!['owner','admin'].includes(user.role))fail('Solo dueños y administradores',403);
+   if(!roleCan(user,'visitors.view'))fail('Solo dueños y administradores',403);
    if(user.demo_owner_user_id||user.organization_slug==='scale-demo-controles-20260908'){
     send(res,200,{organization_id:String(user.organization_id),estimated:true,synthetic:true,window_seconds:90,refresh_seconds:30,sites:[{site:'demo-website',label:'Web de ejemplo',active:3}]},responseHeaders);return true;
    }

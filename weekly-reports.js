@@ -32,6 +32,37 @@ export function declaration(raw){
  return {metrics,notes:text(b.notes??'',3000),version:b.version};
 }
 
+const automaticTypes=['video','reedicion','foto','produccion','entregable','untyped'];
+export async function automaticCounts(c,organizationId,week,userId=null){
+ // Finished counts derive from the append-only audit: the first UPDATE per work
+ // order whose after_state reaches approved|published, bucketed to the week of
+ // that transition. Each order counts once per report, attributed to the
+ // transition actor; non-numeric/system actors are ignored.
+ const rows=(await c.query(`
+  select t.actor as user_id, coalesce(t.work_type,'untyped') as work_type, count(*)::int as count
+  from (
+   select distinct on (a.organization_id, coalesce((a.after_state->>'id')::bigint,0))
+    a.actor, a.after_state->>'work_type' as work_type, a.created_at
+   from agency_operation_audit a
+   where a.organization_id=$1 and a.table_name='agency_work_orders' and a.action='UPDATE'
+    and a.after_state->>'status' in ('approved','published')
+    and coalesce(a.before_state->>'status','') not in ('approved','published')
+    and a.actor ~ '^[1-9][0-9]*$'
+   order by a.organization_id, coalesce((a.after_state->>'id')::bigint,0), a.created_at
+  ) t
+  where (t.created_at at time zone 'America/Asuncion')::date between $2::date and ($2::date + interval '6 days')
+   and ($3::bigint is null or t.actor::bigint=$3)
+  group by t.actor, coalesce(t.work_type,'untyped')
+ `,[organizationId,week,userId])).rows;
+ const automatic=new Map();
+ for(const row of rows){
+  const key=String(row.user_id),entry=automatic.get(key)||{user_id:key,counts:Object.fromEntries(automaticTypes.map(type=>[type,0]))};
+  entry.counts[row.work_type]=(entry.counts[row.work_type]||0)+row.count;
+  automatic.set(key,entry);
+ }
+ return [...automatic.values()];
+}
+
 export async function weeklyReports({req,res,url,db,session,body,send}){
  if(url.pathname!=='/api/agency/weekly-reports')return false;
  let c,tx=false;
@@ -62,8 +93,10 @@ export async function weeklyReports({req,res,url,db,session,body,send}){
    result={records:(await c.query('select r.*,r.week_start::text as week from agency_weekly_reports r where r.organization_id=$1 and r.week_start=$2 and ($3::bigint is null or r.user_id=$3) order by r.user_id',[user.organization_id,week,scope==='team'?null:user.id])).rows};
   }
   await attributeActors(c,user.organization_id,[{rows:result.records,userId:'user_id'}]);
+  const automatic=await automaticCounts(c,user.organization_id,week,scope==='team'?null:user.id);
+  await attributeActors(c,user.organization_id,[{rows:automatic,userId:'user_id'}]);
   if(tx){await c.query('commit');tx=false;}
-  send(res,200,{...result,week,scope,source:'declared',canViewTeam:member.role==='owner'&&user.role==='owner',canEdit:member.role!=='viewer'&&user.role!=='viewer'&&scope==='own'});
+  send(res,200,{...result,week,scope,source:'declared',automatic,canViewTeam:member.role==='owner'&&user.role==='owner',canEdit:member.role!=='viewer'&&user.role!=='viewer'&&scope==='own'});
  }catch(error){if(tx)await c.query('rollback');send(res,error.status||500,{error:error.status?error.message:'No se pudo cargar o guardar el reporte semanal'});}
  finally{c?.release();}
  return true;

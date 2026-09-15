@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {roleCan} from './permissions.js';
 import bcrypt from 'bcryptjs';
 import {throttle,validatePassword} from './password-access.js';
 import {externalLink} from './media-policy.js';
@@ -18,7 +19,7 @@ try{
 const clientOrigins=new Set(['https://app.scaleparaguay.com','https://cliente.scaleparaguay.com',new URL(clientOrigin).origin]);
 export const clientPortalOrigin=clientOrigin;
 export const clientPortalUrl=path=>`${clientOrigin}/${String(path).replace(/^\/+/, '')}`;
-const clientRoles=['owner','admin','management','production'];
+
 const fail=(message,status=400,details={})=>{throw Object.assign(Error(message),{status},details);};
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const token=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:fail('Enlace inválido');
@@ -60,7 +61,7 @@ async function validInvite(c,raw,{lock=false}={}){
  if(!invite.client_active||!invite.organization_active)fail('Este enlace venció o fue desactivado.',410);
  return invite;
 }
-function actor(user){if(!user||!clientRoles.includes(user.role))fail('Sin permiso para gestionar el portal de clientes',403);}
+function actor(user){if(!user||!roleCan(user,'portal.manage'))fail('Sin permiso para gestionar el portal de clientes',403);}
 export function clientPortalResetEmail({token}){
  const resetUrl=`${clientOrigin}/recuperar?resetToken=${token}`;
  const safeUrl=htmlEscape(resetUrl);
@@ -96,7 +97,7 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
  const passwordReset=url.pathname==='/api/client-portal/auth/password/reset';
  const logout=url.pathname==='/api/client-portal/auth/logout';
  const me=url.pathname==='/api/client-portal/me';
- const deliveryMatch=url.pathname.match(/^\/api\/client-portal\/deliveries\/(\d+)(?:\/(comments|decision|download))?$/);
+  const deliveryMatch=url.pathname.match(/^\/api\/client-portal\/deliveries\/(\d+)(?:\/(comments|decision|download|activity))?$/);
  const deliveries=url.pathname==='/api/client-portal/deliveries';
  const internalInvite=url.pathname.match(/^\/api\/agency\/clients\/(\d+)\/client-portal-invites$/);
  const revokeInvite=url.pathname.match(/^\/api\/agency\/client-portal-invites\/(\d+)\/revoke$/);
@@ -196,8 +197,39 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   if(!deliveryMatch[2]){
    if(req.method!=='GET')fail('Método no permitido',405);const comments=(await c.query('select c.id,c.body,c.created_at,u.full_name as author_name from client_portal_delivery_comments c join client_portal_users u on u.id=c.portal_user_id where c.delivery_id=$1 and c.organization_id=$2 order by c.created_at,c.id',[delivery.id,delivery.organization_id])).rows;
    const decision=(await c.query('select decision,created_at,updated_at from client_portal_delivery_decisions where delivery_id=$1 and portal_user_id=$2 and version=$3',[delivery.id,user.id,delivery.version])).rows[0]||null;
+   // Only named links explicitly marked visible are exposed; asset URLs are
+   // already excluded above and the links table enforces HTTPS-only values.
+   const links=(await c.query('select id,label,url from agency_work_order_links where organization_id=$1 and work_order_id=$2 and visible_to_client order by id',[delivery.organization_id,delivery.work_order_id])).rows;
    const {asset_url,...publicDelivery}=delivery;
-   await c.query('commit');transaction=false;send(res,200,{delivery:publicDelivery,comments,decision});return true;
+   await c.query('commit');transaction=false;send(res,200,{delivery:publicDelivery,links,comments,decision});return true;
+  }
+  if(deliveryMatch[2]==='activity'){
+   if(req.method!=='GET')fail('Método no permitido',405);
+   // Read-only chronological log derived from portal tables plus the audited
+   // version bumps. Scope stays inside the granted client through scopedDelivery.
+   const activity=(await c.query(`
+    select entry.kind, entry.at, entry.version, entry.actor_name, entry.summary from (
+     select 'decision' as kind, dec.created_at as at, dec.version, u.full_name as actor_name,
+      case dec.decision when 'approved' then 'Aprobó la entrega' else 'Solicitó cambios' end as summary
+     from client_portal_delivery_decisions dec join client_portal_users u on u.id=dec.portal_user_id
+     where dec.delivery_id=$1 and dec.organization_id=$2
+     union all
+     select 'comment', cm.created_at, null, u.full_name, left(cm.body,160)
+     from client_portal_delivery_comments cm join client_portal_users u on u.id=cm.portal_user_id
+     where cm.delivery_id=$1 and cm.organization_id=$2
+     union all
+     select 'download', dl.created_at, null, u.full_name, 'Descargó el entregable'
+     from client_portal_delivery_downloads dl join client_portal_users u on u.id=dl.portal_user_id
+     where dl.delivery_id=$1 and dl.organization_id=$2
+     union all
+     select 'version', a.created_at, (a.after_state->>'version')::int, p.full_name, 'Nueva versión publicada'
+     from agency_operation_audit a
+     left join agency_user_profiles p on p.organization_id=a.organization_id and p.user_id=(a.after_state->>'published_by_user_id')::bigint
+     where a.organization_id=$2 and a.table_name='client_portal_deliveries' and a.action='UPDATE'
+      and coalesce((a.after_state->>'version')::int,0)>coalesce((a.before_state->>'version')::int,0)
+      and (a.after_state->>'id')::bigint=$1
+    ) entry order by entry.at asc, entry.kind desc`,[delivery.id,delivery.organization_id])).rows;
+   await c.query('commit');transaction=false;send(res,200,{activity},{'Cache-Control':'no-store'});return true;
   }
   if(deliveryMatch[2]==='download'){
    if(req.method!=='GET')fail('Método no permitido',405);

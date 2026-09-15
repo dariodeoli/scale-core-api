@@ -9,7 +9,7 @@ const pg=new PGlite();
 await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
 await identitySchema(pg);
-for(const name of ['20260910_notifications','20260910_project_assignees'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
+for(const name of ['20260910_notifications','20260910_project_assignees','20260910_work_checklists','20260913_ruc_collaboration','20260914_production_traceability'])await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
 const query=(s,v)=>pg.query(s,v),db={query,connect:async()=>({query,release(){}})};
 const insert=async(s,v)=>(await query(s+' returning id',v)).rows[0].id;
 const org=await insert("insert into organizations(slug,name) values('notice-a','A')");

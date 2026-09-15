@@ -1,10 +1,12 @@
 import {fail,owned} from './suite-validation.js';
+import {roleCan} from './permissions.js';
 
-const readers=['owner','admin','management','finance','sales','production','editor','viewer'];
-const managers=['owner','admin','management','production'];
+
+
+const readers='inventory.view',managers='projects.manage';
 const definitions={
- projects:{table:'agency_projects',links:'agency_project_assignees',key:'project_id',writers:managers},
- 'work-orders':{table:'agency_work_orders',links:'agency_work_order_assignees',key:'work_order_id',writers:[...managers,'editor']},
+ projects:{table:'agency_projects',links:'agency_project_assignees',key:'project_id',writers:'projects.edit'},
+ 'work-orders':{table:'agency_work_orders',links:'agency_work_order_assignees',key:'work_order_id',writers:'work-orders.edit'},
 };
 const definition=kind=>Object.hasOwn(definitions,kind)?definitions[kind]:fail('Tipo de registro inválido');
 function identifier(value,zero=false){
@@ -19,12 +21,12 @@ export function normalizeAssigneeIds(value){
 }
 async function authorize(c,user,allowed=readers){
  if(!user)fail('No autenticado',401);
- if(!allowed.includes(user.role))fail('Tu rol no permite cambiar responsables',403);
+ if(!roleCan(user,allowed))fail('Tu rol no permite cambiar responsables',403);
  const org=identifier(user.organization_id),person=identifier(user.id);
  // Hold membership and organization against suspension during this transaction.
  const row=(await c.query(`select m.role from organization_members m join organizations o on o.id=m.organization_id
   where m.organization_id=$1 and m.user_id=$2 and m.active and m.removed_at is null and o.active for share of m,o`,[org,person])).rows[0];
- if(!row||!allowed.includes(row.role))fail('Sin acceso activo para esta operación',403);
+ if(!row||!roleCan({role:row.role,capabilities:user.capabilities},allowed))fail('Sin acceso activo para esta operación',403);
  return org;
 }
 async function record(c,kind,key,org){

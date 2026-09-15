@@ -1,8 +1,9 @@
 import {fail, owned, text} from './suite-validation.js';
+import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 
-const readers = ['owner','admin','management','finance','sales','production','editor','viewer'];
-const writers = ['owner','admin','management','production','editor'];
+
+
 const maxItems = 100;
 function identifier(value, zero = false) {
  if (typeof value === 'number' && !Number.isSafeInteger(value)) fail('Identificador inválido');
@@ -13,7 +14,7 @@ function identifier(value, zero = false) {
 }
 async function snapshot(c, org, order) {
  const state = (await c.query('select version::text from agency_work_checklists where organization_id=$1 and work_order_id=$2', [org, order])).rows[0];
- const items = (await c.query('select id::text,text,completed,created_by_user_id from agency_work_checklist_items where organization_id=$1 and work_order_id=$2 order by id', [org, order])).rows;
+  const items = (await c.query('select id::text,text,completed,completed_at,completed_by_user_id,created_by_user_id from agency_work_checklist_items where organization_id=$1 and work_order_id=$2 order by id', [org, order])).rows;
  return {version: state?.version || '0', items, total: items.length, completed: items.filter(i => i.completed).length, max_items: maxItems};
 }
 export async function workChecklists({req, res, url, db, session, body, send}) {
@@ -28,13 +29,13 @@ export async function workChecklists({req, res, url, db, session, body, send}) {
   const edit = req.method === 'PATCH' && rawItem;
   const remove = req.method === 'DELETE' && rawItem;
   if (!read && !add && !edit && !remove) fail('Método no permitido', 405);
-  const allowed = read ? readers : writers;
-  if (!allowed.includes(user.role)) fail('Tu rol no permite modificar el checklist', 403);
+  const allowed = read ? 'inventory.view' : 'checklists.edit';
+  if (!roleCan(user,allowed)) fail('Tu rol no permite modificar el checklist', 403);
   const org = identifier(user.organization_id), order = identifier(rawOrder), person = identifier(user.id);
   c = await db.connect(); await c.query('begin'); tx = true;
   const member = (await c.query(`select m.role from organization_members m join organizations o on o.id=m.organization_id
    where m.organization_id=$1 and m.user_id=$2 and m.active and m.removed_at is null and o.active for share of m,o`, [org, person])).rows[0];
-  if (!member || !allowed.includes(member.role)) fail('Sin acceso activo para esta operación', 403);
+  if (!member || !roleCan({role:member.role,capabilities:user.capabilities},allowed)) fail('Sin acceso activo para esta operación', 403);
   // Serialize writers even before the first checklist row exists. Validate all
   // ancestors so an archived or inconsistent legacy parent cannot bypass scope.
   const piece = await owned(c, 'agency_work_orders', order, org);
@@ -70,12 +71,14 @@ export async function workChecklists({req, res, url, db, session, body, send}) {
     if (add) {
      await c.query('insert into agency_work_checklist_items(organization_id,work_order_id,text,created_by_user_id) values($1,$2,$3,$4)', [org, order, value, person]); status = 201;
     } else if (edit) {
-     await c.query('update agency_work_checklist_items set text=$1,completed=$2,updated_at=now() where id=$3 and organization_id=$4 and work_order_id=$5', [value ?? item.text, payload.completed ?? item.completed, item.id, org, order]);
+     if (Object.hasOwn(payload, 'completed') && payload.completed !== item.completed) {
+      await c.query('update agency_work_checklist_items set text=$1,completed=$2,completed_at=case when $2 then now() else null end,completed_by_user_id=case when $2 then $4::bigint else null end,updated_at=now() where id=$3 and organization_id=$5 and work_order_id=$6', [value ?? item.text, payload.completed, item.id, person, org, order]);
+     } else await c.query('update agency_work_checklist_items set text=$1,completed=$2,updated_at=now() where id=$3 and organization_id=$4 and work_order_id=$5', [value ?? item.text, payload.completed ?? item.completed, item.id, org, order]);
     } else await c.query('delete from agency_work_checklist_items where id=$1 and organization_id=$2 and work_order_id=$3', [item.id, org, order]);
    }
   }
   const result = await snapshot(c, org, order);
-  await attributeActors(c,org,[{rows:result.items,userId:'created_by_user_id'}]);
+  await attributeActors(c,org,[{rows:result.items,userId:'created_by_user_id'},{rows:result.items,userId:'completed_by_user_id',prefix:'completed_by'}]);
   await c.query('commit'); tx = false;
   send(res, status, result, {'Cache-Control':'no-store'});
  } catch (error) {
