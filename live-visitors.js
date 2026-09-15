@@ -1,8 +1,8 @@
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const publicPath='/api/public/live-visitors/heartbeat';
 const countsPath='/api/agency/live-visitors';
-const adminOrigins=new Set(['https://app.scaleparaguay.com','https://admin.scaleparaguay.com','https://sistema.scaleparaguay.com']);
-const adminHosts=new Set(['admin.scaleparaguay.com','app.scaleparaguay.com','sistema.scaleparaguay.com']);
+const adminOrigins=new Set(['https://app.scaleparaguay.com','https://admin.scaleparaguay.com','https://api.scaleparaguay.com','https://sistema.scaleparaguay.com']);
+const adminHosts=new Set(['admin.scaleparaguay.com','api.scaleparaguay.com','app.scaleparaguay.com','sistema.scaleparaguay.com']);
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const responseHeaders={'Cache-Control':'no-store','Vary':'Origin'};
 
