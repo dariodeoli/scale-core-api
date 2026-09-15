@@ -19,7 +19,10 @@ const memberRoles=['owner','admin','management','finance','sales','production','
 // Legacy operational endpoints extracted from the server entrypoint. Handlers
 // keep their original behavior and responses; the dispatcher returns true when
 // a path is handled so the server router can fall through to newer modules.
-export async function agencyCore({req,res,url,db,session,body,send,cookie,parseCookies,id,requestSubscription,sendInvitation,auditContext,auditedQuery}){
+export async function agencyCore({req,res,url,db,session,body,send:rawSend,cookie,parseCookies,id,requestSubscription,sendInvitation,auditContext,auditedQuery}){
+  let handled=false;
+  const send=(...args)=>{handled=true;return rawSend(...args);};
+  await (async()=>{
     if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:{...u,subscription:await requestSubscription(req,u)}}) : send(res,401,{error:'No autenticado'}); }
     if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
@@ -343,5 +346,6 @@ export async function agencyCore({req,res,url,db,session,body,send,cookie,parseC
       if(!roleCan(user,'inventory.view'))summary.unverified_inventory=null;
       return send(res,200,{summary});
     }
-  return false;
+  })();
+  return handled;
 }

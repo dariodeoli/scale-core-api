@@ -40,9 +40,9 @@ function cleanupCluster(){
   catch{pgTool('pg_ctl',['-D',data,'stop','-m','immediate','-w','-t','10'],15000);}
   assert(stopped(),'Temporary PostgreSQL is still running; directory retained');
  }
- assert(temporary.startsWith(path.join(realpathSync(process.env.TMPDIR||'/tmp'),'scale-treasury-pg-')),'Unsafe cleanup target');
+ assert(realpathSync(temporary).startsWith(path.join(realpathSync(process.env.TMPDIR||'/tmp'),'scale-treasury-pg-')),'Unsafe cleanup target');
  assert(lstatSync(temporary).isDirectory()&&!lstatSync(temporary).isSymbolicLink());
- assert.equal(realpathSync(temporary),temporary);
+ assert(realpathSync(temporary).endsWith(path.basename(temporary)),'Unexpected symlink target');
  rmSync(temporary,{recursive:true,force:false});cleaned=true;
  console.log(`CLEANUP stopped and removed ${temporary}`);
 }
@@ -55,10 +55,10 @@ try{
  temporary=mkdtempSync(path.join(process.env.TMPDIR||'/tmp','scale-treasury-pg-'));
  const data=path.join(temporary,'data');
  pgTool('initdb',['-D',data,'-U',user,'--no-locale','-E','UTF8']);
- pgTool('pg_ctl',['-D',data,'-o',`-p ${port} -h 127.0.0.1 -F -c max_connections=40 -c listen_addresses=127.0.0.1`,'-w','-t','20','start'],30000);
+ pgTool('pg_ctl',['-D',data,'-l',path.join(temporary,'postgres.log'),'-o',`-p ${port} -h 127.0.0.1 -F -c max_connections=40 -c listen_addresses=127.0.0.1`,'-w','-t','60','start'],60000);
  const pool=new pg.Pool({host:'127.0.0.1',port,user,database:'postgres'});
  const query=(sql,args)=>pool.query(sql,args);
- const db={query,connect:async()=>({query,release(){}})};
+ const db={query,connect:async()=>{const client=await pool.connect();return{query:(sql,args)=>client.query(sql,args),release:()=>client.release()};}};
  for(const [name,content] of sources){await pool.query(content);}
  const org=(await query("insert into organizations(slug,name) values('treasury','Treasury fixture') returning id")).rows[0].id;
  const uid=(await query("insert into users(email,password_hash) values('treasury@example.invalid','unused') returning id")).rows[0].id;
@@ -67,30 +67,32 @@ try{
  await query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '1 hour')",[token,uid,org]);
  const client=(await query("insert into agency_clients(organization_id,name) values($1,'Concurrent client') returning id",[org])).rows[0].id;
  const invoice=(await query("insert into agency_invoices(organization_id,client_id,number,currency,total) values($1,$2,'F-CONC','PYG',100) returning id",[org,client])).rows[0].id;
- const accountA=(await query("insert into bank_accounts(organization_id,name,currency,balance) values($1,'Caja A','PYG',50) returning id",[org])).rows[0].id;
- const accountB=(await query("insert into bank_accounts(organization_id,name,currency,balance) values($1,'Caja B','PYG',0) returning id",[org])).rows[0].id;
+ const accountA=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Caja A','bank','PYG',50) returning id",[org])).rows[0].id;
+ const accountB=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Caja B','bank','PYG',0) returning id",[org])).rows[0].id;
  const actor={id:uid,email:'treasury@example.invalid',organization_id:org,role:'owner',organization_name:'Treasury fixture'};
  const session=async()=>actor;
  async function call(method,pathname,payload){
   let response;
   const req={method,socket:{remoteAddress:'127.0.0.1'},headers:{cookie:`scale_session=${token}`}};
   const handled=await agencyCore({req,res:{},url:new URL(`https://test${pathname}`),db,session,body:async()=>payload,send:(_,status,data)=>{response={status,...data};},cookie:()=>{},parseCookies:()=>({}),id:()=>'fixture',requestSubscription:async()=>({hasAccess:true}),sendInvitation:async()=>true,auditContext:async()=>{},auditedQuery:async()=>({rows:[]})});
-  assert.equal(handled,true,pathname);
+  if(handled!==true)console.log('NOT HANDLED',pathname,response);assert.equal(handled,true,pathname);
   return response;
  }
  // Two concurrent payments of 60 against a 100 invoice: exactly one can win.
  const payments=await Promise.all([call('POST','/api/agency/payments',{invoiceId:invoice,accountId:accountA,amount:60}),call('POST','/api/agency/payments',{invoiceId:invoice,accountId:accountA,amount:60})]);
  const paymentStatuses=payments.map(p=>p.status).sort();
+ console.log('DEBUG payment statuses',paymentStatuses,'paid',(await query('select paid_amount from agency_invoices where id=$1',[invoice])).rows[0].paid_amount);
  assert.deepEqual(paymentStatuses,[201,400],`one payment wins, the other is rejected: ${JSON.stringify(payments)}`);
  const paid=(await query('select paid_amount from agency_invoices where id=$1',[invoice])).rows[0].paid_amount;
  assert.equal(Number(paid),60,'the invoice never overpays under concurrency');
  // Two concurrent transfers of 40 from an account with 50: no negative balance.
  const transfers=await Promise.all([call('POST','/api/agency/transfers',{fromAccountId:accountA,toAccountId:accountB,amount:40}),call('POST','/api/agency/transfers',{fromAccountId:accountA,toAccountId:accountB,amount:40})]);
  const transferStatuses=transfers.map(t=>t.status).sort();
+ console.log('DEBUG transfer statuses',transferStatuses,'balances',(await query('select id,balance from bank_accounts where organization_id=$1 order by id',[org])).rows);
  assert.deepEqual(transferStatuses,[201,400],`one transfer wins, the other is rejected: ${JSON.stringify(transfers)}`);
  const balances=(await query('select id,balance from bank_accounts where organization_id=$1 order by id',[org])).rows;
  assert.equal(Number(balances.find(row=>Number(row.id)===Number(accountA)).balance),10,'source account never goes negative under concurrency');
  assert.equal(Number(balances.find(row=>Number(row.id)===Number(accountB)).balance),40,'destination receives exactly one transfer');
  console.log('PASS: concurrent payments cannot overpay an invoice and concurrent transfers cannot overdraw an account');
-}catch(error){console.error(error);process.exitCode=1;}
+}catch(error){console.error(error);process.exitCode=1;if(process.env.SCALE_TEST_KEEP_CLUSTER)await new Promise(r=>setTimeout(r,30000));}
 finally{cleanupCluster();}
