@@ -52,15 +52,24 @@ await pg.exec(`insert into agency_operation_audit(organization_id,table_name,act
  (1,'agency_work_orders','UPDATE','2','127.0.0.1','{"status":"review","id":10}','{"status":"published","id":10,"work_type":"video"}','2026-09-09T12:00:00-03:00'),
  (1,'agency_work_orders','UPDATE','system','127.0.0.1','{"status":"review","id":11}','{"status":"published","id":11,"work_type":"foto"}','2026-09-08T12:00:00-03:00'),
  (1,'agency_work_orders','UPDATE','2','127.0.0.1','{"status":"review","id":12}','{"status":"approved","id":12,"work_type":"foto"}','2026-08-31T12:00:00-03:00'),
- (1,'agency_work_orders','UPDATE','1','127.0.0.1','{"status":"review","id":13}','{"status":"published","id":13}','2026-09-08T12:00:00-03:00')`);
+ (1,'agency_work_orders','UPDATE','1','127.0.0.1','{"status":"review","id":13}','{"status":"published","id":13}','2026-09-08T12:00:00-03:00'),
+ (1,'agency_work_orders','INSERT','2','127.0.0.1','{}','{"id":20,"status":"to_record"}','2026-09-10T10:00:00-03:00'),
+ (1,'agency_work_orders','UPDATE','2','127.0.0.1','{"id":20,"status":"to_record"}','{"id":20,"status":"editing"}','2026-09-10T11:00:00-03:00'),
+ (1,'agency_work_orders','DELETE','2','127.0.0.1','{"id":21,"status":"editing"}',null,'2026-09-11T12:00:00-03:00'),
+ (1,'agency_work_orders','UPDATE','system','127.0.0.1','{"id":23,"status":"editing"}','{"id":23,"status":"review"}','2026-09-08T12:00:00-03:00'),
+ (1,'agency_work_orders','UPDATE','2','127.0.0.1','{"id":24,"status":"editing"}','{"id":24,"status":"review"}','2026-08-30T12:00:00-03:00')`);
 r=await call({as:editor});
 assert.equal(r.records.length,1);assert.ok(Array.isArray(r.automatic),'automatic array present on GET');
 assert.equal(r.automatic.length,1);assert.equal(String(r.automatic[0].user_id),'2','transition actor, not assignee');
 assert.equal(r.automatic[0].counts.video,1,'double transition in one week counts exactly once');
 assert.equal(r.automatic[0].counts.foto,0,'transitions from other weeks never count');
 assert.equal(r.automatic[0].counts.untyped,0);assert.equal(r.automatic[0].actor_name,'Colaborador');
+assert.equal(r.automatic[0].orders,3,'orders count once per order: insert+update on #20, delete of #21, plus the finished #10');
 const teamAutomatic=(await call({as:owner,scope:'team'})).automatic;
 assert.equal(teamAutomatic.length,2,'team scope shares per-collaborator automatic counts');
+const ownerEntry=teamAutomatic.find(entry=>String(entry.user_id)==='1');
+assert.equal(ownerEntry.orders,1,'owner orders derive from their own operations only');
+assert.equal(ownerEntry.actor_name,'Dueño');
 assert.equal(Object.fromEntries(teamAutomatic.map(row=>[String(row.user_id),row]))['1'].counts.untyped,1,'orders without work_type count under untyped');
 r=await call({method:'PUT'});assert.equal(r.status,409,'stale declared update still conflicts');
 assert.equal((await call()).automatic.length,1,'PUT conflicts never disturb the automatic section');

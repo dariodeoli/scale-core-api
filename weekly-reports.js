@@ -54,10 +54,29 @@ export async function automaticCounts(c,organizationId,week,userId=null){
    and ($3::bigint is null or t.actor::bigint=$3)
   group by t.actor, coalesce(t.work_type,'untyped')
  `,[organizationId,week,userId])).rows;
+ // Orders worked: every audited operation on a work order (insert, update or
+ // delete) during the week counts that order exactly once per actor, whether or
+ // not the piece finished. Deletes attribute through before_state; system and
+ // non-numeric actors stay out, matching the transition counts above.
+ const orderRows=(await c.query(`
+  select a.actor as user_id, count(distinct coalesce((a.after_state->>'id')::bigint,(a.before_state->>'id')::bigint))::int as orders
+  from agency_operation_audit a
+  where a.organization_id=$1 and a.table_name='agency_work_orders'
+   and a.actor ~ '^[1-9][0-9]*$'
+   and coalesce((a.after_state->>'id')::bigint,(a.before_state->>'id')::bigint) is not null
+   and (a.created_at at time zone 'America/Asuncion')::date between $2::date and ($2::date + interval '6 days')
+   and ($3::bigint is null or a.actor::bigint=$3)
+  group by a.actor
+ `,[organizationId,week,userId])).rows;
  const automatic=new Map();
  for(const row of rows){
-  const key=String(row.user_id),entry=automatic.get(key)||{user_id:key,counts:Object.fromEntries(automaticTypes.map(type=>[type,0]))};
+  const key=String(row.user_id),entry=automatic.get(key)||{user_id:key,counts:Object.fromEntries(automaticTypes.map(type=>[type,0])),orders:0};
   entry.counts[row.work_type]=(entry.counts[row.work_type]||0)+row.count;
+  automatic.set(key,entry);
+ }
+ for(const row of orderRows){
+  const key=String(row.user_id),entry=automatic.get(key)||{user_id:key,counts:Object.fromEntries(automaticTypes.map(type=>[type,0])),orders:0};
+  entry.orders=(entry.orders||0)+row.orders;
   automatic.set(key,entry);
  }
  return [...automatic.values()];

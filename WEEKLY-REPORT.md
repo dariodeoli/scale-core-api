@@ -10,7 +10,7 @@ Cada integrante declara su propio reporte semanal. El dueño consulta los report
 
 Desde 2026-09-14 el GET incluye `automatic`: conteos de piezas terminadas derivados de la auditoría de operaciones (`agency_operation_audit`), nunca persistidos. Cada pieza cuenta una sola vez por reporte: la primera transición a `approved` o `published` de la semana (lunes a domingo, hora de Asunción), atribuida a quien ejecutó la transición, no al responsable asignado. Se ignoran actores no numéricos o de sistema. Las piezas sin `work_type` cuentan bajo `untyped`; el resto bajo `video`, `reedicion`, `foto`, `produccion` o `entregable`. No aparece ningún campo de horas en esta sección.
 
-Cada entrada de `automatic` es `{user_id, actor_name, counts:{video,reedicion,foto,produccion,entregable,untyped}}`. `scope=own` filtra al integrante que consulta; `scope=team` (dueño efectivo) muestra un registro por colaborador con transiciones terminadas. La sección declarada (`records`, `metrics`, versiones y 409) no cambia.
+Cada entrada de `automatic` es `{user_id, actor_name, counts:{video,reedicion,foto,produccion,entregable,untyped}, orders}`. `orders` cuenta las órdenes distintas en las que el actor operó durante la semana (cualquier INSERT/UPDATE/DELETE en `agency_work_orders`), una sola vez por orden sin importar cuántas operaciones haya o si la pieza terminó; los DELETE se atribuyen por `before_state`. `scope=own` filtra al integrante que consulta; `scope=team` (dueño efectivo) muestra un registro por colaborador. La sección declarada (`records`, `metrics`, versiones y 409) no cambia.
 
 ### Portal del cliente — actividad y visibilidad de enlaces
 
