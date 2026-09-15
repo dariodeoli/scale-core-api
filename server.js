@@ -164,6 +164,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_client_terms_and_planned_expenses.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_role_permissions.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_production_traceability.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260915_optional_commission_terms.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {

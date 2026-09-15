@@ -8,13 +8,14 @@ import {agencyReport,reports} from './reports.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql']) {
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql']) {
  await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 }
 // Startup migrations must be repeatable.
 await pg.exec(await fs.readFile(new URL('./migrations/20260910_company_currency.sql',import.meta.url),'utf8'));
 await pg.exec(await fs.readFile(new URL('./migrations/20260914_salary_forecast.sql',import.meta.url),'utf8'));
 await pg.exec(await fs.readFile(new URL('./migrations/20260914_client_terms_and_planned_expenses.sql',import.meta.url),'utf8'));
+await pg.exec(await fs.readFile(new URL('./migrations/20260915_optional_commission_terms.sql',import.meta.url),'utf8'));
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('forecast-other','Other') returning id")).rows[0].id;
@@ -78,6 +79,12 @@ let savedTerms=await call(termsPath,'PATCH',terms,managementUser);
 assert.equal(savedTerms.status,200);assert.deepEqual({amount:savedTerms.terms.recurringAmount,currency:savedTerms.terms.currency,startsOn:savedTerms.terms.startsOn,invoiceRequired:savedTerms.terms.invoiceRequired,recipient:savedTerms.terms.commissionRecipientId,mode:savedTerms.terms.commissionMode,value:savedTerms.terms.commissionValue},{amount:1000,currency:'PYG',startsOn:'2026-09-15',invoiceRequired:true,recipient:String(salaryPyg.collaborator.id),mode:'percentage',value:10});
 assert.deepEqual(Object.keys(savedTerms.terms).sort(),['clientId','commissionMode','commissionRecipientId','commissionRecipientName','commissionValue','currency','invoiceRequired','planId','planName','recurringAmount','startsOn','updatedAt'].sort(),'commercial terms response has the documented stable shape');
 assert.equal((await call(termsPath,'GET',{},financeUser)).terms.planId,String(commercialPlan),'finance reads effective terms for LTV');
+const noneTerms=await call(termsPath,'PATCH',{...terms,commissionMode:'none',commissionRecipientId:null,commissionValue:null},managementUser);
+assert.equal(noneTerms.status,200);
+assert.deepEqual({recipient:noneTerms.terms.commissionRecipientId,name:noneTerms.terms.commissionRecipientName,mode:noneTerms.terms.commissionMode,value:noneTerms.terms.commissionValue},{recipient:null,name:null,mode:'none',value:null},'a contract can exist without commission');
+assert.equal((await call(termsPath,'PATCH',{...terms,commissionMode:'none'},managementUser)).status,400,'none rejects leftover recipient/value');
+assert.equal((await call(termsPath,'PATCH',{...terms,commissionMode:'none',commissionRecipientId:null,commissionValue:'10'},managementUser)).status,400,'none rejects a value without recipient');
+await call(termsPath,'PATCH',terms,managementUser);
 
 const expensesPath='/api/agency/planned-expenses?month=2026-09';
 const recurringExpense={cadence:'recurring',effectiveMonth:'2026-08',category:'Software',amount:'300',currency:'PYG',note:'Licencias'};

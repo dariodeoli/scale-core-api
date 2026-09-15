@@ -103,11 +103,11 @@ async function commercialTerms(db,org,id) {
  const client=(await db.query(`select c.id::text,exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='clients' and a.record_id=c.id) archived
   from agency_clients c where c.organization_id=$1 and c.id=$2`,[org,id])).rows[0];
  if(!client)fail('Cliente no encontrado',404);
- const terms=(await db.query(`select t.client_id::text as "clientId",t.plan_id::text as "planId",p.name as "planName",t.recurring_amount::text as "recurringAmount",t.currency,
+  const terms=(await db.query(`select t.client_id::text as "clientId",t.plan_id::text as "planId",p.name as "planName",t.recurring_amount::text as "recurringAmount",t.currency,
   t.starts_on::text as "startsOn",t.invoice_required as "invoiceRequired",t.commission_recipient_id::text as "commissionRecipientId",c.full_name as "commissionRecipientName",
   t.commission_mode as "commissionMode",t.commission_value::text as "commissionValue",t.updated_at as "updatedAt"
   from agency_client_commercial_terms t join agency_plans p on p.organization_id=t.organization_id and p.id=t.plan_id
-  join agency_collaborators c on c.organization_id=t.organization_id and c.id=t.commission_recipient_id
+  left join agency_collaborators c on c.organization_id=t.organization_id and c.id=t.commission_recipient_id
   where t.organization_id=$1 and t.client_id=$2 and t.effective_until is null order by t.id desc limit 1`,[org,id])).rows[0]||null;
  const plans=(await db.query(`select p.id::text,p.name,p.currency from agency_plans p where p.organization_id=$1 and p.active
   and not exists(select 1 from agency_archived_records a where a.organization_id=p.organization_id and a.kind='plans' and a.record_id=p.id) order by p.name,p.id`,[org])).rows;
@@ -118,18 +118,24 @@ async function commercialTerms(db,org,id) {
 async function validateTerms(db,org,input) {
  validateFields(input,termFields,'condiciones comerciales');
  if(termFields.some(field=>!Object.hasOwn(input,field)))fail('Completá todas las condiciones comerciales');
- const planId=id(input.planId,'Plan'),recipientId=id(input.commissionRecipientId,'Colaborador'),recurringAmount=wholeAmount(input.recurringAmount,'El importe recurrente'),commissionValue=wholeAmount(input.commissionValue,'La comisión');
+ const planId=id(input.planId,'Plan'),recurringAmount=wholeAmount(input.recurringAmount,'El importe recurrente');
  const currency=['PYG','USD'].includes(input.currency)?input.currency:fail('Moneda inválida');
  const startsOn=requiredDate(input.startsOn,'Fecha de inicio');
  if(typeof input.invoiceRequired!=='boolean')fail('invoiceRequired debe ser booleano');
- const commissionMode=['percentage','fixed'].includes(input.commissionMode)?input.commissionMode:fail('Modo de comisión inválido');
- if(commissionMode==='percentage'&&commissionValue>100)fail('La comisión porcentual no puede superar 100');
+ const commissionMode=['percentage','fixed','none'].includes(input.commissionMode)?input.commissionMode:fail('Modo de comisión inválido');
+ let recipientId=null,commissionValue=null;
+ if(commissionMode==='none'){
+  if(input.commissionRecipientId!==null||input.commissionValue!==null)fail('Una comisión sin definir no admite destinatario ni importe');
+ }else{
+  recipientId=id(input.commissionRecipientId,'Colaborador');commissionValue=wholeAmount(input.commissionValue,'La comisión');
+  if(commissionMode==='percentage'&&commissionValue>100)fail('La comisión porcentual no puede superar 100');
+  const recipient=(await db.query(`select id from agency_collaborators c where c.organization_id=$1 and c.id=$2 and c.active
+   and not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='collaborators' and a.record_id=c.id) for share`,[org,recipientId])).rows[0];
+  if(!recipient)fail('El destinatario de comisión debe ser un colaborador activo de esta empresa');
+ }
  const plan=(await db.query(`select id from agency_plans p where p.organization_id=$1 and p.id=$2 and p.active
   and not exists(select 1 from agency_archived_records a where a.organization_id=p.organization_id and a.kind='plans' and a.record_id=p.id) for share`,[org,planId])).rows[0];
  if(!plan)fail('Plan no disponible en esta empresa');
- const recipient=(await db.query(`select id from agency_collaborators c where c.organization_id=$1 and c.id=$2 and c.active
-  and not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='collaborators' and a.record_id=c.id) for share`,[org,recipientId])).rows[0];
- if(!recipient)fail('El destinatario de comisión debe ser un colaborador activo de esta empresa');
  return {planId,recipientId,recurringAmount,currency,startsOn,invoiceRequired:input.invoiceRequired,commissionMode,commissionValue};
 }
 async function plannedExpenses(db,org,month) {
