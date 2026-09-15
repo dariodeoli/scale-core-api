@@ -40,7 +40,7 @@ async function portalSession(db,req){
 }
 async function scopedDelivery(c,userId,deliveryId){
  const row=(await c.query(`select d.id,d.organization_id,d.work_order_id,d.title,d.summary,d.asset_name,d.asset_url,d.version,d.published_at,
-   w.status as work_order_status,p.name as project_name,cl.name as client_name
+   w.status as work_order_status,w.due_date,w.due_time,p.name as project_name,cl.name as client_name
   from client_portal_deliveries d join agency_work_orders w on w.id=d.work_order_id and w.organization_id=d.organization_id
   join agency_projects p on p.id=w.project_id and p.organization_id=d.organization_id
   join agency_clients cl on cl.id=p.client_id and cl.organization_id=d.organization_id
@@ -62,6 +62,13 @@ async function validInvite(c,raw,{lock=false}={}){
  return invite;
 }
 function actor(user){if(!user||!roleCan(user,'portal.manage'))fail('Sin permiso para gestionar el portal de clientes',403);}
+async function notifyPortalActivity(c,delivery,{label,body,dedupe}){
+ const order=(await c.query('select w.title,w.project_id from agency_work_orders w where w.id=$1 and w.organization_id=$2',[delivery.work_order_id,delivery.organization_id])).rows[0];
+ if(!order)return;
+ const recipients=(await c.query("select user_id::text as user_id from agency_record_assignees where organization_id=$1 and kind='work-orders' and record_id=$2 order by user_id",[delivery.organization_id,delivery.work_order_id])).rows;
+ const subject=`${label} ${order.title}`;
+ for(const recipient of recipients)await c.query("select enqueue_agency_notification($1,$2,'comment',$3,$4,$5,$6,$7,$8)",[delivery.organization_id,recipient.user_id,subject,body,delivery.work_order_id,order.project_id,dedupe,null]);
+}
 export function clientPortalResetEmail({token}){
  const resetUrl=`${clientOrigin}/recuperar?resetToken=${token}`;
  const safeUrl=htmlEscape(resetUrl);
@@ -101,11 +108,12 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
  const deliveries=url.pathname==='/api/client-portal/deliveries';
  const internalInvite=url.pathname.match(/^\/api\/agency\/clients\/(\d+)\/client-portal-invites$/);
  const revokeInvite=url.pathname.match(/^\/api\/agency\/client-portal-invites\/(\d+)\/revoke$/);
+ const revokeGrant=url.pathname.match(/^\/api\/agency\/clients\/(\d+)\/portal-access\/grants\/(\d+)\/revoke$/);
  const internalDelivery=url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)\/client-portal-delivery$/);
- if(!invitePreview&&!inviteAccept&&!login&&!passwordRequest&&!passwordReset&&!logout&&!me&&!deliveries&&!deliveryMatch&&!internalInvite&&!revokeInvite&&!internalDelivery)return false;
+ if(!invitePreview&&!inviteAccept&&!login&&!passwordRequest&&!passwordReset&&!logout&&!me&&!deliveries&&!deliveryMatch&&!internalInvite&&!revokeInvite&&!revokeGrant&&!internalDelivery)return false;
  let c,transaction=false;
  try{
-  if(internalInvite||revokeInvite||internalDelivery){
+  if(internalInvite||revokeInvite||revokeGrant||internalDelivery){
    const employee=await session(req);actor(employee);c=await db.connect();await c.query('begin');transaction=true;
    await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(employee.id),req.socket.remoteAddress||'']);
    if(internalInvite){
@@ -125,6 +133,14 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
    if(revokeInvite){
     if(req.method!=='POST')fail('Método no permitido',405);const result=(await c.query('update client_portal_invites set revoked_at=now() where id=$1 and organization_id=$2 and accepted_at is null and revoked_at is null returning id',[id(revokeInvite[1]),employee.organization_id])).rows[0];
     if(!result)fail('Invitación no disponible',404);await c.query('commit');transaction=false;send(res,200,{ok:true});return true;
+   }
+   if(revokeGrant){
+    if(req.method!=='POST')fail('Método no permitido',405);
+    const client=await owned(c,'agency_clients',revokeGrant[1],employee.organization_id);
+    const grant=(await c.query('update client_portal_grants set active=false,revoked_at=now(),revoked_by_user_id=$1 where id=$2 and organization_id=$3 and client_id=$4 and active returning id,portal_user_id',[employee.id,id(revokeGrant[2]),employee.organization_id,client.id])).rows[0];
+    if(!grant)fail('Acceso no disponible',404);
+    await c.query('delete from client_portal_sessions where portal_user_id=$1 and not exists(select 1 from client_portal_grants g where g.portal_user_id=$1 and g.organization_id=$2 and g.active)',[grant.portal_user_id,employee.organization_id]);
+    await c.query('commit');transaction=false;send(res,200,{ok:true});return true;
    }
    const order=await owned(c,'agency_work_orders',internalDelivery[1],employee.organization_id);
    const project=(await c.query('select p.*,cl.name as client_name from agency_projects p join agency_clients cl on cl.id=p.client_id and cl.organization_id=p.organization_id where p.id=$1 and p.organization_id=$2',[order.project_id,employee.organization_id])).rows[0];if(!project)fail('Proyecto no encontrado',404);
@@ -190,7 +206,7 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   const user=await portalSession(db,req);if(!user)fail('Ingresá al portal de cliente',401);
   if(logout){if(req.method!=='POST')fail('Método no permitido',405);await db.query('delete from client_portal_sessions where token_hash=$1',[user.token_hash]);send(res,200,{ok:true},{'Set-Cookie':portalCookie('',0)});return true;}
   if(me){if(req.method!=='GET')fail('Método no permitido',405);const client=(await db.query('select o.name as organization_name,c.name as client_name from client_portal_users u join organizations o on o.id=u.organization_id join agency_clients c on c.id=u.client_id and c.organization_id=u.organization_id where u.id=$1 and o.active and c.active',[user.id])).rows[0]||null;send(res,200,{user:{fullName:user.full_name,email:user.email},client});return true;}
-  if(deliveries){if(req.method!=='GET')fail('Método no permitido',405);const rows=(await db.query(`select distinct d.id,d.title,d.summary,d.asset_name,d.version,d.published_at,w.title as work_order_title,p.name as project_name,c.name as client_name
+  if(deliveries){if(req.method!=='GET')fail('Método no permitido',405);const rows=(await db.query(`select distinct d.id,d.title,d.summary,d.asset_name,d.version,d.published_at,w.title as work_order_title,w.due_date,w.due_time,p.name as project_name,c.name as client_name
    from client_portal_deliveries d join agency_work_orders w on w.id=d.work_order_id and w.organization_id=d.organization_id join agency_projects p on p.id=w.project_id and p.organization_id=d.organization_id join agency_clients c on c.id=p.client_id and c.organization_id=d.organization_id join organizations o on o.id=d.organization_id join client_portal_grants g on g.organization_id=d.organization_id and g.client_id=p.client_id and g.portal_user_id=$1 and g.active
    where d.visible and d.asset_url is not null and w.status in ('approved','published') and c.active and o.active order by d.published_at desc,d.id desc`,[user.id])).rows;send(res,200,{deliveries:rows});return true;}
   c=await db.connect();await c.query('begin');transaction=true;const delivery=await scopedDelivery(c,user.id,deliveryMatch[1]);
@@ -238,13 +254,16 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   }
   if(req.method!=='POST')fail('Método no permitido',405);const b=await body(req);
   if(deliveryMatch[2]==='comments'){
-   const comment=(await c.query('insert into client_portal_delivery_comments(organization_id,delivery_id,portal_user_id,body) values($1,$2,$3,$4) returning id,body,created_at',[delivery.organization_id,delivery.id,user.id,text(b.body)])).rows[0];await c.query('commit');transaction=false;send(res,201,{comment});return true;
+   const comment=(await c.query('insert into client_portal_delivery_comments(organization_id,delivery_id,portal_user_id,body) values($1,$2,$3,$4) returning id,body,created_at',[delivery.organization_id,delivery.id,user.id,text(b.body)])).rows[0];
+   await notifyPortalActivity(c,delivery,{label:'Comentario del cliente en',body:comment.body,dedupe:`portal-comment-${delivery.id}-${comment.id}`});
+   await c.query('commit');transaction=false;send(res,201,{comment});return true;
   }
-  const decision=['approved','changes_requested'].includes(b.decision)?b.decision:fail('Decisión inválida');let commentId=null;
-  if(b.comment!==undefined&&String(b.comment).trim())commentId=(await c.query('insert into client_portal_delivery_comments(organization_id,delivery_id,portal_user_id,body) values($1,$2,$3,$4) returning id',[delivery.organization_id,delivery.id,user.id,text(b.comment)])).rows[0].id;
+  const decision=['approved','changes_requested'].includes(b.decision)?b.decision:fail('Decisión inválida');let commentId=null,decisionBody='';
+  if(b.comment!==undefined&&String(b.comment).trim()){const commentRow=(await c.query('insert into client_portal_delivery_comments(organization_id,delivery_id,portal_user_id,body) values($1,$2,$3,$4) returning id,body',[delivery.organization_id,delivery.id,user.id,text(b.comment)])).rows[0];commentId=commentRow.id;decisionBody=commentRow.body;}
   if(decision==='changes_requested'&&!commentId)fail('Explicá los cambios que necesitás');
   const result=(await c.query(`insert into client_portal_delivery_decisions(organization_id,delivery_id,portal_user_id,version,decision,comment_id) values($1,$2,$3,$4,$5,$6)
    on conflict(delivery_id,portal_user_id,version) do update set decision=excluded.decision,comment_id=excluded.comment_id,updated_at=now() returning decision,created_at,updated_at`,[delivery.organization_id,delivery.id,user.id,delivery.version,decision,commentId])).rows[0];
+  await notifyPortalActivity(c,delivery,{label:decision==='approved'?'El cliente aprobó':'El cliente pidió cambios en',body:decisionBody,dedupe:`portal-decision-${delivery.id}-${delivery.version}-${user.id}`});
   await c.query('commit');transaction=false;send(res,200,{decision:result});return true;
  }catch(error){if(transaction)await c.query('rollback');console.error(JSON.stringify({event:'client_portal_error',status:error.status||500,code:error.code||null,message:error.status?null:error.message}));const linkStatus=['expired','revoked','used'].includes(error.link_status)?{link_status:error.link_status}:{};send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación',...linkStatus});return true;}finally{c?.release();}
 }

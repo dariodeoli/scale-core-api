@@ -58,7 +58,7 @@ export async function automaticCounts(c,organizationId,week,userId=null){
  // delete) during the week counts that order exactly once per actor, whether or
  // not the piece finished. Deletes attribute through before_state; system and
  // non-numeric actors stay out, matching the transition counts above.
- const orderRows=(await c.query(`
+  const orderRows=(await c.query(`
   select a.actor as user_id, count(distinct coalesce((a.after_state->>'id')::bigint,(a.before_state->>'id')::bigint))::int as orders
   from agency_operation_audit a
   where a.organization_id=$1 and a.table_name='agency_work_orders'
@@ -68,17 +68,68 @@ export async function automaticCounts(c,organizationId,week,userId=null){
    and ($3::bigint is null or a.actor::bigint=$3)
   group by a.actor
  `,[organizationId,week,userId])).rows;
+ // Project breakdown: finished pieces reuse the same first-transition rule as
+ // the type counts, bucketed per project; orders worked mirror the orders query
+ // above but grouped per project. Both derive the project link from the audit
+ // row snapshots (project_id), joined to agency_projects only for the name.
+ const projectRows=(await c.query(`
+  select t.actor as user_id, coalesce((t.project_id)::bigint,0) as project_id, count(*)::int as count
+  from (
+   select distinct on (a.organization_id, coalesce((a.after_state->>'id')::bigint,0))
+    a.actor, a.after_state->>'project_id' as project_id, a.created_at
+   from agency_operation_audit a
+   where a.organization_id=$1 and a.table_name='agency_work_orders' and a.action='UPDATE'
+    and a.after_state->>'status' in ('approved','published')
+    and coalesce(a.before_state->>'status','') not in ('approved','published')
+    and a.actor ~ '^[1-9][0-9]*$'
+   order by a.organization_id, coalesce((a.after_state->>'id')::bigint,0), a.created_at
+  ) t
+  where (t.created_at at time zone 'America/Asuncion')::date between $2::date and ($2::date + interval '6 days')
+   and ($3::bigint is null or t.actor::bigint=$3)
+  group by t.actor, t.project_id
+ `,[organizationId,week,userId])).rows;
+ const projectOrderRows=(await c.query(`
+  select a.actor as user_id,
+   coalesce((a.after_state->>'project_id')::bigint,(a.before_state->>'project_id')::bigint,0) as project_id,
+   count(distinct coalesce((a.after_state->>'id')::bigint,(a.before_state->>'id')::bigint))::int as orders
+  from agency_operation_audit a
+  where a.organization_id=$1 and a.table_name='agency_work_orders'
+   and a.actor ~ '^[1-9][0-9]*$'
+   and coalesce((a.after_state->>'id')::bigint,(a.before_state->>'id')::bigint) is not null
+   and (a.created_at at time zone 'America/Asuncion')::date between $2::date and ($2::date + interval '6 days')
+   and ($3::bigint is null or a.actor::bigint=$3)
+  group by a.actor, coalesce((a.after_state->>'project_id')::bigint,(a.before_state->>'project_id')::bigint,0)
+ `,[organizationId,week,userId])).rows;
+ const names=new Map((await c.query('select id, name from agency_projects where organization_id=$1',[organizationId])).rows.map(row=>[String(Number(row.id)),row.name]));
  const automatic=new Map();
+ const entryFor=key=>automatic.get(key)||{user_id:key,counts:Object.fromEntries(automaticTypes.map(type=>[type,0])),orders:0,projects:[]};
  for(const row of rows){
-  const key=String(row.user_id),entry=automatic.get(key)||{user_id:key,counts:Object.fromEntries(automaticTypes.map(type=>[type,0])),orders:0};
+  const key=String(row.user_id),entry=entryFor(key);
   entry.counts[row.work_type]=(entry.counts[row.work_type]||0)+row.count;
   automatic.set(key,entry);
  }
  for(const row of orderRows){
-  const key=String(row.user_id),entry=automatic.get(key)||{user_id:key,counts:Object.fromEntries(automaticTypes.map(type=>[type,0])),orders:0};
+  const key=String(row.user_id),entry=entryFor(key);
   entry.orders=(entry.orders||0)+row.orders;
   automatic.set(key,entry);
  }
+ const projectFor=(entry,id)=>{
+  const project_id=Number(id);
+  let project=entry.projects.find(item=>item.project_id===project_id);
+  if(!project){project={project_id,project_name:names.get(String(project_id))??null,count:0,orders:0};entry.projects.push(project);}
+  return project;
+ };
+ for(const row of projectRows){
+  const key=String(row.user_id),entry=entryFor(key);
+  projectFor(entry,row.project_id).count+=row.count;
+  automatic.set(key,entry);
+ }
+ for(const row of projectOrderRows){
+  const key=String(row.user_id),entry=entryFor(key);
+  projectFor(entry,row.project_id).orders+=row.orders;
+  automatic.set(key,entry);
+ }
+ for(const entry of automatic.values())entry.projects.sort((a,b)=>b.count-a.count||a.project_id-b.project_id);
  return [...automatic.values()];
 }
 
