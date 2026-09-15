@@ -71,7 +71,8 @@ create table if not exists agency_reconciliation_matches (
  movement_type text not null,movement_id bigint not null,created_by_user_id bigint not null references users(id),
  created_at timestamptz not null default now(),unique(account_id,movement_type,movement_id)
 );
-create or replace view agency_cash_movements as
+drop view if exists agency_cash_movements;
+create view agency_cash_movements as
  select p.organization_id,p.account_id,'payment'::text as movement_type,p.id as movement_id,p.received_on as booked_on,p.amount,coalesce(p.reference,'') as reference from agency_payments p
  union all select r.organization_id,p.account_id,'reversal',r.id,r.reversed_on,-p.amount,r.reason from agency_payment_reversals r join agency_payments p on p.id=r.payment_id
  union all select t.organization_id,t.from_account_id,'transfer_out',t.id,t.transferred_on,-t.amount,coalesce(t.reference,'') from account_transfers t

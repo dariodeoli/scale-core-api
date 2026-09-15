@@ -1,4 +1,5 @@
-create or replace view client_payment_status as
+drop view if exists client_payment_status;
+create view client_payment_status as
 select
   c.organization_id,
   c.id as client_id,
