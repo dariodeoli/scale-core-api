@@ -81,6 +81,10 @@ let databaseReady = false;
 
 const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
 const cookie = (name, value, maxAge) => `${name}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
+// The OAuth state cookie must cross hosts: it is issued through the app/portal
+// proxy and consumed at the admin-host callback. Domain-scoped with the same
+// HttpOnly/Secure/SameSite posture as the rest of the session cookies.
+const oauthStateCookie = (value, maxAge) => `scale_oauth_state=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax; Domain=.scaleparaguay.com`;
 const parseCookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(v => { const i=v.indexOf('='); return [v.slice(0,i).trim(), decodeURIComponent(v.slice(i+1))]; }));
 const body = async (req) => { let s=''; for await (const c of req) {s += c;if(s.length>1048576)throw Object.assign(new Error('Solicitud demasiado grande'),{status:413});} return s ? JSON.parse(s) : {}; };
 const id = () => crypto.randomBytes(32).toString('hex');
@@ -295,7 +299,7 @@ const server = http.createServer(async (req,res) => {
       const state=id();
       await db.query("insert into oauth_states(state,organization_slug,redirect_uri,expires_at,client_portal_login,client_portal_invite_id) values($1,$2,$3,now()+interval '10 minutes',true,$4)",[state,'',googleRedirectUri,invite?.id||null]);
       const params=new URLSearchParams({client_id:googleClientId,redirect_uri:googleRedirectUri,response_type:'code',scope:'openid email profile',state,prompt:'select_account'});
-      res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)});return res.end();
+      res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':oauthStateCookie(state,600)});return res.end();
     }
     if (url.pathname === '/api/auth/account/recent-auth/google/start' && req.method === 'GET') {
       if (!googleClientId || !googleClientSecret) return send(res,503,{code:'GOOGLE_REAUTH_UNAVAILABLE',error:'Google OAuth aún no está configurado'});
@@ -305,7 +309,7 @@ const server = http.createServer(async (req,res) => {
         const state=id();
         await db.query("insert into oauth_states(state,organization_slug,redirect_uri,expires_at,recent_auth_preview_hash,recent_auth_user_id) values($1,'',$2,now()+interval '10 minutes',$3,$4)",[state,googleRedirectUri,binding.previewHash,user.id]);
         const params=new URLSearchParams({client_id:googleClientId,redirect_uri:googleRedirectUri,response_type:'code',scope:'openid email profile',state,prompt:'select_account'});
-        res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)});return res.end();
+        res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':oauthStateCookie(state,600)});return res.end();
       }catch(error){return send(res,error.status||500,{...(error.code?{code:error.code}:{}),error:error.status?error.message:'No se pudo iniciar la verificación con Google.'});}
     }
     if (url.pathname === '/api/auth/google/start' && req.method === 'GET') {
@@ -320,7 +324,7 @@ const server = http.createServer(async (req,res) => {
       if(trial)await db.query('update oauth_states set trial_registration=true where state=$1',[state]);
       if(invite)await db.query('update oauth_states set invite_link_id=$1 where state=$2',[invite.id,state]);
       const params = new URLSearchParams({ client_id: googleClientId, redirect_uri: googleRedirectUri, response_type: 'code', scope: 'openid email profile', state, prompt: 'select_account' });
-      res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':cookie('scale_oauth_state',state,600)}); return res.end();
+      res.writeHead(302,{Location:`https://accounts.google.com/o/oauth2/v2/auth?${params}`,'Set-Cookie':oauthStateCookie(state,600)}); return res.end();
     }
     if (url.pathname === '/api/auth/google/callback' && req.method === 'GET') {
       const state = url.searchParams.get('state') || ''; const code = url.searchParams.get('code') || '';
@@ -332,7 +336,7 @@ const server = http.createServer(async (req,res) => {
       const oauthFailure=message=>{
         const target=saved.rows[0].recent_auth_preview_hash?new URL('/configuracion',appUrl):saved.rows[0].client_portal_login?new URL(saved.rows[0].client_portal_invite_id?'invitacion':'ingresar',clientPortalUrl('')):new URL(saved.rows[0].trial_registration?'/registro':saved.rows[0].invite_link_id?'/invitacion':'/',appUrl);
         target.searchParams.set(target.pathname==='/'?'authError':'error',message+(saved.rows[0].invite_link_id?' Volvé a abrir el enlace de invitación e intentá nuevamente.':' Intentá nuevamente desde esta pantalla.'));
-        res.writeHead(302,{Location:target.href,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+        res.writeHead(302,{Location:target.href,'Set-Cookie':oauthStateCookie('',0)});return res.end();
       };
       if(!code||url.searchParams.has('error'))return oauthFailure('No se completó el acceso con Google.');
       let profile;
@@ -352,7 +356,7 @@ const server = http.createServer(async (req,res) => {
         try{
           const handoff=await issueGoogleRecentAuthHandoff(db,{userId:saved.rows[0].recent_auth_user_id,previewHash:saved.rows[0].recent_auth_preview_hash,profile});
           const target=new URL('/configuracion',appUrl);target.searchParams.set('recentAuthTicket',handoff.ticket);
-          res.writeHead(302,{Location:target.href,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+          res.writeHead(302,{Location:target.href,'Set-Cookie':oauthStateCookie('',0)});return res.end();
         }catch(error){return oauthFailure(error.status?error.message:'No se pudo confirmar tu identidad con Google.');}
       }
       if(saved.rows[0].client_portal_login){
@@ -363,21 +367,21 @@ const server = http.createServer(async (req,res) => {
           }catch(error){return oauthFailure(error.status?error.message:'No se pudo aceptar la invitación del portal.');}
         }
         const portalUser=(await db.query(`select u.id from client_portal_users u where u.email_normalized=$1 and u.disabled_at is null and exists(select 1 from client_portal_grants g join organizations o on o.id=g.organization_id join agency_clients c on c.id=g.client_id and c.organization_id=g.organization_id where g.portal_user_id=u.id and g.active and o.active and c.active)`,[email])).rows[0];
-        if(!portalUser){res.writeHead(302,{Location:`${clientPortalUrl('ingresar')}?error=${encodeURIComponent('Este correo todavía no tiene acceso al portal. Aceptá primero la invitación recibida.')}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();}
+        if(!portalUser){res.writeHead(302,{Location:`${clientPortalUrl('ingresar')}?error=${encodeURIComponent('Este correo todavía no tiene acceso al portal. Aceptá primero la invitación recibida.')}`,'Set-Cookie':oauthStateCookie('',0)});return res.end();}
         const portalToken=id();await db.query("insert into client_portal_sessions(token_hash,portal_user_id,expires_at) values($1,$2,now()+interval '7 days')",[crypto.createHash('sha256').update(portalToken).digest('hex'),portalUser.id]);
         res.writeHead(302,{Location:clientPortalUrl('entregas'),'Set-Cookie':`__Host-scale_client_session=${portalToken}; Max-Age=604800; Path=/; HttpOnly; Secure; SameSite=Lax`});return res.end();
       }
       if(saved.rows[0].trial_registration){
         const ticket=id(),name=typeof profile.name==='string'?profile.name.trim().slice(0,120):'',picture=googleProfilePhoto(profile);
         await db.query("insert into pending_trial_registrations(token_hash,email_normalized,full_name,picture_url,expires_at) values($1,$2,$3,$4,now()+interval '10 minutes')",[crypto.createHash('sha256').update(ticket).digest('hex'),email,name||null,picture]);
-        res.writeHead(302,{Location:`${appUrl}/registro?pendingRegistration=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+        res.writeHead(302,{Location:`${appUrl}/registro?pendingRegistration=${ticket}`,'Set-Cookie':oauthStateCookie('',0)});return res.end();
       }
       if(saved.rows[0].invite_link_id){
         const c=await db.connect();let claim;
         try{await c.query('begin');await c.query("select set_config('app.current_user','google-invitation',true)");claim=await claimInvite(c,saved.rows[0].invite_link_id,profile);await rememberGooglePhoto(c,claim.userId,profile);if(profile.picture||profile.name)await ensurePersonalIdentityInTransaction(c,claim.userId,claim.organizationId);await c.query('commit');}
         catch(e){await c.query('rollback');res.writeHead(302,{Location:`${appUrl}/invitacion?error=${encodeURIComponent(e.status?e.message:'No se pudo aceptar el enlace')}`});return res.end();}finally{c.release();}
         const ticket=id();await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '60 seconds')",[crypto.createHash('sha256').update(ticket).digest('hex'),claim.userId,claim.organizationId]);
-        res.writeHead(302,{Location:`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)});return res.end();
+        res.writeHead(302,{Location:`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':oauthStateCookie('',0)});return res.end();
       }
       const selected=await loginOrganization(db,{email,orderByName:true});
       const member={rows:selected?[selected]:[]};
@@ -387,7 +391,7 @@ const server = http.createServer(async (req,res) => {
       await rememberGooglePhoto(db,member.rows[0].id,profile);
       if(profile.picture||profile.name)await ensurePersonalIdentity(db,member.rows[0].id,member.rows[0].organization_id);
       const ticket=id(); await db.query("insert into oauth_handoffs(token_hash,user_id,organization_id,expires_at,normal_login) values($1,$2,$3,now()+interval '60 seconds',true)",[crypto.createHash('sha256').update(ticket).digest('hex'),member.rows[0].id,member.rows[0].organization_id]);
-      res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':cookie('scale_oauth_state','',0)}); return res.end();
+      res.writeHead(302,{'Location':`${appUrl}/core-api/api/auth/google/complete?ticket=${ticket}`,'Set-Cookie':oauthStateCookie('',0)}); return res.end();
     }
     if(url.pathname==='/api/auth/google/registration/complete'&&req.method==='POST'){
       const input=await body(req),ticket=typeof input.ticket==='string'?input.ticket:'';
