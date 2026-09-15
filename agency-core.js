@@ -120,7 +120,7 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r = await db.query(`select c.* from agency_clients c where organization_id=$1 and ${visibleRecord('c','clients')} order by active desc,name`,[user.organization_id]);
+      const r = await db.query(`select c.*,exists(select 1 from agency_client_commercial_terms t where t.organization_id=c.organization_id and t.client_id=c.id and t.effective_until is null and (t.cadence='monthly' or t.cadence='interval') and (t.ends_on is null or t.ends_on>=current_date)) as has_recurring_price from agency_clients c where organization_id=$1 and ${visibleRecord('c','clients')} order by active desc,name`,[user.organization_id]);
       return send(res,200,{clients:r.rows});
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'POST') {

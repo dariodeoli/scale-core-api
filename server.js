@@ -167,6 +167,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_role_permissions.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260914_production_traceability.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_optional_commission_terms.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260915_billing_cadence_and_coupons.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_client_invoice_flags.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_planned_expense_kind.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_expenses.sql'),'utf8'));

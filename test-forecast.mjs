@@ -10,7 +10,7 @@ import {agencyReport,reports} from './reports.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_planned_expense_kind.sql','20260915_expenses.sql','20260915_client_terms_end_date.sql']) {
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_billing_cadence_and_coupons.sql','20260915_planned_expense_kind.sql','20260915_expenses.sql','20260915_client_terms_end_date.sql']) {
  await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 }
 // Startup migrations must be repeatable.
@@ -83,8 +83,16 @@ for(const recurringAmount of [0,-1,'1000.5',true,Number.MAX_SAFE_INTEGER+1])asse
 for(const commissionValue of [0,'10.5',101])assert.equal((await call(termsPath,'PATCH',{...terms,commissionValue},managementUser)).status,400,`terms reject commission ${String(commissionValue)}`);
 let savedTerms=await call(termsPath,'PATCH',terms,managementUser);
 assert.equal(savedTerms.status,200);assert.deepEqual({amount:savedTerms.terms.recurringAmount,currency:savedTerms.terms.currency,startsOn:savedTerms.terms.startsOn,invoiceRequired:savedTerms.terms.invoiceRequired,recipient:savedTerms.terms.commissionRecipientId,mode:savedTerms.terms.commissionMode,value:savedTerms.terms.commissionValue},{amount:1000,currency:'PYG',startsOn:'2026-09-15',invoiceRequired:true,recipient:String(salaryPyg.collaborator.id),mode:'percentage',value:10});
-assert.deepEqual(Object.keys(savedTerms.terms).sort(),['clientId','commissionMode','commissionRecipientId','commissionRecipientName','commissionValue','currency','endsOn','invoiceRequired','planId','planName','recurringAmount','startsOn','updatedAt'].sort(),'commercial terms response has the documented stable shape');
+assert.deepEqual(Object.keys(savedTerms.terms).sort(),['cadence','clientId','commissionMode','commissionRecipientId','commissionRecipientName','commissionValue','currency','endsOn','intervalMonths','invoiceRequired','planId','planName','recurringAmount','startsOn','updatedAt'].sort(),'commercial terms response has the documented stable shape');
 assert.equal((await call(termsPath,'GET',{},financeUser)).terms.planId,String(commercialPlan),'finance reads effective terms for LTV');
+const intervalTerms=await call(termsPath,'PATCH',{...terms,cadence:'interval',intervalMonths:3},managementUser);
+assert.equal(intervalTerms.status,200);
+assert.deepEqual({cadence:intervalTerms.terms.cadence,interval:intervalTerms.terms.intervalMonths},{cadence:'interval',interval:3},'billing cadence persists');
+const customTerms=await call(termsPath,'PATCH',{...terms,planId:'',cadence:'once'},managementUser);
+assert.equal(customTerms.status,200);
+assert.equal(customTerms.terms.planName,'Plan personalizado','an empty plan resolves to the per-organization manual plan');
+assert.equal(customTerms.terms.cadence,'once');
+await call(termsPath,'PATCH',{...terms,cadence:'monthly',intervalMonths:1},managementUser);
 const noneTerms=await call(termsPath,'PATCH',{...terms,commissionMode:'none',commissionRecipientId:null,commissionValue:null},managementUser);
 assert.equal(noneTerms.status,200);
 assert.deepEqual({recipient:noneTerms.terms.commissionRecipientId,name:noneTerms.terms.commissionRecipientName,mode:noneTerms.terms.commissionMode,value:noneTerms.terms.commissionValue},{recipient:null,name:null,mode:'none',value:null},'a contract can exist without commission');

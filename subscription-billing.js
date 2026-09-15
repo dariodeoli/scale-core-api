@@ -323,7 +323,7 @@ async function webhook(db,req,cfg){
 }
 
 export async function subscriptionBilling({req,res,url,db,session,body,send}){
- const path=url.pathname;if(!['/api/billing/subscription','/api/billing/checkout','/api/billing/portal','/api/billing/webhook',PAGAYA_CALLBACK_PATH].includes(path))return false;
+ const path=url.pathname;if(!['/api/billing/subscription','/api/billing/checkout','/api/billing/portal','/api/billing/webhook','/api/billing/coupon-redeem',PAGAYA_CALLBACK_PATH].includes(path))return false;
  try{
   if(path==='/api/billing/webhook'){
    if(req.method!=='POST')fail('Método no permitido',405);
@@ -337,6 +337,30 @@ export async function subscriptionBilling({req,res,url,db,session,body,send}){
   if(path==='/api/billing/subscription'){
    if(req.method!=='GET')fail('Método no permitido',405);
    send(res,200,await subscriptionState(db,user));return true;
+  }
+  if(path==='/api/billing/coupon-redeem'){
+   if(req.method!=='POST')fail('Método no permitido',405);
+   if(!['owner','admin'].includes(user.role))fail('Solo el dueño o administración puede canjear cupones',403);
+   const input=await body(req);const code=typeof input?.code==='string'?input.code.trim().toUpperCase():'';
+   if(!/^[A-Z0-9_-]{3,40}$/.test(code))fail('Cupón inválido',400);
+   const c=await db.connect();
+   try{
+    await c.query('begin');
+    await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
+    const coupon=(await c.query(`select id,max_redemptions,(select count(*)::int from platform_coupon_redemptions r where r.coupon_id=platform_coupons.id) as used from platform_coupons where code=$1 and active for update`,[code])).rows[0];
+    if(!coupon)fail('Cupón inválido o desactivado',400);
+    if(coupon.max_redemptions!==null&&Number(coupon.used)>=Number(coupon.max_redemptions))fail('Este cupón ya alcanzó su límite de usos',400);
+    if((await c.query('select 1 from platform_coupon_redemptions where coupon_id=$1 and organization_id=$2',[coupon.id,user.organization_id])).rows[0])fail('Tu empresa ya canjeó este cupón',409);
+    const sub=(await c.query('select due_at,paid_through_at from organization_subscriptions where organization_id=$1 for update',[user.organization_id])).rows[0];
+    if(!sub)fail('Suscripción no encontrada',404);
+    const base=new Date(Math.max(Date.now(),sub.paid_through_at?new Date(sub.paid_through_at).getTime():new Date(sub.due_at).getTime()));
+    base.setMonth(base.getMonth()+1);
+    const due=new Date(Math.max(base.getTime(),new Date(sub.due_at).getTime()));
+    await c.query('update organization_subscriptions set paid_through_at=$2,due_at=$3,updated_at=now() where organization_id=$1',[user.organization_id,base.toISOString(),due.toISOString()]);
+    await c.query('insert into platform_coupon_redemptions(coupon_id,organization_id,months_granted,redeemed_by_user_id) values($1,$2,1,$3)',[coupon.id,user.organization_id,user.id]);
+    await c.query('commit');c.release();c=null;
+    send(res,200,{ok:true,message:'Cupón canjeado: se agregó un mes a tu suscripción.',subscription:await subscriptionState(db,user)});return true;
+   }catch(error){if(c){await c.query('rollback');c.release();}throw error;}
   }
   if(req.method!=='POST')fail('Método no permitido',405);
   const input=await body(req);if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>path!=='/api/billing/checkout'||key!=='currency'))fail('El plan y la empresa se determinan en el servidor');

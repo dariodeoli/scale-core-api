@@ -82,7 +82,7 @@ const forecastSnapshot=async(db,organizationId,label)=>{
  const [contractedRecurring,collectedActual,commissionForecast,plannedExpenses]=await Promise.all([
   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(coalesce(t.recurring_amount,round(case when t.discount_type='percent' then t.monthly_price*(1-t.discount_value/100) when t.discount_type='fixed' then greatest(t.monthly_price-t.discount_value,0) else t.monthly_price end)::bigint)),0)::text as amount
    from agency_client_commercial_terms t join agency_clients c on c.organization_id=t.organization_id and c.id=t.client_id
-   where t.organization_id=$1 and t.starts_on<($2::date+interval '1 month')::date and (t.ends_on is null or t.ends_on>=$2::date) and c.active=true and ${visibleRecord('c','clients')}
+   where t.organization_id=$1 and t.cadence='monthly' and t.starts_on<($2::date+interval '1 month')::date and (t.ends_on is null or t.ends_on>=$2::date) and c.active=true and ${visibleRecord('c','clients')}
    group by t.currency order by t.currency`,[organizationId,`${label}-01`]),
   db.query(`with movements as (
     select a.currency,p.amount,p.received_on as booked_on from agency_payments p join bank_accounts a on a.id=p.account_id and a.organization_id=p.organization_id where p.organization_id=$1
@@ -92,7 +92,7 @@ const forecastSnapshot=async(db,organizationId,label)=>{
   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(case when t.commission_mode='percentage' then round(coalesce(t.recurring_amount,round(case when t.discount_type='percent' then t.monthly_price*(1-t.discount_value/100) when t.discount_type='fixed' then greatest(t.monthly_price-t.discount_value,0) else t.monthly_price end)::bigint)*t.commission_value/100.0,0) when t.commission_mode='fixed' then t.commission_value else 0 end),0)::text as amount
    from agency_client_commercial_terms t join agency_clients c on c.organization_id=t.organization_id and c.id=t.client_id
    join agency_collaborators r on r.organization_id=t.organization_id and r.id=t.commission_recipient_id
-   where t.organization_id=$1 and t.starts_on<($2::date+interval '1 month')::date and (t.ends_on is null or t.ends_on>=$2::date) and c.active=true and r.active=true and ${visibleRecord('c','clients')} and ${visibleRecord('r','collaborators')}
+   where t.organization_id=$1 and t.cadence='monthly' and t.starts_on<($2::date+interval '1 month')::date and (t.ends_on is null or t.ends_on>=$2::date) and c.active=true and r.active=true and ${visibleRecord('c','clients')} and ${visibleRecord('r','collaborators')}
    group by t.currency order by t.currency`,[organizationId,`${label}-01`]),
   db.query(`select currency,count(*)::int as expense_count,count(*) filter(where kind='fixed')::int as fixed_count,count(*) filter(where kind='variable' or kind is null)::int as variable_count,coalesce(sum(amount),0)::text as amount from agency_planned_expenses
    where organization_id=$1 and ((cadence='monthly' and effective_month=$2::date) or (cadence='recurring' and effective_month<=$2::date))
@@ -179,7 +179,7 @@ export async function financialForecast({req,res,url,db,session,send}) {
     issued:'Totales con impuestos de facturas emitidas en el mes, incluidas las cobradas; excluye borradores y canceladas.',
     accepted_uninvoiced:'Presupuestos aceptados sin ninguna factura vinculada, estimados en el mes de aceptación. No tienen fecha de facturación confirmada.',
     exclusions:'Sin oportunidades comerciales, conversiones de moneda ni cobros previstos. Un presupuesto con factura vinculada, incluso borrador o cancelada, no se vuelve a sumar. Los aceptados sin fecha se informan aparte.',
-    contracted_recurring:'Acuerdos vigentes de clientes activos al cierre del mes: empezaron antes de fin de mes y no tienen fecha de fin, o su fin cae dentro del mes. Es ingreso contractual recurrente y no representa una factura ni un cobro.',
+    contracted_recurring:'Solo acuerdos mensuales fijos de clientes activos al cierre del mes: empezaron antes de fin de mes y no tienen fecha de fin, o su fin cae dentro del mes. Contratos por única vez o cada varios meses no se proyectan como ingreso mensual. Es ingreso contractual y no representa una factura ni un cobro.',
     invoiced:'Facturas emitidas en el mes. Se informa por separado del ingreso contractual y de los cobros.',
     collected_actual:'Cobros efectivamente registrados por fecha de cobro, menos reversiones registradas en el mes. No se suma al ingreso contractual.',
     personnel:'Solo incluye colaboradores activos dentro de las fechas laborales, con salario mensual recurrente configurado. Un ajuste del mes reemplaza ese salario; no incluye pagos, comisiones ni compensaciones variables.',
