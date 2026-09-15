@@ -92,6 +92,14 @@ await query('update organizations set active=false where id=$1',[org]);
 assert.equal((await call({value:{site:'scale-website',session_id:randomUUID()},extraHeaders:{origin:'https://scaleparaguay.com'}})).status,403);
 assert.equal((await counts()).data.sites.length,0);
 
+// Public aggregated count: no session, no per-site data, same origin guard.
+const publicCount=(options={})=>call({path:'/api/public/live-visitors/count',method:'GET',value:{},as:null,...options});
+assert.equal((await publicCount()).status,200);assert.equal((await publicCount()).data.active_sessions,0);
+assert.equal((await publicCount({extraHeaders:{origin:'https://evil.example'}})).status,403);
+assert.equal((await publicCount({extraHeaders:{'sec-fetch-site':'cross-site'}})).status,403);
+assert.equal((await publicCount({method:'POST'})).status,405);
+assert.equal((await publicCount({path:'/api/public/live-visitors/count?x=1'})).status,400);
+
 // Cleanup runs independently of traffic and has a stoppable lifecycle.
 let cleanupCalls=0;const stop=startLiveVisitorCleanup({query:async sql=>{assert(sql.includes('expires_at<=now()'));cleanupCalls++;}});
 await new Promise(resolve=>setImmediate(resolve));stop();assert.equal(cleanupCalls,1);

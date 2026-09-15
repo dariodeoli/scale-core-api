@@ -1,5 +1,7 @@
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
+import {roleCan} from './permissions.js';
 const publicPath='/api/public/live-visitors/heartbeat';
+const publicCountPath='/api/public/live-visitors/count';
 const countsPath='/api/agency/live-visitors';
 const adminOrigins=new Set(['https://app.scaleparaguay.com','https://admin.scaleparaguay.com','https://api.scaleparaguay.com','https://sistema.scaleparaguay.com']);
 const adminHosts=new Set(['admin.scaleparaguay.com','api.scaleparaguay.com','app.scaleparaguay.com','sistema.scaleparaguay.com']);
@@ -19,11 +21,21 @@ async function heartbeatBody(req){
 }
 
 export async function liveVisitors({req,res,url,db,session,send}){
- if(![publicPath,countsPath].includes(url.pathname))return false;
+ if(![publicPath,countsPath,publicCountPath].includes(url.pathname))return false;
  let c,tx=false;
  try{
   if(url.search)fail('No se admiten filtros en esta ruta');
   const host=req.headers.host,origin=req.headers.origin;
+  if(url.pathname===publicCountPath){
+   if(req.method!=='GET')fail('Método no permitido',405);
+   // Aggregated public read for the product metrics: no session, no per-site data.
+   if(!adminHosts.has(host)||(origin!==undefined&&!adminOrigins.has(origin))||req.headers['sec-fetch-site']==='cross-site')fail('Origen no permitido',403);
+   const active=(await db.query(`select count(v.session_id)::integer as active_sessions
+    from live_visitor_sessions v join live_visitor_sites s on s.site_key=v.site_key and s.enabled
+    join organizations o on o.id=s.organization_id and o.active and o.demo_owner_user_id is null
+    where v.expires_at>now()`)).rows[0].active_sessions;
+   send(res,200,{active_sessions:active,window_seconds:90,refresh_seconds:30},responseHeaders);return true;
+  }
   if(url.pathname===countsPath){
    if(req.method!=='GET')fail('Método no permitido',405);
    // A same-origin GET may omit Origin; authentication and tenant filtering still apply.
@@ -67,6 +79,7 @@ export async function liveVisitors({req,res,url,db,session,send}){
   send(res,202,{ok:true},responseHeaders);return true;
  }catch(error){
   if(tx)await c.query('rollback');
+  if(process.env.LIVE_VISITORS_DEBUG&&!error.status)console.error('LIVE 500:',error.message,error.detail||'');
   send(res,error.status||500,{error:error.status?error.message:'Contador temporalmente no disponible'},
    {...responseHeaders,...(error.status===429?{'Retry-After':'30'}:{})});return true;
  }finally{c?.release();}
