@@ -89,6 +89,19 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    });
    send(res,200,result);return true;
   }
+  const agencyPath=url.pathname.match(/^\/api\/platform\/agencies\/(\d+)$/);
+  if(agencyPath&&req.method==='DELETE'){
+   requireWrite(role);
+   const deleted=await mutation(db,async client=>{
+    const target=(await client.query(`select o.id,o.name,o.slug from organizations o where o.id=$1 and ${realOrganization('o')} for update`,[Number(agencyPath[1])])).rows[0];
+    if(!target)fail('Agencia no encontrada o protegida.',404);
+    await client.query('update organizations set active=false,deleted_at=now(),deleted_by_user_id=$2 where id=$1',[target.id,user.id]);
+    await client.query('delete from sessions where organization_id=$1',[target.id]);
+    await audit(client,user,'agency.delete','organization',target.id,{name:target.name,slug:target.slug});
+    return {agencyId:target.id,name:target.name,slug:target.slug};
+   });
+   send(res,200,{deleted});return true;
+  }
   if(url.pathname==='/api/platform/users'&&req.method==='GET'){
    const {limit,offset}=page(url),q=search(url),where=q?'and u.email ilike $3':'';
    const values=q?[limit,offset,'%'+q+'%']:[limit,offset];

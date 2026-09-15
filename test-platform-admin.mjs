@@ -57,6 +57,15 @@ coupon=await call('/api/platform/coupons/'+coupon.data.coupon.id,{method:'PATCH'
 assert.equal((await call('/api/platform/coupons')).data.coupons[0].lifetime_eligible,true,'coupon listing preserves lifetime eligibility');
 assert.equal((await call('/api/platform/coupons',{method:'POST',payload:{code:'bad code',discount_type:'percent',discount_value:10}})).status,400);
 const audit=await call('/api/platform/audit');assert.equal(audit.status,200);assert.equal(audit.data.actions.length,3);assert.equal(audit.data.actions[0].action,'coupon.deactivate');assert.equal((await pg.query('select count(*)::int as n from platform_audit_log')).rows[0].n,3);
+await pg.query('insert into sessions(id,user_id,organization_id) values(1,1,10)');
+const removedAgency=await call('/api/platform/agencies/10',{method:'DELETE'});
+assert.equal(removedAgency.status,200);assert.deepEqual(removedAgency.data.deleted,{agencyId:10,name:'Agency One',slug:'agency-one'},'an admin can delete a real agency');
+assert.equal((await pg.query('select active from organizations where id=10')).rows[0].active,false,'the agency is soft-deleted');
+assert.equal((await pg.query('select deleted_at is not null as gone from organizations where id=10')).rows[0].gone,true);
+assert.equal((await pg.query('select count(*)::int as n from sessions where organization_id=10')).rows[0].n,0,'agency deletion revokes its sessions');
+assert.equal((await call('/api/platform/agencies/10',{method:'DELETE'})).status,404,'a deleted agency is no longer removable');
+assert.equal((await call('/api/platform/agencies/30',{method:'DELETE'})).status,404,'demo agencies are protected');
+assert.equal((await call('/api/platform/audit')).data.actions.find(entry=>entry.action==='agency.delete').target_id,'10','agency deletion is audited');
 await pg.query('delete from platform_administrators');
 let bootstrap=await bootstrapInitialPlatformAdmin(db,'platform@scale.example');
 assert.equal(bootstrap.activated,true);
@@ -76,6 +85,7 @@ assert.equal((await call('/api/platform/users/3',{method:'PATCH',payload:{platfo
 assert.equal((await call('/api/platform/users')).data.users.find(row=>row.email==='member@agency.example').platform_role,'viewer','the user list exposes the explicit global role');
 assert.equal((await call('/api/platform/overview',{actor:{id:3,email:'member@agency.example'}})).status,200,'a viewer can inspect the global panel');
 assert.equal((await call('/api/platform/coupons',{method:'POST',actor:{id:3,email:'member@agency.example'},payload:{code:'VIEWER10',discount_type:'percent',discount_value:10}})).status,403,'a viewer cannot mutate the global panel');
+assert.equal((await call('/api/platform/agencies/20',{method:'DELETE',actor:{id:3,email:'member@agency.example'}})).status,403,'a viewer cannot delete agencies');
 assert.equal((await call('/api/platform/users/2',{method:'PATCH',payload:{platform_access:'viewer'}})).status,400,'an admin cannot change its own global access');
 assert.equal((await call('/api/platform/users/1',{method:'PATCH',payload:{platform_access:'bogus'}})).status,400);
 assert.equal((await call('/api/platform/users/999',{method:'PATCH',payload:{platform_access:'admin'}})).status,404);
