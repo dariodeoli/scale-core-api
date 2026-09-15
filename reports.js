@@ -4,7 +4,7 @@ import {roleCan} from './permissions.js';
 const timezone='America/Asuncion';
 const kinds=['unknown','company','professional','individual','other'];
 const termFields=['planId','recurringAmount','currency','startsOn','invoiceRequired','commissionRecipientId','commissionMode','commissionValue'];
-const expenseFields=['cadence','effectiveMonth','category','amount','currency','note'];
+const expenseFields=['cadence','effectiveMonth','category','amount','currency','note','kind'];
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const dateString=value=>value instanceof Date?value.toISOString().slice(0,10):value;
 function id(value,label='Identificador') {
@@ -139,7 +139,7 @@ async function validateTerms(db,org,input) {
  return {planId,recipientId,recurringAmount,currency,startsOn,invoiceRequired:input.invoiceRequired,commissionMode,commissionValue};
 }
 async function plannedExpenses(db,org,month) {
- const records=(await db.query(`select id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note,
+ const records=(await db.query(`select id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note,kind,
   created_by_user_id::text as "createdByUserId",created_at as "createdAt",updated_at as "updatedAt"
   from agency_planned_expenses where organization_id=$1 and (cadence='monthly' and effective_month=$2::date or cadence='recurring' and effective_month<=$2::date)
   order by currency,category,id`,[org,`${month}-01`])).rows;
@@ -150,13 +150,18 @@ async function plannedExpenses(db,org,month) {
 }
 async function validateExpense(input) {
  validateFields(input,expenseFields,'gasto planificado');
- if(expenseFields.some(field=>!Object.hasOwn(input,field)))fail('Completá todos los campos del gasto planificado');
+ if(expenseFields.filter(field=>field!=='kind').some(field=>!Object.hasOwn(input,field)))fail('Completá todos los campos del gasto planificado');
  const cadence=['monthly','recurring'].includes(input.cadence)?input.cadence:fail('Cadencia inválida');
  const effectiveMonth=monthDate(input.effectiveMonth,'Mes efectivo');
  if(typeof input.category!=='string'||input.category.trim().length<1||input.category.trim().length>120)fail('Categoría inválida');
  if(!['PYG','USD'].includes(input.currency))fail('Moneda inválida');
  if(input.note!==null&&input.note!==undefined&&(typeof input.note!=='string'||input.note.length>1000))fail('Nota inválida');
- return {cadence,effectiveMonth,category:input.category.trim(),amount:wholeAmount(input.amount,'El importe'),currency:input.currency,note:input.note?.trim()||null};
+ let kind=null;
+ if(input.kind!==undefined&&input.kind!==null){
+  if(!['fixed','variable'].includes(input.kind))fail('Tipo de gasto inválido');
+  kind=input.kind;
+ }
+ return {cadence,effectiveMonth,category:input.category.trim(),amount:wholeAmount(input.amount,'El importe'),currency:input.currency,note:input.note?.trim()||null,kind};
 }
 export async function reports({req,res,url,db,session,body,send}) {
  const aggregate=url.pathname==='/api/agency/reports',match=url.pathname.match(/^\/api\/agency\/clients\/([1-9]\d*)\/reporting$/),termsMatch=url.pathname.match(/^\/api\/agency\/clients\/([1-9]\d*)\/commercial-terms$/),expenseMatch=url.pathname.match(/^\/api\/agency\/planned-expenses(?:\/([1-9]\d*))?$/);
@@ -175,8 +180,8 @@ export async function reports({req,res,url,db,session,body,send}) {
    if(req.method==='POST'&&!expenseMatch[1]){
     const value=await validateExpense(await body(req));c=await db.connect();await c.query('begin');await authorize(c,user,'expenses.manage');
     await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
-    const expense=(await c.query(`insert into agency_planned_expenses(organization_id,cadence,effective_month,category,amount,currency,note,created_by_user_id)
-     values($1,$2,$3::date,$4,$5,$6,$7,$8) returning id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note`,[user.organization_id,value.cadence,value.effectiveMonth,value.category,value.amount,value.currency,value.note,user.id])).rows[0];
+    const expense=(await c.query(`insert into agency_planned_expenses(organization_id,cadence,effective_month,category,amount,currency,note,kind,created_by_user_id)
+     values($1,$2,$3::date,$4,$5,$6,$7,$8,$9) returning id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note,kind`,[user.organization_id,value.cadence,value.effectiveMonth,value.category,value.amount,value.currency,value.note,value.kind,user.id])).rows[0];
     await c.query('commit');c.release();c=null;send(res,201,{expense:projectMoney(expense,['amount'])});return true;
    }
    if((req.method==='PATCH'||req.method==='DELETE')&&expenseMatch[1]){
@@ -185,8 +190,8 @@ export async function reports({req,res,url,db,session,body,send}) {
     const existing=(await c.query('select id from agency_planned_expenses where organization_id=$1 and id=$2 for update',[user.organization_id,expenseMatch[1]])).rows[0];if(!existing)fail('Gasto planificado no encontrado',404);
     if(req.method==='DELETE'){await c.query('delete from agency_planned_expenses where organization_id=$1 and id=$2',[user.organization_id,expenseMatch[1]]);await c.query('commit');c.release();c=null;send(res,200,{deleted:true});return true;}
     const value=await validateExpense(await body(req));
-    const expense=(await c.query(`update agency_planned_expenses set cadence=$3,effective_month=$4::date,category=$5,amount=$6,currency=$7,note=$8,updated_at=clock_timestamp()
-     where organization_id=$1 and id=$2 returning id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note`,[user.organization_id,expenseMatch[1],value.cadence,value.effectiveMonth,value.category,value.amount,value.currency,value.note])).rows[0];
+    const expense=(await c.query(`update agency_planned_expenses set cadence=$3,effective_month=$4::date,category=$5,amount=$6,currency=$7,note=$8,kind=$9,updated_at=clock_timestamp()
+     where organization_id=$1 and id=$2 returning id::text as id,cadence,effective_month::text as "effectiveMonth",category,amount::text as amount,currency,note,kind`,[user.organization_id,expenseMatch[1],value.cadence,value.effectiveMonth,value.category,value.amount,value.currency,value.note,value.kind])).rows[0];
     await c.query('commit');c.release();c=null;send(res,200,{expense:projectMoney(expense,['amount'])});return true;
    }
    fail('Método no permitido',405);

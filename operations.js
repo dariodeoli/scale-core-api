@@ -1,7 +1,7 @@
 import {currencies} from './currencies.js';
 import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
-import {companyCurrency,forecastMonth} from './forecast.js';
+import {companyCurrency,forecastMonth,forecastTimezone} from './forecast.js';
 import { collaboratorAccess } from './collaborator-access.js';
 import { profilePhoto } from './media-policy.js';
 import {visibleRecord,assertRecordAvailable} from './record-lifecycle.js';
@@ -23,10 +23,11 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
  const collaboratorMatch=url.pathname.match(/^\/api\/agency\/collaborators(?:\/(\d+))?$/);
  const salaryOverrideMatch=url.pathname.match(/^\/api\/agency\/collaborators\/(\d+)\/salary-overrides$/);
  const commissionMatch=url.pathname.match(/^\/api\/agency\/commissions(?:\/(\d+))?$/);
+ const commissionMonthlyRoute=url.pathname==='/api/agency/commissions/monthly';
  const payoutRoute=url.pathname==='/api/agency/payouts';
  const discountMatch=url.pathname.match(/^\/api\/agency\/referral-discounts(?:\/(\d+))?$/);
  const jobMatch=url.pathname.match(/^\/api\/agency\/job-roles(?:\/(\d+))?$/);
- if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!salaryOverrideMatch&&!commissionMatch&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
+ if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!salaryOverrideMatch&&!commissionMatch&&!commissionMonthlyRoute&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
  const user=await session(req);
  if(!user) {send(res,401,{error:'No autenticado'});return true;}
  const allowed=commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? roleCan(user,'members.manage') : roleCan(user,'finance.view');
@@ -118,6 +119,54 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     else {result={collaborator:(await c.query('insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_type,compensation_amount,invoices_company,started_on,payment_day,active,notes,currency,ended_on,monthly_salary_amount,monthly_salary_currency) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) returning *',values)).rows[0]};status=201;}
     result.collaborator=(await c.query('update agency_collaborators set job_role_id=$1 where id=$2 and organization_id=$3 returning *',[jobId,result.collaborator.id,org])).rows[0];result.access={status:access.status};
    } else fail('Método no permitido',405);
+  } else if(commissionMonthlyRoute) {
+   if(req.method!=='GET')fail('Método no permitido',405);
+   const month=forecastMonth(url.searchParams.get('month'));
+   const [expected,recorded]=await Promise.all([
+    c.query(`select r.id::text as recipient_id,r.full_name as name,t.currency,coalesce(sum(case when t.commission_mode='percentage' then round(coalesce(t.recurring_amount,round(case when t.discount_type='percent' then t.monthly_price*(1-t.discount_value/100) when t.discount_type='fixed' then greatest(t.monthly_price-t.discount_value,0) else t.monthly_price end)::bigint)*t.commission_value/100.0,0) when t.commission_mode='fixed' then t.commission_value else 0 end),0)::text as expected_amount
+     from agency_client_commercial_terms t join agency_clients c on c.organization_id=t.organization_id and c.id=t.client_id
+     join agency_collaborators r on r.organization_id=t.organization_id and r.id=t.commission_recipient_id
+     where t.organization_id=$1 and t.starts_on<($2::date+interval '1 month')::date and c.active=true and r.active=true and ${visibleRecord('c','clients')} and ${visibleRecord('r','collaborators')}
+     group by r.id,r.full_name,t.currency order by r.full_name,t.currency`,[org,`${month}-01`]),
+    c.query(`select x.collaborator_id::text as recipient_id,
+      case when x.collaborator_id is null then x.beneficiary_name else c.full_name end as name,x.currency,
+      coalesce(sum(x.amount) filter(where x.status='pending'),0)::text as pending_amount,
+      coalesce(sum(x.amount) filter(where x.status='approved'),0)::text as approved_amount,
+      coalesce(sum(x.amount) filter(where x.status='paid'),0)::text as paid_amount,
+      coalesce(sum(x.amount),0)::text as recorded_amount
+     from agency_commissions x
+     left join agency_invoices i on i.id=x.invoice_id and i.organization_id=x.organization_id
+     left join agency_collaborators c on c.id=x.collaborator_id
+     where x.organization_id=$1 and x.status in ('pending','approved','paid')
+      and coalesce(i.issued_on,x.due_on,x.paid_on,(x.created_at at time zone $3)::date)>=$2::date
+      and coalesce(i.issued_on,x.due_on,x.paid_on,(x.created_at at time zone $3)::date)<($2::date+interval '1 month')::date
+     group by x.collaborator_id,x.currency,case when x.collaborator_id is null then x.beneficiary_name else c.full_name end`,[org,`${month}-01`,forecastTimezone])
+   ]);
+   const byKey=new Map();
+   for(const row of [...expected.rows,...recorded.rows]){
+    const linked=row.recipient_id!==null&&row.recipient_id!==undefined;
+    const key=`${linked?String(row.recipient_id):`unlinked:${String(row.name)}`}\u0000${row.currency}`;
+    const current=byKey.get(key);
+    if(current){
+     current.expected_amount+=row.expected_amount===undefined?0:Number(row.expected_amount);
+     current.recorded_amount+=row.recorded_amount===undefined?0:Number(row.recorded_amount);
+     current.approved_amount+=row.approved_amount===undefined?0:Number(row.approved_amount);
+     current.paid_amount+=row.paid_amount===undefined?0:Number(row.paid_amount);
+     current.pending_amount+=row.pending_amount===undefined?0:Number(row.pending_amount);
+     continue;
+    }
+    byKey.set(key,{recipient_id:linked?String(row.recipient_id):null,name:row.name??null,currency:row.currency,
+     expected_amount:row.expected_amount===undefined?0:Number(row.expected_amount),
+     recorded_amount:row.recorded_amount===undefined?0:Number(row.recorded_amount),
+     approved_amount:row.approved_amount===undefined?0:Number(row.approved_amount),
+     paid_amount:row.paid_amount===undefined?0:Number(row.paid_amount),
+     pending_amount:row.pending_amount===undefined?0:Number(row.pending_amount)});
+   }
+   const records=[...byKey.values()]
+    .filter(row=>row.expected_amount!==0||row.recorded_amount!==0||row.approved_amount!==0||row.paid_amount!==0||row.pending_amount!==0)
+    .map(row=>({recipient_id:row.recipient_id,name:row.name,currency:row.currency,expected_amount:row.expected_amount,recorded_amount:row.recorded_amount,approved_amount:row.approved_amount,paid_amount:row.paid_amount,pending_amount:row.pending_amount}))
+    .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''))||a.currency.localeCompare(b.currency));
+   result={month,records};
   } else if(commissionMatch) {
    if(req.method==='GET') result={commissions:(await c.query('select x.*,i.number as invoice_number,c.full_name as collaborator_name from agency_commissions x left join agency_invoices i on i.id=x.invoice_id left join agency_collaborators c on c.id=x.collaborator_id where x.organization_id=$1 order by x.created_at desc',[org])).rows};
    else if(req.method==='POST') {

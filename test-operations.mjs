@@ -3,10 +3,11 @@ import {identitySchema} from './scripts/test-identity-schema.mjs';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {operations} from './operations.js';
+import {roleCan} from './permissions.js';
 import sharp from 'sharp';
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_client_payment_status.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_client_invoice_flags.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 for(const file of ['20260910_productivity.sql','20260910_profile_identity.sql','20260912_comment_mentions.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 for(const file of ['20260910_currencies.sql','20260910_company_currency.sql','20260914_salary_forecast.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 await identitySchema(pg);
@@ -44,6 +45,26 @@ assert.equal((await call('/api/agency/payouts','POST',{collaborator_id:pid,accou
 assert.equal(Number((await sql('select balance from bank_accounts where id=$1',[account])).rows[0].balance),860);
 assert.equal((await call('/api/agency/commissions')).commissions[0].status,'paid');
 assert.equal((await call('/api/agency/payouts')).payouts.length,2);
+// Monthly commission settlement by collaborator.
+assert.equal((await call('/api/agency/commissions/monthly','GET',{}, {...user,role:'viewer'})).status,403,'monthly commissions stay behind finance.view');
+assert.equal((await call('/api/agency/commissions/monthly?month=2026-13','GET')).status,400,'monthly commissions validate the month format');
+assert.equal((await call('/api/agency/commissions/monthly?month=2026-08','GET',{}, {...user,role:'finance'})).status,200);
+const settlePerson=(await call('/api/agency/collaborators','POST',{full_name:'Monthly settle',email:'settle@example.invalid',compensation_type:'fixed',compensation_amount:0,currency:'PYG',started_on:'2026-07-01'})).collaborator;
+const settleClient=(await sql("insert into agency_clients(name,organization_id) values('Settlement',$1) returning id",[org])).rows[0].id;
+await sql("insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,invoice_required,commission_recipient_id,commission_mode,commission_value) values($1,$2,null,1000,'PYG','2026-07-01',true,$3,'percentage',10)",[org,settleClient,settlePerson.id]);
+const settleInvoice=(await sql("insert into agency_invoices(organization_id,client_id,number,total,paid_amount,status,issued_on) values($1,$2,'SETTLE',500,0,'issued','2026-08-05') returning id",[org,settleClient])).rows[0].id;
+for(const [status,amount] of [['pending',50],['approved',30],['paid',20],['cancelled',99]])await sql("insert into agency_commissions(organization_id,invoice_id,collaborator_id,kind,beneficiary_name,amount,currency,status,due_on) values($1,$2,$3,'sales',$4,$5,'PYG',$6,'2026-08-20')",[org,settleInvoice,settlePerson.id,`Settle ${status}`,amount,status]);
+const settlement=await call('/api/agency/commissions/monthly?month=2026-08');
+assert.equal(settlement.status,200);assert.equal(settlement.month,'2026-08');
+const settleRow=settlement.records.find(row=>String(row.recipient_id)===String(settlePerson.id)&&row.currency==='PYG');
+assert.ok(settleRow,'percentage terms and commissions group to their recipient');
+assert.equal(settleRow.name,'Monthly settle');
+assert.equal(Number(settleRow.expected_amount),100,'percentage over contracted monthly amount');
+assert.equal(Number(settleRow.recorded_amount),100,'cancelled commissions stay out of the settlement');
+assert.equal(Number(settleRow.pending_amount),50);
+assert.equal(Number(settleRow.approved_amount),30);
+assert.equal(Number(settleRow.paid_amount),20);
+assert.equal((await call('/api/agency/commissions/monthly?month=2026-08','GET',{}, {...user,organization_id:other})).records.length,0,'monthly commissions keep tenant isolation');
 assert.ok((await sql('select * from agency_operation_audit where actor=$1',[String(uid)])).rows.length>=5);
 r=await call('/api/agency/referral-discounts','POST',{invoice_id:invoice,amount:500,referrer:'Referral client',reason:'Reward'});assert.equal(r.status,201);const did=r.discount.id;
 assert.equal(Number((await sql('select total from agency_invoices where id=$1',[invoice])).rows[0].total),500);
@@ -54,6 +75,37 @@ assert.equal((await call(`/api/agency/referral-discounts/${did}`,'PATCH',{})).st
 assert.equal(Number((await sql('select total from agency_invoices where id=$1',[invoice])).rows[0].total),1000);
 await assert.rejects(()=>sql('insert into agency_payments(organization_id,invoice_id,account_id,amount) values($1,$2,$3,700)',[org,invoice,account]));
 await assert.rejects(()=>sql('insert into account_transfers(organization_id,from_account_id,to_account_id,amount) values($1,$2,$3,10)',[org,account,wrongAccount]));
+// Payment status view distinguishes invoiced clients from never-invoiced ones.
+const serverSource=await fs.readFile(new URL('./agency-core.js',import.meta.url),'utf8');
+function between(start,end){
+ const a=serverSource.indexOf(start),b=serverSource.indexOf(end,a+start.length);
+ assert(a>=0&&b>a,`Server test anchor missing: ${start}`);
+ assert.equal(serverSource.indexOf(start,a+start.length),-1,`Ambiguous anchor: ${start}`);
+ return serverSource.slice(a,b);
+}
+const paymentRoute=between("    if (url.pathname === '/api/agency/client-payment-status' && req.method === 'GET') {","    if (url.pathname === '/api/agency/clients' && req.method === 'GET') {");
+const paymentStatusHandler=new Function('url','req','res','session','roleCan','send','db',`return (async()=>{${paymentRoute}})()`);
+async function paymentStatusCall(as=user,status=null){
+ let response;
+ const url=new URL(`https://test/api/agency/client-payment-status${status?`?status=${status}`:''}`);
+ await paymentStatusHandler(url,{method:'GET'},{},async()=>as,(u,c)=>roleCan(u,c),(res,code,data)=>{response={status:code,...data};},{query:sql});
+ return response;
+}
+const invoicedClient=(await sql("insert into agency_clients(name,organization_id) values('Invoiced',$1) returning id",[org])).rows[0].id;
+await sql("insert into agency_invoices(organization_id,client_id,number,total,paid_amount,status) values($1,$2,'INV-ISSUED',1000,0,'issued')",[org,invoicedClient]);
+const draftOnlyClient=(await sql("insert into agency_clients(name,organization_id) values('Draft only',$1) returning id",[org])).rows[0].id;
+await sql("insert into agency_invoices(organization_id,client_id,number,total,paid_amount,status) values($1,$2,'INV-DRAFT',500,0,'draft')",[org,draftOnlyClient]);
+const neverInvoicedClient=(await sql("insert into agency_clients(name,organization_id) values('Never invoiced',$1) returning id",[org])).rows[0].id;
+const paymentStatus=await paymentStatusCall();
+assert.equal(paymentStatus.status,200);
+const payRow=id=>paymentStatus.clients.find(row=>String(row.client_id)===String(id));
+assert.equal(payRow(invoicedClient).has_invoice,true);
+assert.equal(Number(payRow(invoicedClient).invoice_count),1);
+assert.equal(payRow(draftOnlyClient).has_invoice,false);
+assert.equal(Number(payRow(draftOnlyClient).invoice_count),0);
+assert.equal(payRow(neverInvoicedClient).has_invoice,false);
+assert.equal(Number(payRow(neverInvoicedClient).invoice_count),0);
+assert.equal((await paymentStatusCall({...user,role:'viewer'})).status,403);
 // Minimal profiles invite only a basic member and never overwrite existing permissions.
 r=await call('/api/agency/job-roles');assert.ok(r.roles.length>=12);const job=r.roles[0];
 r=await call('/api/agency/collaborators','POST',{full_name:'Minimal profile',email:'new@example.invalid',job_role_id:job.id,active:true,notes:'Test'});assert.equal(r.status,201);const minimal=r.collaborator;

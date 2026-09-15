@@ -1,7 +1,8 @@
-import {fail,text,id,optId,amount,date,owned} from './suite-validation.js';
+import {fail,text,id,optId,amount,option,date,owned} from './suite-validation.js';
 import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 const today=()=>new Date().toISOString().slice(0,10);
+function wholeAmount(value){const raw=typeof value==='string'?value.trim():value;if((typeof raw!=='number'&&typeof raw!=='string')||(typeof raw==='string'&&!/^\d+$/.test(raw)))fail('El importe debe ser un entero positivo');const n=Number(raw);if(!Number.isSafeInteger(n)||n<=0||n>999999999999)fail('El importe debe ser un entero positivo');return n;}
 async function retryRecord(c,table,org,key){
  if(!key)return null;if(typeof key!=='string'||! /^[a-f0-9-]{36}$/.test(key))fail('Identificador de operación inválido');
  await c.query('select pg_advisory_xact_lock(hashtextextended($1,0))',[`${table}:${org}:${key}`]);
@@ -9,15 +10,40 @@ async function retryRecord(c,table,org,key){
 }
 export async function financeControls({req,res,url,db,session,body,send}){
  const route=url.pathname.match(/^\/api\/agency\/(payments|transfers|reconciliation)(?:\/(\d+))?(?:\/(reverse|match|unmatch|auto))?$/);
- if(!route)return false;
+ const expenseRoute=url.pathname.match(/^\/api\/agency\/expenses(?:\/(\d+))?$/);
+ if(!route&&!expenseRoute)return false;
  let c,tx=false;
  try{
   const user=await session(req);if(!user)fail('No autenticado',401);
   if(!roleCan(user,'accounts.manage'))fail('Tu rol no permite operar las cuentas',403);
   c=await db.connect();await c.query('begin');tx=true;
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
-  const org=user.organization_id,kind=route[1],key=route[2],action=route[3];let result,status=200;
-  if(kind==='payments'){
+  const org=user.organization_id,kind=route?.[1],key=route?.[2],action=route?.[3];let result,status=200;
+  if(expenseRoute){
+   if(req.method==='GET'){
+    const month=url.searchParams.get('month');
+    if(month!==null&&!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))fail('Elegí un mes válido (AAAA-MM)');
+    const bounds=month?` and e.paid_on>=$2::date and e.paid_on<($2::date+interval '1 month')::date`:``;
+    result={month,expenses:(await c.query(`select e.*,a.name as account_name,u.email as created_by_email from agency_expenses e join bank_accounts a on a.id=e.account_id left join users u on u.id=e.created_by_user_id where e.organization_id=$1${bounds} order by e.paid_on desc,e.id desc`,month?[org,`${month}-01`]:[org])).rows};
+   }else if(req.method==='POST'){
+    const b=await body(req),paid=wholeAmount(b.amount);
+    const category=option(b.category,['Operación','Herramientas','Marketing','Administración','Otro']);
+    const kind=b.kind===undefined||b.kind===null?null:option(b.kind,['fixed','variable']);
+    const currency=option(b.currency,['PYG','USD']);
+    const account=(await c.query('select * from bank_accounts where id=$1 and organization_id=$2 for update',[id(b.accountId),org])).rows[0];
+    if(!account||!account.active)fail('La cuenta debe estar activa y pertenecer a la empresa');
+    if(account.currency!==currency)fail('La moneda debe coincidir con la cuenta');
+    if(Number(account.balance)<paid)fail('Saldo insuficiente en la cuenta',409);
+    result={expense:(await c.query('insert into agency_expenses(organization_id,account_id,category,kind,amount,currency,paid_on,reference,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *',[org,account.id,category,kind,paid,currency,date(b.paidOn)||today(),text(b.reference||'',180),user.id])).rows[0]};status=201;
+   }else if(req.method==='DELETE'&&expenseRoute[1]){
+    const b=await body(req),reason=text(b.reason,500);if(reason.length<5)fail('Explicá el motivo de la reversión');
+    const e=await owned(c,'agency_expenses',expenseRoute[1],org);
+    const existing=(await c.query('select * from agency_expense_reversals where expense_id=$1',[e.id])).rows[0];
+    if(existing)result={reversal:existing,alreadyReversed:true};
+    else{await owned(c,'bank_accounts',e.account_id,org);
+     result={reversal:(await c.query('insert into agency_expense_reversals(organization_id,expense_id,reason,reversed_on,created_by_user_id) values($1,$2,$3,$4,$5) returning *',[org,e.id,reason,date(b.reversedOn)||today(),user.id])).rows[0]};status=201;}
+   }else fail('Método no permitido',405);
+  }else if(kind==='payments'){
    if(req.method==='GET'&&!key)result={payments:(await c.query('select p.*,i.number as invoice_number,cl.name as client_name,a.name as account_name,a.account_type,a.currency,u.email as received_by_email,r.id as reversal_id,r.reason as reversal_reason,r.reversed_on,r.created_by_user_id as reversed_by_user_id from agency_payments p join agency_invoices i on i.id=p.invoice_id join agency_clients cl on cl.id=i.client_id join bank_accounts a on a.id=p.account_id left join users u on u.id=p.received_by_user_id left join agency_payment_reversals r on r.payment_id=p.id where p.organization_id=$1 order by p.received_on desc,p.id desc',[org])).rows};
    else if(req.method==='POST'&&!key){
     const b=await body(req),paid=amount(b.amount);if(!paid)fail('El importe debe ser mayor a cero');
@@ -84,6 +110,7 @@ export async function financeControls({req,res,url,db,session,body,send}){
    {rows:result.payments,userId:'reversed_by_user_id',prefix:'reversal_actor'},
    {rows:result.lines,userId:'created_by_user_id',prefix:'importer_actor'},
    {rows:result.lines,userId:'matched_by_user_id',prefix:'match_actor'},
+   {rows:result.expenses||result.expense,userId:'created_by_user_id',fallback:['created_by_email']},
   ]);
   await c.query('commit');tx=false;send(res,status,result);
  }catch(e){if(tx)await c.query('rollback');const status=e.status||(e.code==='23505'?409:500);console.error(JSON.stringify({event:'finance_controls_error',status,code:e.code}));send(res,status,{error:e.status?e.message:e.code==='23505'?'El movimiento ya está conciliado o registrado.':'No se pudo completar la operación financiera'});}finally{c?.release();}

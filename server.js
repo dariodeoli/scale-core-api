@@ -82,7 +82,7 @@ allowedOrigins.add('https://sistema.scaleparaguay.com');
 allowedOrigins.add('https://cliente.scaleparaguay.com');
 let databaseReady = false;
 
-const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); };
+const send = (res, status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers }); res.end(JSON.stringify(body)); return true; };
 const cookie = (name, value, maxAge) => `${name}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax; Domain=.scaleparaguay.com`;
 // The OAuth state cookie must cross hosts: it is issued through the app/portal
 // proxy and consumed at the admin-host callback. Domain-scoped with the same
@@ -169,6 +169,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_optional_commission_terms.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_client_invoice_flags.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_planned_expense_kind.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260915_expenses.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
