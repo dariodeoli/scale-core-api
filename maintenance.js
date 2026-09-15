@@ -36,8 +36,9 @@ export function maintenanceSettings(env = process.env) {
   graceHours: integer(env.DEMO_CLEANUP_GRACE_HOURS, 24, 24, 8760, 'GRACE_HOURS'),
   maxDemos: integer(env.DEMO_CLEANUP_BATCH_SIZE, 3, 1, 20, 'DEMO_BATCH'),
   maxDemoRows: integer(env.DEMO_CLEANUP_MAX_ROWS, 10000, 1, 50000, 'DEMO_ROWS'),
-  presenceDays: integer(env.PRESENCE_RETENTION_DAYS, 30, 1, 3650, 'PRESENCE_DAYS'),
-  usageDays: integer(env.USAGE_RETENTION_DAYS, 90, 30, 3650, 'USAGE_DAYS'),
+   presenceDays: integer(env.PRESENCE_RETENTION_DAYS, 30, 1, 3650, 'PRESENCE_DAYS'),
+   usageDays: integer(env.USAGE_RETENTION_DAYS, 90, 30, 3650, 'USAGE_DAYS'),
+   sessionsDays: integer(env.SESSIONS_RETENTION_DAYS, 7, 1, 3650, 'SESSIONS_DAYS'),
   retentionBatch: integer(env.PRESENCE_CLEANUP_BATCH_SIZE, 1000, 1, 10000, 'RETENTION_BATCH'),
   intervalMs: integer(env.MAINTENANCE_INTERVAL_MS, 3600000, 60000, 86400000, 'INTERVAL'),
   runTimeoutMs: integer(env.MAINTENANCE_TIMEOUT_MS, 30000, 1000, 60000, 'TIMEOUT'),
@@ -141,6 +142,14 @@ async function retain(c, table, days, limit, dryRun) {
  if (dryRun) return (await c.query(`select count(*)::int as n from (${selected}) stale`, [days, limit])).rows[0].n;
  return (await c.query(`delete from ${tableName(table)} where ctid in (${selected})`, [days, limit])).rowCount;
 }
+async function retainExpiredSessions(c, days, limit, dryRun) {
+ // Expired sessions are already unusable; the retention window keeps recent
+ // history for audit and avoids churn on short clock skew.
+ const selected = `select ctid from sessions where expires_at<now()-$1::int*interval '1 day'
+  order by expires_at limit $2 for update skip locked`;
+ if (dryRun) return (await c.query(`select count(*)::int as n from (${selected}) stale`, [days, limit])).rows[0].n;
+ return (await c.query(`delete from sessions where ctid in (${selected})`, [days, limit])).rowCount;
+}
 function verifyDeletionEvidence(evidence, env) {
  let source;
  try { const u = new URL(env.DATABASE_URL); source = createHash('sha256').update(u.hostname + ':' + (u.port || '5432') + '/' + decodeURIComponent(u.pathname.slice(1))).digest('hex'); } catch { throw failure('VERIFIED_BACKUP_REQUIRED'); }
@@ -190,8 +199,9 @@ export async function runMaintenance(db, {dryRun = true, demoDryRun = true, veri
   }
   const presenceTabs = await retain(c, 'agency_presence_tabs', settings.presenceDays, settings.retentionBatch, dryRun);
   const usageSessions = await retain(c, 'agency_usage_sessions', settings.usageDays, settings.retentionBatch, dryRun);
+  const expiredSessions = await retainExpiredSessions(c, settings.sessionsDays, settings.retentionBatch, dryRun);
   await raw.query(dryRun ? 'rollback' : 'commit');
-  return {dryRun, demoDryRun: dryRun || demoDryRun, demos, presenceTabs, usageSessions, usersDeleted: 0, auditPreserved: true};
+  return {dryRun, demoDryRun: dryRun || demoDryRun, demos, presenceTabs, usageSessions, expiredSessions, usersDeleted: 0, auditPreserved: true};
  } catch (error) { await raw.query('rollback'); throw error; }
  finally { raw.release(); }
 }

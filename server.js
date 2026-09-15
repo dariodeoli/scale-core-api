@@ -52,7 +52,8 @@ import {accountSecurity,googleRecentAuthBinding,issueGoogleRecentAuthHandoff} fr
 
 const { Pool } = pg;
 const port = Number(process.env.PORT || 3000);
-const db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
+const db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+ log: (message, duration) => { if(typeof duration==='number'&&duration>250)console.info(JSON.stringify({event:'slow_query',duration_ms:Math.round(duration),message:typeof message==='string'?message.slice(0,200):''})); } });
 const root = path.dirname(fileURLToPath(import.meta.url));
 const release=JSON.parse(await fs.readFile(path.join(root,'release-version.json'),'utf8'));
 const rucConfig=rucLookupConfig();
@@ -186,7 +187,15 @@ async function provisionOwnerForOrganization(email, password, slug) {
   const user = await db.query('insert into users(email,password_hash,email_verified_at) values($1,$2,now()) on conflict(email) do update set password_hash=excluded.password_hash,email_verified_at=coalesce(users.email_verified_at,now()) returning id', [email, hash]);
   await db.query("insert into organization_members(organization_id,user_id,role) select id,$1,'owner' from organizations where slug=$2 on conflict(organization_id,user_id) do update set role='owner'", [user.rows[0].id, slug]);
 }
+const sessionCache = new WeakMap();
+let permissionDefaultsLogged = false;
 async function session(req) {
+  if (sessionCache.has(req)) return sessionCache.get(req);
+  const value = await resolveSession(req);
+  sessionCache.set(req, value);
+  return value;
+}
+async function resolveSession(req) {
   const token = parseCookies(req).scale_session;
   if (!token) return null;
   const r = await db.query("select u.id,u.email,exists(select 1 from user_personal_identities pi where pi.user_id=u.id) as has_personal_identity,up.full_name,up.photo_url,coalesce(settings.default_currency,'PYG') as default_currency,m.role,m.organization_id,o.slug as organization_slug,o.name as organization_name,o.demo_owner_user_id,o.demo_source_id from sessions s join users u on u.id=s.user_id join organization_members m on m.user_id=u.id and m.organization_id=s.organization_id join organizations o on o.id=m.organization_id left join organization_person_identity up on up.user_id=u.id and up.organization_id=m.organization_id left join agency_settings settings on settings.organization_id=m.organization_id where s.id=$1 and s.expires_at>now() and o.active=true and m.active=true and m.removed_at is null and not exists(select 1 from account_closure_requests acr where acr.user_id=u.id and acr.cancelled_at is null and acr.recoverable_until>now()) and (o.demo_owner_user_id is null or (o.demo_owner_user_id=u.id and o.demo_expires_at>now()))", [token]);
@@ -201,7 +210,7 @@ async function session(req) {
    try{
     const overrides=(await db.query('select capability,allowed from agency_role_permissions where organization_id=$1 and role=$2',[user.organization_id,user.role])).rows;
     if(overrides.length)user.capabilities=Object.fromEntries(overrides.map(row=>[row.capability,row.allowed]));
-   }catch{/* Permission table not provisioned in this environment; defaults apply. */}
+   }catch(error){if(!permissionDefaultsLogged){permissionDefaultsLogged=true;console.info(JSON.stringify({event:'permission_defaults_fallback',error:String(error?.message||error)}));}}
   }
   if(user?.demo_owner_user_id){const preview=(await db.query('select demo_role from sessions where id=$1',[token])).rows[0];if(preview?.demo_role)user.role=preview.demo_role;}
   if(user?.organization_slug==='scale-demo-controles-20260908'){
@@ -212,9 +221,16 @@ async function session(req) {
       const org=await demoOrganization(c,{userId:user.id,sourceId:user.organization_id,demoKey:current.demo_key});
       await c.query('update sessions set organization_id=$1 where id=$2',[org,token]);await c.query('commit');
     }catch(e){await c.query('rollback');throw e;}finally{c.release();}
-    return session(req);
+    return resolveSession(req);
   }
   return user;
+}
+const subscriptionCache = new WeakMap();
+async function requestSubscription(req, actor) {
+  if (subscriptionCache.has(req)) return subscriptionCache.get(req);
+  const value = await subscriptionState(db, actor);
+  subscriptionCache.set(req, value);
+  return value;
 }
 async function auditContext(client,user,req){await client.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);}
 async function auditedQuery(user,req,sql,params){const c=await db.connect();try{await c.query('begin');await auditContext(c,user,req);const r=await c.query(sql,params);await c.query('commit');return r;}catch(e){await c.query('rollback');throw e;}finally{c.release();}}
@@ -234,6 +250,8 @@ const server = http.createServer(async (req,res) => {
   security(res);
   if (!cors(req, res)) return send(res,403,{error:'Origen no permitido'});
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+  const startedAt = Date.now();
+  const requestId = crypto.randomBytes(8).toString('hex');
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if(url.pathname.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
@@ -244,7 +262,7 @@ const server = http.createServer(async (req,res) => {
     // logout and company switching, but no private operational reads/writes.
     if(url.pathname.startsWith('/api/agency/')||url.pathname==='/api/metrics'||url.pathname==='/api/hub/overview'||(url.pathname==='/api/auth/organizations'&&req.method==='POST')){
       const actor=await session(req);
-      if(actor){const subscription=await subscriptionState(db,actor);if(!subscription.hasAccess)return send(res,402,{code:'SUBSCRIPTION_REQUIRED',error:'La suscripción está suspendida. El dueño puede regularizar el pago sin perder los datos.',subscription});}
+      if(actor){const subscription=await requestSubscription(req,actor);if(!subscription.hasAccess)return send(res,402,{code:'SUBSCRIPTION_REQUIRED',error:'La suscripción está suspendida. El dueño puede regularizar el pago sin perder los datos.',subscription});}
     }
     if(url.pathname==='/api/invitations/status'&&req.method==='GET'){
       const r=(await db.query(`select o.name as organization_name,u.email,l.role,r.status,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=o.id and m.user_id=u.id and m.active=true and m.removed_at is null) as existing_member from sessions s join users u on u.id=s.user_id join organizations o on o.id=s.organization_id join agency_invite_links l on l.organization_id=o.id join agency_access_requests r on r.link_id=l.id and r.user_id=u.id where s.id=$1 and s.expires_at>now() order by r.created_at desc,r.id desc limit 1`,[parseCookies(req).scale_session||''])).rows[0];
@@ -438,7 +456,7 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(302,{Location:member.rows.length?(saved.rows[0].trial_registration?`${appUrl}/produccion`:preferred?.is_default?`${appUrl}/`:`${appUrl}/?chooseCompany=1`):`${appUrl}/acceso-pendiente`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
-    if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:{...u,subscription:await subscriptionState(db,u)}}) : send(res,401,{error:'No autenticado'}); }
+    if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:{...u,subscription:await requestSubscription(req,u)}}) : send(res,401,{error:'No autenticado'}); }
     if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
       const r=await db.query(`select o.id,o.slug,o.name,m.role,(o.demo_source_id is not null or o.slug='scale-demo-controles-20260908') as "isDemo" from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name`,[user.id]);
@@ -569,8 +587,14 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query(`select o.*,p.name as project_name,c.name as client_name,u.email as assignee_email,array(select a.user_id::text from agency_record_assignees a where a.organization_id=o.organization_id and a.kind='work-orders' and a.record_id=o.id order by a.is_primary desc,a.user_id) as assigned_user_ids,(select count(*)::int from agency_work_checklist_items ci where ci.organization_id=o.organization_id and ci.work_order_id=o.id) as checklist_total,(select count(*)::int from agency_work_checklist_items ci where ci.organization_id=o.organization_id and ci.work_order_id=o.id and ci.completed) as checklist_completed from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id left join users u on u.id=o.assigned_user_id where o.organization_id=$1 and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} order by o.updated_at desc`,[user.organization_id]);
+      const r=await db.query(`select o.*,p.name as project_name,c.name as client_name,u.email as assignee_email from agency_work_orders o join agency_projects p on p.id=o.project_id join agency_clients c on c.id=p.client_id left join users u on u.id=o.assigned_user_id where o.organization_id=$1 and ${visibleRecord('o','work-orders')} and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} order by o.updated_at desc`,[user.organization_id]);
       await enrichWorkOrderAssignees(db,user.organization_id,r.rows);
+      const ids=[...new Set(r.rows.map(row=>String(row.id)))];
+      if(ids.length){
+        const checklists=(await db.query(`select work_order_id,count(*)::int as checklist_total,count(*) filter(where completed)::int as checklist_completed from agency_work_checklist_items where organization_id=$1 and work_order_id=any($2::bigint[]) group by work_order_id`,[user.organization_id,ids])).rows;
+        const byId=new Map(checklists.map(row=>[String(row.work_order_id),row]));
+        for(const row of r.rows){const counts=byId.get(String(row.id));row.checklist_total=counts?.checklist_total||0;row.checklist_completed=counts?.checklist_completed||0;}
+      } else for(const row of r.rows){row.checklist_total=0;row.checklist_completed=0;}
       return send(res,200,{workOrders:r.rows});
     }
     if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {
@@ -757,7 +781,7 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); return res.end(await fs.readFile(path.join(root,'public/index.html'))); }
     send(res,404,{error:'No encontrado'});
-  } catch (e) { console.error(JSON.stringify({event:'request_error',status:e.status||500,code:e.code})); send(res,e.status||500,{error:e.status?e.message:'Error interno'}); }
+  } catch (e) { console.error(JSON.stringify({event:'request_error',requestId,status:e.status||500,code:e.code,method:req.method,path:req.url?.split('?')[0],duration_ms:Date.now()-startedAt})); send(res,e.status||500,{error:e.status?e.message:'Error interno'}); }
 });
 if (process.env.SCALE_CORE_API_DISABLE_LISTEN !== '1') {
   server.listen(port, () => {

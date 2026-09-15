@@ -27,11 +27,12 @@ export async function enrichWorkOrderAssignees(c,org,records){
   if(!byOrder.has(work_order_id))byOrder.set(work_order_id,{direct:[],project:[]});
   byOrder.get(work_order_id)[person.source].push(person);
  }
- for(const record of list){
-  const assigned=byOrder.get(String(record.id))||{direct:[],project:[]};
-  record.assignees=assigned.direct;
-  record.project_assignees=assigned.project;
-  record.effective_assignees=assigned.direct.length?assigned.direct:assigned.project;
-  record.assignee_source=assigned.direct.length?'direct':assigned.project.length?'project':null;
- }
+  for(const record of list){
+   const assigned=byOrder.get(String(record.id))||{direct:[],project:[]};
+   record.assignees=assigned.direct;
+   record.project_assignees=assigned.project;
+   record.effective_assignees=assigned.direct.length?assigned.direct:assigned.project;
+   record.assignee_source=assigned.direct.length?'direct':assigned.project.length?'project':null;
+   record.assigned_user_ids=assigned.direct.map(person=>person.id);
+  }
 }
