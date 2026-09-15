@@ -173,6 +173,8 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_expenses.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_client_terms_end_date.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_platform_admin_roles.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260915_inventory_photos.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260915_inventory_category_icons.sql'),'utf8'));
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {

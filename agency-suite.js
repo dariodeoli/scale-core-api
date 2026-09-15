@@ -1,4 +1,5 @@
 import {currencies} from './currencies.js';
+import {profilePhoto} from './media-policy.js';
 import {patchUrgency} from './urgency.js';
 import {companyCurrency} from './forecast.js';
 import crypto from 'node:crypto';
@@ -130,7 +131,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
     if(!key&&b.currency===undefined)b.currency=await companyCurrency(c,org);
     let columns,values;
     if(kind==='plans'){columns=['name','currency','items','notes','active'];values=[name,option(b.currency,currencies),JSON.stringify(items(b.items)),text(b.notes||''),b.active!==false];}
-    if(kind==='inventory'){const custodian=optId(b.custodian_user_id);await member(c,custodian,org);columns=['name','category','serial_number','custodian_user_id','value','currency','status','acquired_on','notes'];values=[name,text(b.category||'',80),text(b.serial_number||'',120),custodian,amount(b.value||0),option(b.currency,currencies),option(b.status||'available',['available','in_use','maintenance','retired']),date(b.acquired_on),text(b.notes||'')];}
+    if(kind==='inventory'){const custodian=optId(b.custodian_user_id);await member(c,custodian,org);const photo=Object.hasOwn(b,'photo_url')?await profilePhoto(b.photo_url):old.photo_url||null;columns=['name','category','serial_number','custodian_user_id','value','currency','status','acquired_on','notes','photo_url'];values=[name,text(b.category||'',80),text(b.serial_number||'',120),custodian,amount(b.value||0),option(b.currency,currencies),option(b.status||'available',['available','in_use','maintenance','retired']),date(b.acquired_on),text(b.notes||''),photo];}
     if(kind==='leads'){const stage=option(b.stage||'lead',stages),probability=stage==='won'?100:stage==='lost'?0:Number(b.probability??10);if(!Number.isInteger(probability)||probability<0||probability>100)fail('Probabilidad de 0 a 100');columns=['name','email','phone','stage','amount','currency','probability','notes'];values=[name,email(b.email),text(b.phone||'',50),stage,amount(b.amount||0),option(b.currency,currencies),probability,text(b.notes||'')];}
     const query=key?`update ${table} set ${columns.map((n,i)=>`${n}=$${i+1}`).join(',')} where id=$${values.length+1} returning *`:`insert into ${table}(${columns.join(',')},organization_id) values(${values.map((_,i)=>`$${i+1}`).join(',')},$${values.length+1}) returning *`;
     result={record:(await c.query(query,[...values,key||org])).rows[0]};status=key?200:201;
