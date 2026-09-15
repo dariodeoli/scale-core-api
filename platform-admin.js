@@ -185,7 +185,9 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
     await client.query('delete from destructive_action_previews where user_id=$1',[targetId]);
     await client.query('delete from destructive_email_challenges where user_id=$1',[targetId]);
     await client.query('delete from platform_administrators where user_id=$1',[targetId]);
-    await client.query('delete from organization_members where user_id=$1',[targetId]);
+    // Memberships are soft-removed so inventory/studio/verification rows that
+    // reference (organization_id,user_id) keep their foreign keys and history.
+    await client.query('update organization_members set active=false,removed_at=now() where user_id=$1',[targetId]);
     const anonymous=`deleted+${targetId}+${crypto.randomBytes(8).toString('hex')}@deleted.invalid`;
     await client.query("update users set email=$2,password_hash='!deleted-account',full_name=null,google_photo_url=null,google_full_name=null,deleted_at=now(),anonymized_at=now() where id=$1",[targetId,anonymous]);
     await audit(client,user,'user.delete','user',targetId,{self,agencies:owned.map(org=>org.id)});

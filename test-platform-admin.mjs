@@ -26,6 +26,9 @@ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migra
   create table destructive_email_challenges(user_id bigint);
   alter table users add column deleted_at timestamptz,add column anonymized_at timestamptz,add column password_hash text,add column full_name text,add column google_photo_url text,add column google_full_name text;
   alter table organizations add column deleted_at timestamptz,add column deleted_by_user_id bigint;
+  alter table organization_members add unique(organization_id,user_id);
+  create table agency_inventory(id bigserial primary key,organization_id bigint,name text,serial_number text,unique(id,organization_id));
+  create table agency_inventory_verifications(id bigserial primary key,organization_id bigint,inventory_id bigint,verified_by_user_id bigint,verified_at timestamptz not null default now(),result text not null,differences text not null default '',note text not null default '',adjusted boolean not null default false,before_state jsonb not null,after_state jsonb not null,unique(id,organization_id),foreign key(inventory_id,organization_id) references agency_inventory(id,organization_id),foreign key(organization_id,verified_by_user_id) references organization_members(organization_id,user_id));
  `);
 await pg.query('insert into platform_administrators(user_id) values(2)');
 const db={query:(sql,values)=>pg.query(sql,values)};
@@ -96,10 +99,14 @@ assert.equal((await call('/api/platform/users')).data.users.find(row=>row.email=
 await pg.query("insert into users(id,email,email_verified_at,is_demo_guest) values(11,'tester@scale.example',now(),false)");
 await pg.query("insert into organizations(id,name,slug) values(60,'Tester Agency','tester-agency')");
 await pg.query("insert into organization_members values(60,11,true,null,'owner')");
+const inventoryId=(await pg.query("insert into agency_inventory(organization_id,name,serial_number) values(60,'Cámara Sony','SN-60') returning id")).rows[0].id;
+await pg.query("insert into agency_inventory_verifications(organization_id,inventory_id,verified_by_user_id,result,before_state,after_state) values(60,$1,11,'confirmed','{}'::jsonb,'{}'::jsonb)",[inventoryId]);
 const removedOwner=await call('/api/platform/users/11',{method:'DELETE'});
-assert.equal(removedOwner.status,200);assert.deepEqual(removedOwner.data.deleted,{userId:11,self:false,agencies:[60]},'deleting an owner removes their agency too');
+assert.equal(removedOwner.status,200,'deleting a user with inventory history succeeds');assert.deepEqual(removedOwner.data.deleted,{userId:11,self:false,agencies:[60]},'deleting an owner removes their agency too');
 assert.equal((await pg.query('select deleted_at is not null as gone,active from organizations where id=60')).rows[0].gone,true,'the owned agency is soft-deleted with the user');
 assert.equal((await pg.query('select deleted_at is not null as gone from users where id=11')).rows[0].gone,true);
+assert.equal((await pg.query('select removed_at is not null as gone,active from organization_members where user_id=11 and organization_id=60')).rows[0].gone,true,'the membership is soft-removed, not hard-deleted');
+assert.equal((await pg.query('select count(*)::int as n from agency_inventory_verifications where verified_by_user_id=11')).rows[0].n,1,'inventory history survives the user deletion');
 const removedViewer=await call('/api/platform/users/3',{method:'DELETE'});
 assert.equal(removedViewer.status,200);assert.deepEqual(removedViewer.data.deleted,{userId:3,self:false,agencies:[]});
 assert.ok(!(await call('/api/platform/users?limit=100')).data.users.some(row=>row.email==='member@agency.example'),'deleted users leave the global listing');
