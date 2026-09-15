@@ -15,14 +15,21 @@ import {weeklyReports} from './weekly-reports.js';
 // Never import server.js: that would open a port and initialize a configured
 // database. Only the route slice and its helpers are extracted.
 const source=await fs.readFile(new URL('./server.js',import.meta.url),'utf8');
+const coreSource=await fs.readFile(new URL('./agency-core.js',import.meta.url),'utf8');
+function betweenRoutes(start,end){
+ const a=coreSource.indexOf(start),b=coreSource.indexOf(end,a+start.length);
+ assert(a>=0&&b>a,`Core test anchor missing: ${start}`);
+ assert.equal(coreSource.indexOf(start,a+start.length),-1,`Ambiguous anchor: ${start}`);
+ return coreSource.slice(a,b);
+}
 function between(start,end){
  const a=source.indexOf(start),b=source.indexOf(end,a+start.length);
  assert(a>=0&&b>a,`Server test anchor missing: ${start}`);
  assert.equal(source.indexOf(start,a+start.length),-1,`Ambiguous anchor: ${start}`);
  return source.slice(a,b);
 }
-const route=between("    if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {","    if (url.pathname === '/api/agency/members' && req.method === 'GET') {");
-const helpers=between('const send =','const cookie =')+between('const parseCookies =','const id =')+between('async function session(req) {','async function auditContext(')+between('async function auditContext(','function security(');
+const route=betweenRoutes("    if (url.pathname === '/api/agency/work-orders' && req.method === 'POST') {","    if (url.pathname === '/api/agency/members' && req.method === 'GET') {");
+const helpers=between('const send =','const cookie =')+between('const parseCookies =','const id =')+between('const sessionCache =','async function session(req) {')+between('async function session(req) {','async function auditContext(')+between('async function auditContext(','function security(');
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile('schema.sql','utf8'));

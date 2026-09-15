@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import {Readable} from 'node:stream';
 import {PGlite} from '@electric-sql/pglite';
 import {budgetSections} from './budget-sections.js';
+import {roleCan} from './permissions.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {ensurePersonalIdentity} from './identity-session.js';
 import {suite} from './agency-suite.js';
@@ -13,6 +14,13 @@ import {currencies} from './currencies.js';
 // Never import server.js: that would open a port, initialize a configured database
 // and start scheduled jobs. Only this in-memory database is available to the test.
 const source=await fs.readFile(new URL('./server.js',import.meta.url),'utf8');
+const coreSource=await fs.readFile(new URL('./agency-core.js',import.meta.url),'utf8');
+function betweenRoutes(start,end){
+ const a=coreSource.indexOf(start),b=coreSource.indexOf(end,a+start.length);
+ assert(a>=0&&b>a,`Core test anchor missing: ${start}`);
+ assert.equal(coreSource.indexOf(start,a+start.length),-1,`Ambiguous anchor: ${start}`);
+ return coreSource.slice(a,b);
+}
 function between(start,end){
  const a=source.indexOf(start),b=source.indexOf(end,a+start.length);
  assert(a>=0&&b>a,`Server test anchor missing: ${start}`);
@@ -20,19 +28,19 @@ function between(start,end){
  return source.slice(a,b);
 }
 const routes=[
- between("    if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {","    if (url.pathname === '/api/agency/accounts' && req.method === 'GET') {"),
- between("    if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {","    if (url.pathname === '/api/agency/custodians' && req.method === 'GET') {"),
- between("    if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {","    if (url.pathname === '/api/agency/payments' && req.method === 'GET') {")
+ betweenRoutes("    if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {","    if (url.pathname === '/api/agency/accounts' && req.method === 'GET') {"),
+ betweenRoutes("    if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {","    if (url.pathname === '/api/agency/custodians' && req.method === 'GET') {"),
+ betweenRoutes("    if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {","    if (url.pathname === '/api/agency/payments' && req.method === 'GET') {")
 ].join('\n');
-const helpers=between('const send =','const cookie =')+between('const parseCookies =','const id =')+between('async function session(req) {','function security(');
+const helpers=between('const send =','const cookie =')+between('const parseCookies =','const id =')+between('const sessionCache =','async function session(req) {')+between('async function session(req) {','function security(');
 const pg=new PGlite();
 try{
  await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
  for(const name of ['20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_invite_links.sql','20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
  const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
- const {post,session}=new Function('db','budgetSections','crypto','visibleRecord','ensurePersonalIdentity','demoOrganization','currencies',`${helpers}
+ const {post,session}=new Function('db','budgetSections','crypto','visibleRecord','ensurePersonalIdentity','demoOrganization','currencies','roleCan',`${helpers}
   return {session,post:async function(req,res){const url=new URL(req.url,'https://test.invalid');${routes}
-   throw new Error('Unexpected route in isolated POST test');}};`)(db,budgetSections,crypto,visibleRecord,ensurePersonalIdentity,()=>{throw new Error('Demo setup is outside this test');},currencies);
+   throw new Error('Unexpected route in isolated POST test');}};`)(db,budgetSections,crypto,visibleRecord,ensurePersonalIdentity,()=>{throw new Error('Demo setup is outside this test');},currencies,roleCan);
  const userId=(await query("insert into users(email,password_hash) values('currency-post@example.invalid','unused') returning id")).rows[0].id;
  const companies=[];
  for(const label of ['one','two','unconfigured']){
