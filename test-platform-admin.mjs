@@ -18,6 +18,7 @@ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migra
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260913_platform_admin_vertical_slice.sql',import.meta.url),'utf8'));
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_platform_admin_roles.sql',import.meta.url),'utf8'));
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_platform_owner_admin.sql',import.meta.url),'utf8'));
+ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_coupon_free_days.sql',import.meta.url),'utf8'));
  await pg.exec(`
   create table sessions(id bigint primary key,user_id bigint,organization_id bigint);
   create table oauth_states(id bigint primary key,recent_auth_user_id bigint);
@@ -60,7 +61,10 @@ let coupon=await call('/api/platform/coupons',{method:'POST',payload:{code:'SCAL
 coupon=await call('/api/platform/coupons/'+coupon.data.coupon.id,{method:'PATCH',payload:{active:false}});assert.equal(coupon.status,200);assert.equal(coupon.data.coupon.active,false);
 assert.equal((await call('/api/platform/coupons')).data.coupons[0].lifetime_eligible,true,'coupon listing preserves lifetime eligibility');
 assert.equal((await call('/api/platform/coupons',{method:'POST',payload:{code:'bad code',discount_type:'percent',discount_value:10}})).status,400);
-const audit=await call('/api/platform/audit');assert.equal(audit.status,200);assert.equal(audit.data.actions.length,3);assert.equal(audit.data.actions[0].action,'coupon.deactivate');assert.equal((await pg.query('select count(*)::int as n from platform_audit_log')).rows[0].n,3);
+const daysCoupon=await call('/api/platform/coupons',{method:'POST',payload:{code:'DAYS30',discount_type:'days',discount_value:30,currency:null}});assert.equal(daysCoupon.status,201);assert.equal(daysCoupon.data.coupon.discount_type,'days','coupons can grant free days');
+assert.equal((await call('/api/platform/coupons',{method:'POST',payload:{code:'DAYSBAD',discount_type:'days',discount_value:30.5}})).status,400,'free days must be an integer');
+assert.equal((await call('/api/platform/coupons',{method:'POST',payload:{code:'DAYSCUR',discount_type:'days',discount_value:7,currency:'USD'}})).status,400,'free days carry no currency');
+const audit=await call('/api/platform/audit');assert.equal(audit.status,200);assert.equal(audit.data.actions.length,4);assert.equal(audit.data.actions[0].action,'coupon.create');assert.equal(audit.data.actions[1].action,'coupon.deactivate');assert.equal((await pg.query('select count(*)::int as n from platform_audit_log')).rows[0].n,4);
 await pg.query('insert into sessions(id,user_id,organization_id) values(1,1,10)');
 const removedAgency=await call('/api/platform/agencies/10',{method:'DELETE'});
 assert.equal(removedAgency.status,200);assert.deepEqual(removedAgency.data.deleted,{agencyId:10,name:'Agency One',slug:'agency-one'},'an admin can delete a real agency');

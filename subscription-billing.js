@@ -343,16 +343,32 @@ export async function subscriptionBilling({req,res,url,db,session,body,send}){
    if(!['owner','admin'].includes(user.role))fail('Solo el dueño o administración puede canjear cupones',403);
    const input=await body(req);const code=typeof input?.code==='string'?input.code.trim().toUpperCase():'';
    if(!/^[A-Z0-9_-]{3,40}$/.test(code))fail('Cupón inválido',400);
-   const c=await db.connect();
+   let c=await db.connect();
    try{
     await c.query('begin');
     await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
-    const coupon=(await c.query(`select id,max_redemptions,(select count(*)::int from platform_coupon_redemptions r where r.coupon_id=platform_coupons.id) as used from platform_coupons where code=$1 and active for update`,[code])).rows[0];
+    const coupon=(await c.query(`select id,max_redemptions,discount_type,discount_value,(select count(*)::int from platform_coupon_redemptions r where r.coupon_id=platform_coupons.id) as used from platform_coupons where code=$1 and active for update`,[code])).rows[0];
     if(!coupon)fail('Cupón inválido o desactivado',400);
     if(coupon.max_redemptions!==null&&Number(coupon.used)>=Number(coupon.max_redemptions))fail('Este cupón ya alcanzó su límite de usos',400);
     if((await c.query('select 1 from platform_coupon_redemptions where coupon_id=$1 and organization_id=$2',[coupon.id,user.organization_id])).rows[0])fail('Tu empresa ya canjeó este cupón',409);
     const sub=(await c.query('select due_at,paid_through_at from organization_subscriptions where organization_id=$1 for update',[user.organization_id])).rows[0];
     if(!sub)fail('Suscripción no encontrada',404);
+    if(coupon.discount_type==='days'){
+     const days=Number(coupon.discount_value);
+     const base=new Date(Math.max(Date.now(),sub.paid_through_at?new Date(sub.paid_through_at).getTime():new Date(sub.due_at).getTime()));
+     base.setDate(base.getDate()+days);
+     const due=new Date(Math.max(base.getTime(),new Date(sub.due_at).getTime()));
+     await c.query('update organization_subscriptions set paid_through_at=$2,due_at=$3,updated_at=now() where organization_id=$1',[user.organization_id,base.toISOString(),due.toISOString()]);
+     const internal=(await c.query('select expires_at from platform_subscription_states where organization_id=$1 for update',[user.organization_id])).rows[0];
+     if(internal&&internal.expires_at){
+      const extended=new Date(Math.max(Date.now(),new Date(internal.expires_at).getTime()));
+      extended.setDate(extended.getDate()+days);
+      await c.query('update platform_subscription_states set expires_at=$2,updated_at=now() where organization_id=$1',[user.organization_id,extended.toISOString()]);
+     }
+     await c.query('insert into platform_coupon_redemptions(coupon_id,organization_id,months_granted,redeemed_by_user_id) values($1,$2,0,$3)',[coupon.id,user.organization_id,user.id]);
+     await c.query('commit');c.release();c=null;
+     send(res,200,{ok:true,message:`Cupón canjeado: se agregaron ${days} día${days===1?'':'s'} gratis a tu suscripción.`,subscription:await subscriptionState(db,user)});return true;
+    }
     const base=new Date(Math.max(Date.now(),sub.paid_through_at?new Date(sub.paid_through_at).getTime():new Date(sub.due_at).getTime()));
     base.setMonth(base.getMonth()+1);
     const due=new Date(Math.max(base.getTime(),new Date(sub.due_at).getTime()));
@@ -376,6 +392,6 @@ export async function subscriptionBilling({req,res,url,db,session,body,send}){
    const sub=await stripe(cfg,`subscriptions/${objectId(row.stripe_subscription_id,'sub')}`);subscriptionValid(sub,row,cfg,row.stripe_customer_id);
    const portal=await stripe(cfg,'billing_portal/sessions',{customer:row.stripe_customer_id,return_url:`${cfg.origin}/?billing=portal`});return {url:stripeUrl(portal.url,'billing.stripe.com')};
   });send(res,200,result);
- }catch(error){send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación de suscripción',code:error.status?error.code:'BILLING_INTERNAL'});}
+ }catch(error){if(process.env.BILLING_DEBUG&&!error.status)console.error('BILLING 500:',error.message,error.detail||'',error.constraint||'');send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación de suscripción',code:error.status?error.code:'BILLING_INTERNAL'});}
  return true;
 }

@@ -13,7 +13,7 @@ const couponCode=value=>{
  if(!/^[A-Z0-9_-]{3,40}$/.test(code))fail('El código debe tener entre 3 y 40 caracteres: letras, números, guion o guion bajo.');
  return code;
 };
-const couponType=value=>{if(!['percent','fixed'].includes(value))fail('Tipo de descuento inválido.');return value;};
+const couponType=value=>{if(!['percent','fixed','days'].includes(value))fail('Tipo de descuento inválido.');return value;};
 const couponValue=value=>{const amount=Number(value);if(!Number.isFinite(amount)||amount<=0||amount>1000000000)fail('Valor de descuento inválido.');return amount;};
 const couponCurrency=value=>{if(value===null||value===undefined||value==='')return null;if(!currencies.includes(value))fail('Moneda de cupón inválida.');return value;};
 const couponLifetime=value=>{if(value===undefined)return false;if(typeof value!=='boolean')fail('La elegibilidad vitalicia debe ser booleana.');return value;};
@@ -44,7 +44,7 @@ function couponConfiguration(input,current=null){
  const active=incoming.active===undefined?(current?.active??true):incoming.active;
  const lifetime=incoming.lifetime_eligible===undefined?(current?.lifetime_eligible??false):couponLifetime(incoming.lifetime_eligible);
  const max=incoming.max_redemptions===undefined?current?.max_redemptions:incoming.max_redemptions===null||incoming.max_redemptions===''?null:integer(incoming.max_redemptions,-1);
- if(!type||typeof active!=='boolean'||(type==='percent'&&currency!==null)||(type==='fixed'&&currency===null)||(type==='percent'&&value>100))fail('La configuración del cupón no es válida.');
+ if(!type||typeof active!=='boolean'||(type==='percent'&&currency!==null)||(type==='fixed'&&currency===null)||(type==='days'&&currency!==null)||(type==='percent'&&value>100)||(type==='days'&&(!Number.isInteger(value)||value>3650)))fail('La configuración del cupón no es válida.');
  if(max!==null&&max<1)fail('El máximo de usos debe ser un entero positivo.');
  return {type,value,currency,active,lifetime,max,code:incoming.code===undefined?current?.code:couponCode(incoming.code)};
 }
@@ -208,7 +208,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    send(res,200,{actions:result.rows,limit,offset});return true;
   }
   fail('Ruta de administración global no encontrada.',404);
- }catch(error){send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación global.'});return true;}
+  }catch(error){if(process.env.PLATFORM_ADMIN_DEBUG&&!error.status)console.error('PLATFORM 500:',error.message,error.detail||'',error.constraint||'');send(res,error.status||500,{error:error.status?error.message:'No se pudo completar la operación global.'});return true;}
 }
 export function platformBootstrapEmail(value){
  const email=String(value||'').trim().toLowerCase();

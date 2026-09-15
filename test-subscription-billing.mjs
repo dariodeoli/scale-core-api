@@ -79,7 +79,7 @@ function invoice(sub,{start=Math.floor(clock/1000),end=start+30*86400,status='pa
 try{
  for(const key of Object.keys(settings))delete process.env[key];
  await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
- for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260910_demo_sessions.sql','20260911_subscriptions.sql','20260912_platform_admin.sql','20260913_platform_admin_vertical_slice.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
+ for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260910_demo_sessions.sql','20260911_subscriptions.sql','20260912_platform_admin.sql','20260913_platform_admin_vertical_slice.sql','20260914_client_commercial_lifecycle.sql','20260915_billing_cadence_and_coupons.sql','20260915_coupon_free_days.sql','20260915_coupon_redemption_days.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
  await pg.exec(await fs.readFile(new URL('./migrations/20260911_subscriptions.sql',import.meta.url),'utf8'));
  const uid=(await query("insert into users(email,password_hash) values('subscription-owner@example.invalid','unused') returning id")).rows[0].id;
  async function tenant(label){const id=(await query('insert into organizations(slug,name) values($1,$2) returning id',[`billing-${label}`,`Fixture ${label}`])).rows[0].id;await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[id,uid]);return {id:uid,organization_id:id,role:'owner'};}
@@ -229,6 +229,16 @@ try{
  const newAttempt=(await query('select * from subscription_checkout_attempts where organization_id=$1 and not closed',[expired.organization_id])).rows[0];assert.notEqual(newAttempt.id,oldAttempt.id);assert.equal(newAttempt.parameters['subscription_data[trial_end]'],String(Math.floor(new Date(expiredTrial.trialEndsAt).getTime()/1000)),'a new checkout after expiration still uses the original absolute trial end');
  await query('update organization_members set active=false where organization_id=$1 and user_id=$2',[owner.organization_id,owner.id]);assert.equal((await call('/api/billing/subscription','GET',{},owner)).status,403);assert.equal((await call('/api/billing/portal','POST',{},owner)).status,403);
  assert.equal((await state(existing)).status,'unmanaged');assert.equal((await state(demoUser)).status,'demo');
+ await query('update organization_members set active=true,removed_at=null where organization_id=$1 and user_id=$2',[owner.organization_id,owner.id]);
+ // Coupon redemption: free days extend the paid period once per company.
+ await query("insert into platform_coupons(code,discount_type,discount_value,currency,created_by_user_id) values('DAYS10','days',10,null,$1)",[uid]);
+ const paidBefore=(await query('select paid_through_at from organization_subscriptions where organization_id=$1',[owner.organization_id])).rows[0].paid_through_at;
+ const daysRedeem=await call('/api/billing/coupon-redeem','POST',{code:'DAYS10'},owner);
+ assert.equal(daysRedeem.status,200);assert.match(daysRedeem.data.message,/10 días gratis/,'the response explains the free-days grant');
+ const paidAfter=(await query('select paid_through_at from organization_subscriptions where organization_id=$1',[owner.organization_id])).rows[0].paid_through_at;
+ assert.equal(new Date(paidAfter).getTime()-new Date(paidBefore).getTime(),10*DAY,'free days extend the paid period by exactly the granted days');
+ assert.equal((await call('/api/billing/coupon-redeem','POST',{code:'DAYS10'},owner)).status,409,'a coupon redeems once per company');
+ assert.equal((await call('/api/billing/coupon-redeem','POST',{code:'DAYS10'},actors[0])).status,403,'only owner or admin can redeem');
  console.log(`PASS: ${calls} billing handler cases; idempotent caller-transaction trial, 30-day/48h boundaries, legacy/demo exemptions, owner/tenant isolation, optional config, exact server prices, durable checkout retries, raw HMAC timestamps, duplicate/stale events, verified monthly USD/PYG invoice binding, immutable grace and paused portal. PGlite single connection + mocked Stripe only; no real concurrency or provider activation verified.`);
 }finally{
  Date.now=originalNow;globalThis.fetch=originalFetch;for(const [key,value] of Object.entries(originalEnv)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await pg.close();
