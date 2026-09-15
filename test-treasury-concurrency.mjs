@@ -23,7 +23,7 @@ assert.equal(migrations.length,new Set(migrations).size,'Duplicate migration reg
 // other tasks are not required to exercise treasury concurrency.
 const sources=[['schema.sql',committed('schema.sql')]];
 for(const name of migrations){
- try{sources.push([`migrations/${name}`,committed(`migrations/${name}`)]);}
+ try{execFileSync('git',['cat-file','-e',`HEAD:migrations/${name}`],{cwd:repo,stdio:'ignore'});sources.push([`migrations/${name}`,committed(`migrations/${name}`)]);}
  catch{/* Uncommitted migration from another task; skip for this focused test. */}
 }
 
@@ -40,7 +40,7 @@ function cleanupCluster(){
   catch{pgTool('pg_ctl',['-D',data,'stop','-m','immediate','-w','-t','10'],15000);}
   assert(stopped(),'Temporary PostgreSQL is still running; directory retained');
  }
- assert(temporary.startsWith(path.join(process.env.TMPDIR||'/tmp','scale-treasury-pg-')),'Unsafe cleanup target');
+ assert(temporary.startsWith(path.join(realpathSync(process.env.TMPDIR||'/tmp'),'scale-treasury-pg-')),'Unsafe cleanup target');
  assert(lstatSync(temporary).isDirectory()&&!lstatSync(temporary).isSymbolicLink());
  assert.equal(realpathSync(temporary),temporary);
  rmSync(temporary,{recursive:true,force:false});cleaned=true;
@@ -69,8 +69,8 @@ try{
  const invoice=(await query("insert into agency_invoices(organization_id,client_id,number,currency,total) values($1,$2,'F-CONC','PYG',100) returning id",[org,client])).rows[0].id;
  const accountA=(await query("insert into bank_accounts(organization_id,name,currency,balance) values($1,'Caja A','PYG',50) returning id",[org])).rows[0].id;
  const accountB=(await query("insert into bank_accounts(organization_id,name,currency,balance) values($1,'Caja B','PYG',0) returning id",[org])).rows[0].id;
- const user={id:uid,email:'treasury@example.invalid',organization_id:org,role:'owner',organization_name:'Treasury fixture'};
- const session=async()=>user;
+ const actor={id:uid,email:'treasury@example.invalid',organization_id:org,role:'owner',organization_name:'Treasury fixture'};
+ const session=async()=>actor;
  async function call(method,pathname,payload){
   let response;
   const req={method,socket:{remoteAddress:'127.0.0.1'},headers:{cookie:`scale_session=${token}`}};
