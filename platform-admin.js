@@ -1,8 +1,9 @@
+import crypto from 'node:crypto';
 import {inspectInternalSubscription,updateInternalSubscription} from './platform-subscription-service.js';
 
 const currencies=['USD','PYG'];
-const realOrganization=alias=>`${alias}.demo_owner_user_id is null and ${alias}.demo_source_id is null and lower(${alias}.slug) not in ('scale-demo-controles-20260908','agenciaprueba','agencia-prueba') and lower(${alias}.name)<>'agenciaprueba'`;
-const realUser=alias=>`not ${alias}.is_demo_guest and ${alias}.email not ilike '%@demo.example.invalid' and ${alias}.email not ilike '%@scale-demo.example.invalid'`;
+const realOrganization=alias=>`${alias}.demo_owner_user_id is null and ${alias}.demo_source_id is null and ${alias}.deleted_at is null and lower(${alias}.slug) not in ('scale-demo-controles-20260908','agenciaprueba','agencia-prueba') and lower(${alias}.name)<>'agenciaprueba'`;
+const realUser=alias=>`not ${alias}.is_demo_guest and ${alias}.deleted_at is null and ${alias}.email not ilike '%@demo.example.invalid' and ${alias}.email not ilike '%@scale-demo.example.invalid'`;
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const integer=(value,fallback=0)=>{if(value===null||value===undefined||value==='')return fallback;const parsed=Number(value);return Number.isInteger(parsed)&&parsed>=0?parsed:fallback;};
 const limit=value=>Math.min(100,Math.max(1,integer(value,25)));
@@ -21,10 +22,11 @@ const only=(value,keys)=>{if(Object.keys(value).some(key=>!keys.includes(key)))f
 async function actor(db,session,req){
  const user=await session(req);if(!user)fail('No autenticado',401);
  if(user.demo_owner_user_id||user.demo_source_id)fail('El Demo no accede a la administración global.',403);
- const membership=(await db.query('select user_id from platform_administrators where user_id=$1 and active=true',[user.id])).rows[0];
+ const membership=(await db.query('select role from platform_administrators where user_id=$1 and active=true',[user.id])).rows[0];
  if(!membership)fail('No tenés acceso a la administración global.',403);
- return user;
+ return {user,role:membership.role};
 }
+const requireWrite=role=>{if(role!=='admin')fail('Solo un administrador global puede hacer cambios.',403);};
 async function audit(db,user,action,targetType,targetId,metadata={}){
  await db.query('insert into platform_audit_log(actor_user_id,action,target_type,target_id,metadata) values($1,$2,$3,$4,$5::jsonb)',[user.id,action,targetType,String(targetId),JSON.stringify(metadata)]);
 }
@@ -50,7 +52,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
  if(!url.pathname.startsWith('/api/platform/'))return false;
  try{
   if(url.pathname==='/api/platform/bootstrap-status'&&req.method==='GET'){send(res,200,await platformBootstrapStatus(db,bootstrapValue));return true;}
-  const user=await actor(db,session,req);
+  const {user,role}=await actor(db,session,req);
   if(url.pathname==='/api/platform/overview'&&req.method==='GET'){
    const [agencies,users,subscriptions,coupons]=(await Promise.all([
     db.query(`select count(*)::int as total,count(*) filter(where active)::int as active from organizations where ${realOrganization('organizations')}`),
@@ -79,6 +81,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
   const subscriptionPath=url.pathname.match(/^\/api\/platform\/agencies\/(\d+)\/subscription$/);
   if(subscriptionPath&&req.method==='GET'){send(res,200,await inspectInternalSubscription(db,subscriptionPath[1]));return true;}
   if(subscriptionPath&&req.method==='PATCH'){
+   requireWrite(role);
    const result=await mutation(db,async client=>{
     const change=await updateInternalSubscription(client,subscriptionPath[1],await body(req),user.id);
     await audit(client,user,change.change.state===null?'subscription.internal_state.clear':'subscription.internal_state.update','organization_subscription',subscriptionPath[1],{state:change.change.state,expires_at:change.change.expiresAt});
@@ -91,7 +94,8 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    const values=q?[limit,offset,'%'+q+'%']:[limit,offset];
    const result=await db.query(`select u.id,u.email,u.created_at,
      count(m.organization_id) filter(where m.active and m.removed_at is null and ${realOrganization('o')})::int as active_agencies,
-     exists(select 1 from platform_administrators pa where pa.user_id=u.id and pa.active) as platform_admin
+     exists(select 1 from platform_administrators pa where pa.user_id=u.id and pa.active) as platform_admin,
+     (select pa.role from platform_administrators pa where pa.user_id=u.id and pa.active) as platform_role
      from users u left join organization_members m on m.user_id=u.id
      left join organizations o on o.id=m.organization_id
      where ${realUser('u')} ${where}
@@ -106,6 +110,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    send(res,200,{coupons:result.rows,limit,offset});return true;
   }
   if(url.pathname==='/api/platform/coupons'&&req.method==='POST'){
+   requireWrite(role);
    const input=couponConfiguration(await body(req));if(!input.code)fail('El código del cupón es obligatorio.');
    const coupon=await mutation(db,async client=>{
     const result=await client.query('insert into platform_coupons(code,discount_type,discount_value,currency,max_redemptions,lifetime_eligible,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7) returning id,code,discount_type,discount_value,currency,active,max_redemptions,lifetime_eligible,created_at,updated_at',[input.code,input.type,input.value,input.currency,input.max,input.lifetime,user.id]);
@@ -115,6 +120,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
   }
   const couponPath=url.pathname.match(/^\/api\/platform\/coupons\/(\d+)$/);
   if(couponPath&&req.method==='PATCH'){
+   requireWrite(role);
    const coupon=await mutation(db,async client=>{
     const id=Number(couponPath[1]),current=(await client.query('select * from platform_coupons where id=$1 for update',[id])).rows[0];if(!current)fail('Cupón no encontrado',404);
     const input=couponConfiguration(await body(req),current);
@@ -122,6 +128,57 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
     await audit(client,user,current.active&&!input.active?'coupon.deactivate':'coupon.update','coupon',id,{lifetime_eligible:input.lifetime,active:input.active});return result.rows[0];
    });
    send(res,200,{coupon});return true;
+  }
+  const userPath=url.pathname.match(/^\/api\/platform\/users\/(\d+)$/);
+  if(userPath&&req.method==='PATCH'){
+   requireWrite(role);
+   const targetId=Number(userPath[1]);
+   if(targetId===user.id)fail('No podés cambiar tu propio acceso global.',400);
+   const input=only(await body(req),['platform_access']);
+   if(!['admin','viewer','none'].includes(input.platform_access))fail('El acceso global debe ser admin, viewer o none.');
+   const access=await mutation(db,async client=>{
+    const target=(await client.query(`select id from users where id=$1 and ${realUser('users')}`,[targetId])).rows[0];
+    if(!target)fail('Usuario no encontrado.',404);
+    if(input.platform_access==='none'){
+     const revoked=(await client.query('update platform_administrators set active=false where user_id=$1 returning user_id',[targetId])).rows[0];
+     if(revoked)await audit(client,user,'platform_access.revoke','platform_administrator',targetId,{role:'none'});
+     return {platform_access:'none',changed:Boolean(revoked)};
+    }
+    const row=(await client.query(`insert into platform_administrators(user_id,role,active,created_by_user_id) values($1,$2,true,$3) on conflict(user_id) do update set role=excluded.role,active=true,created_by_user_id=excluded.created_by_user_id returning user_id,role`,[targetId,input.platform_access,user.id])).rows[0];
+    await audit(client,user,'platform_access.grant','platform_administrator',targetId,{role:input.platform_access});
+    return {platform_access:input.platform_access,changed:true};
+   });
+   send(res,200,{access});return true;
+  }
+  if(userPath&&req.method==='DELETE'){
+   requireWrite(role);
+   const targetId=Number(userPath[1]),self=targetId===user.id;
+   const deleted=await mutation(db,async client=>{
+    const target=(await client.query(`select id from users where id=$1 and ${realUser('users')} for update`,[targetId])).rows[0];
+    if(!target)fail('Usuario no encontrado.',404);
+    if(!self){
+     const adminRow=(await client.query("select 1 from platform_administrators where user_id=$1 and active=true and role='admin'",[targetId])).rows[0];
+     if(adminRow)fail('No podés eliminar a otro administrador global.',403);
+    }
+    const owned=(await client.query(`select o.id from organizations o join organization_members m on m.organization_id=o.id where m.user_id=$1 and m.role='owner' and m.active and m.removed_at is null and ${realOrganization('o')}`,[targetId])).rows;
+    for(const org of owned){
+     await client.query('update organizations set active=false,deleted_at=now(),deleted_by_user_id=$2 where id=$1',[org.id,user.id]);
+     await client.query('delete from sessions where organization_id=$1',[org.id]);
+    }
+    await client.query('delete from sessions where user_id=$1',[targetId]);
+    await client.query('delete from oauth_states where recent_auth_user_id=$1',[targetId]);
+    await client.query('delete from destructive_google_handoffs where user_id=$1',[targetId]);
+    await client.query('delete from destructive_auth_proofs where user_id=$1',[targetId]);
+    await client.query('delete from destructive_action_previews where user_id=$1',[targetId]);
+    await client.query('delete from destructive_email_challenges where user_id=$1',[targetId]);
+    await client.query('delete from platform_administrators where user_id=$1',[targetId]);
+    await client.query('delete from organization_members where user_id=$1',[targetId]);
+    const anonymous=`deleted+${targetId}+${crypto.randomBytes(8).toString('hex')}@deleted.invalid`;
+    await client.query("update users set email=$2,password_hash='!deleted-account',full_name=null,google_photo_url=null,google_full_name=null,deleted_at=now(),anonymized_at=now() where id=$1",[targetId,anonymous]);
+    await audit(client,user,'user.delete','user',targetId,{self,agencies:owned.map(org=>org.id)});
+    return {userId:targetId,self,agencies:owned.map(org=>org.id)};
+   });
+   send(res,200,{deleted});return true;
   }
   if(url.pathname==='/api/platform/audit'&&req.method==='GET'){
    const {limit,offset}=page(url),q=search(url),where=q?'where action ilike $3 or target_type ilike $3 or target_id ilike $3 or actor_email ilike $3':'';

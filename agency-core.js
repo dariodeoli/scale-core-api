@@ -23,7 +23,7 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
   let handled=false;
   const send=(...args)=>{handled=true;return rawSend(...args);};
   await (async()=>{
-    if (url.pathname === '/api/auth/me') { const u=await session(req); return u ? send(res,200,{user:{...u,subscription:await requestSubscription(req,u)}}) : send(res,401,{error:'No autenticado'}); }
+    if (url.pathname === '/api/auth/me') { const u=await session(req); if(!u) return send(res,401,{error:'No autenticado'}); let platform=null; try{platform=(await db.query('select role from platform_administrators where user_id=$1 and active=true',[u.id])).rows[0]||null;}catch{platform=null;} return send(res,200,{user:{...u,subscription:await requestSubscription(req,u),platform_admin:Boolean(platform),platform_role:platform?.role||null}}); }
     if (url.pathname === '/api/auth/organizations' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
       const r=await db.query(`select o.id,o.slug,o.name,m.role,(o.demo_source_id is not null or o.slug='scale-demo-controles-20260908') as "isDemo" from organization_members m join organizations o on o.id=m.organization_id where m.user_id=$1 and o.active=true and m.active=true and m.removed_at is null and o.demo_owner_user_id is null order by o.name`,[user.id]);
