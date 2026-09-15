@@ -9,7 +9,7 @@ const db=new PGlite();
 await db.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
 for(const f of ['20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_agency_suite.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 for(const f of ['20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_notifications.sql','20260910_client_links.sql','20260910_invite_links.sql','20260910_currencies.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
-for(const f of ['20260910_company_currency.sql','20260910_global_identity.sql','20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
+for(const f of ['20260910_company_currency.sql','20260910_global_identity.sql','20260910_project_assignees.sql','20260910_inventory_reservations.sql','20260910_work_checklists.sql','20260912_inventory_verifications.sql'])await db.exec(await fs.readFile(new URL(`./migrations/${f}`,import.meta.url),'utf8'));
 const query=(s,v)=>db.query(s,v);
 await db.exec(await fs.readFile(new URL('./migrations/20260911_default_login_organization.sql',import.meta.url),'utf8'));
 await db.exec(await fs.readFile(new URL('./migrations/20260911_google_profile_photo.sql',import.meta.url),'utf8'));
@@ -86,7 +86,7 @@ assert.equal((await request(`/api/agency/work-orders/${order}/assignees`)).statu
 r=await request('/api/agency/clients',{cookie:ownerCookie});assert.equal(JSON.parse(r.body).clients.length,1);
 assert.equal((await request(`/api/agency/clients/${client}`,{cookie:ownerCookie,method:'DELETE'})).status,200);
 for(const [path,key] of [['clients','clients'],['projects','projects'],['work-orders','workOrders']]){r=await request('/api/agency/'+path,{cookie:ownerCookie});assert.equal(r.status,200);assert.equal(JSON.parse(r.body)[key].length,0);}
-r=await request('/api/agency/summary',{cookie:ownerCookie});assert.deepEqual(JSON.parse(r.body).summary,{active_clients:0,active_projects:0,open_orders:0});
+r=await request('/api/agency/summary',{cookie:ownerCookie});assert.deepEqual(JSON.parse(r.body).summary,{active_clients:0,active_projects:0,open_orders:0,unanswered_budgets:0,unverified_inventory:0,upcoming_deliveries:0});
 assert.equal((await request(`/api/agency/clients/${client}/restore`,{cookie:ownerCookie,method:'POST'})).status,200);
 r=await request('/api/agency/projects',{cookie:ownerCookie});assert.equal(JSON.parse(r.body).projects[0].work_order_count,1);
 // Pending applicants can see only the waiting screen, never agency data.

@@ -29,6 +29,27 @@ alter table agency_client_commercial_terms add column if not exists starts_on da
 update agency_client_commercial_terms set starts_on=effective_from where starts_on is null;
 alter table agency_client_commercial_terms alter column starts_on set not null;
 create index if not exists agency_client_commercial_terms_forecast_idx on agency_client_commercial_terms(organization_id,currency,starts_on);
+-- Reconcile the two commercial-term contracts: when the lifecycle migration
+-- created the table first, the create-if-not-exists above never applied its
+-- forecast columns. Add them idempotently so forecasting joins both worlds.
+alter table agency_client_commercial_terms add column if not exists plan_id bigint;
+alter table agency_client_commercial_terms add column if not exists recurring_amount bigint;
+alter table agency_client_commercial_terms add column if not exists invoice_required boolean not null default false;
+alter table agency_client_commercial_terms add column if not exists commission_recipient_id bigint;
+alter table agency_client_commercial_terms add column if not exists commission_mode text;
+alter table agency_client_commercial_terms add column if not exists commission_value bigint;
+alter table agency_client_commercial_terms add column if not exists updated_at timestamptz not null default now();
+-- The terms contract writes a single effective row without lifecycle values.
+-- Relax the lifecycle-only required columns so both contracts can write.
+alter table agency_client_commercial_terms alter column activation_date drop not null;
+alter table agency_client_commercial_terms alter column effective_from drop not null;
+alter table agency_client_commercial_terms alter column plan_name drop not null;
+alter table agency_client_commercial_terms alter column plan_version drop not null;
+alter table agency_client_commercial_terms alter column monthly_price drop not null;
+-- Existing lifecycle terms expose their net monthly value through price and
+-- discount; project it into recurring_amount so recurring/commission queries
+-- include terms created before this reconciliation.
+update agency_client_commercial_terms set recurring_amount=round(case when discount_type='percent' then monthly_price*(1-discount_value/100) when discount_type='fixed' then greatest(monthly_price-discount_value,0) else monthly_price end)::bigint where recurring_amount is null;
 
 create table if not exists agency_planned_expenses (
  id bigserial primary key,

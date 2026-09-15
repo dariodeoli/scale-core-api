@@ -66,4 +66,17 @@ for(const [sql,state] of [
 }
 assert.equal((await query('select click_count from agency_invite_links where id=$1',[previewLink.id])).rows[0].click_count,clicks);
 assert.equal((await call('/api/invitations/preview?token='+'z'.repeat(43),'GET',{},null)).link_status,'unavailable');
-await pg.close();console.log('PASS: single-use consumption, approval without access, revocation, tenant/role boundaries, public status and expiration, no role escalation, private public Demo, contact dedup and supported currencies');
+// Permanent deletion: pending requests block it, spent links can be removed, joined history is conserved.
+const cleanable=await make('approval','viewer');
+assert.equal((await call(links+'/'+cleanable.id,'DELETE',{},actor)).deleted,undefined);
+const cleaned=(await call(links+'/'+cleanable.id+'?permanent=1','DELETE',{},actor));assert.equal(cleaned.deleted,true);
+assert.equal((await query('select count(*)::int as n from agency_invite_links where id=$1',[cleanable.id])).rows[0].n,0);
+const withPending=await make('approval','editor');await claim(withPending,'pending-del@example.invalid');
+assert.equal((await call(links+'/'+withPending.id+'?permanent=1','DELETE',{},actor)).status,409);
+const pendingReq=(await query('select id from agency_access_requests where link_id=$1',[withPending.id])).rows[0].id;
+assert.equal((await call(requests+'/'+pendingReq,'PATCH',{action:'reject'},actor)).status,200);
+const removed=(await call(links+'/'+withPending.id+'?permanent=1','DELETE',{},actor));assert.equal(removed.deleted,true);
+assert.equal((await query('select count(*)::int as n from agency_invite_links where id=$1',[withPending.id])).rows[0].n,0);
+assert.equal((await query('select count(*)::int as n from agency_access_requests where link_id=$1',[withPending.id])).rows[0].n,0);
+assert.equal((await call(links+'/'+one.id+'?permanent=1','DELETE',{},actor)).status,409);
+await pg.close();console.log('PASS: single-use consumption, approval without access, revocation, permanent link cleanup with history guards, tenant/role boundaries, public status and expiration, no role escalation, private public Demo, contact dedup and supported currencies');

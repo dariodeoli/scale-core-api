@@ -90,7 +90,19 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
    const link=(await c.query("insert into agency_invite_links(organization_id,token_hash,token_ciphertext,role,mode,created_by,expires_at) values($1,$2,$3,$4,$5,$6,now()+interval '7 days') returning id,expires_at,created_by",[org,hash(token),seal(token),b.role,b.mode,user.id])).rows[0];
    result={...link,url:appUrl+'/invitacion?token='+token};
   }else if(kind==='invite-links'&&key&&req.method==='DELETE'){
-   const r=await c.query("update agency_invite_links set revoked_at=now() where id=$1 and organization_id=$2 and ($3='owner' or role<>'owner') returning id",[key,org,user.role]);if(!r.rows.length)fail('Enlace no encontrado o sin permiso',404);result={ok:true};
+   const permanent=url.searchParams.get('permanent')==='1';
+   const r=(await c.query("select id from agency_invite_links where id=$1 and organization_id=$2 and ($3='owner' or role<>'owner') for update",[key,org,user.role])).rows[0];
+   if(!r)fail('Enlace no encontrado o sin permiso',404);
+   if(!permanent){
+    await c.query('update agency_invite_links set revoked_at=now() where id=$1',[key]);result={ok:true,revoked:true};
+   }else{
+    if((await c.query('select 1 from organization_members where organization_id=$1 and invite_link_id=$2 limit 1',[org,key])).rows.length)fail('Personas ingresaron con este enlace. Se conserva el historial; usá Revocar para desactivarlo.',409);
+    if((await c.query("select 1 from agency_access_requests where link_id=$1 and status='pending' limit 1",[key])).rows.length)fail('Hay solicitudes pendientes de este enlace. Atendé o rechazá cada solicitud antes de eliminarlo.',409);
+    await c.query('update oauth_states set invite_link_id=null where invite_link_id=$1',[key]);
+    await c.query('delete from agency_access_requests where link_id=$1',[key]);
+    await c.query('delete from agency_invite_links where id=$1',[key]);
+    result={ok:true,deleted:true};
+   }
   }else if(kind==='access-requests'&&req.method==='GET'&&!key){
    const rows=(await c.query("select r.id,r.user_id,r.full_name,r.created_at,r.status,u.email,l.role,l.expires_at,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=l.organization_id and m.user_id=r.user_id and m.active=true and m.removed_at is null) as existing_member from agency_access_requests r join agency_invite_links l on l.id=r.link_id join organizations o on o.id=l.organization_id join users u on u.id=r.user_id where l.organization_id=$1 and r.status='pending' order by r.created_at limit 100",[org])).rows;
    result={requests:rows.map(({link_valid,organization_active,existing_member,...row})=>({...row,...accessRequestState({...row,link_valid,organization_active,existing_member})}))};

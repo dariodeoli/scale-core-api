@@ -109,6 +109,8 @@ Referencia del runtime ya instalado mediante un script externo antes de `</body>
  window.addEventListener('pageshow',start);
  start();
 })();
+// LIVE VISITORS DISPLAY: show active session count (updated every 60s)
+(function(){if(!location.origin.includes('scaleparaguay.com'))return;const badge=document.getElementById('live-badge'),count=document.getElementById('live-count');if(!badge||!count)return;async function updateCount(){try{const r=await fetch('https://admin.scaleparaguay.com/api/public/live-visitors/count',{method:'GET',credentials:'omit',cache:'no-store',headers:{'Accept':'application/json'}});if(r.ok){const data=await r.json();if(data.active_sessions&&data.active_sessions>0){count.textContent=data.active_sessions;badge.style.display='block';}}}catch{}}updateCount();setInterval(updateCount,60000);})();
 </script>
 ```
 

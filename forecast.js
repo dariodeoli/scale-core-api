@@ -84,7 +84,7 @@ export async function financialForecast({req,res,url,db,session,send}) {
     coalesce(sum(coalesce(override_amount,base_amount)),0)::text as expected_end_of_month_expense
    from included group by currency order by currency`,[user.organization_id,`${month}-01`])).rows;
   const [contractedRecurring,collectedActual,commissionForecast,plannedExpenses]=await Promise.all([
-   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(t.recurring_amount),0)::text as amount
+   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(coalesce(t.recurring_amount,round(case when t.discount_type='percent' then t.monthly_price*(1-t.discount_value/100) when t.discount_type='fixed' then greatest(t.monthly_price-t.discount_value,0) else t.monthly_price end)::bigint)),0)::text as amount
     from agency_client_commercial_terms t join agency_clients c on c.organization_id=t.organization_id and c.id=t.client_id
     where t.organization_id=$1 and t.starts_on<($2::date+interval '1 month')::date and c.active=true and ${visibleRecord('c','clients')}
     group by t.currency order by t.currency`,[user.organization_id,`${month}-01`]),
@@ -93,7 +93,7 @@ export async function financialForecast({req,res,url,db,session,send}) {
      union all
      select a.currency,-p.amount,r.reversed_on from agency_payment_reversals r join agency_payments p on p.id=r.payment_id and p.organization_id=r.organization_id join bank_accounts a on a.id=p.account_id and a.organization_id=p.organization_id where r.organization_id=$1
     ) select currency,coalesce(sum(amount),0)::text as amount from movements where booked_on>=$2::date and booked_on<($2::date+interval '1 month')::date group by currency order by currency`,[user.organization_id,`${month}-01`]),
-   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(case when t.commission_mode='percentage' then round(t.recurring_amount*t.commission_value/100.0,0) else t.commission_value end),0)::text as amount
+   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(case when t.commission_mode='percentage' then round(coalesce(t.recurring_amount,round(case when t.discount_type='percent' then t.monthly_price*(1-t.discount_value/100) when t.discount_type='fixed' then greatest(t.monthly_price-t.discount_value,0) else t.monthly_price end)::bigint)*t.commission_value/100.0,0) when t.commission_mode='fixed' then t.commission_value else 0 end),0)::text as amount
     from agency_client_commercial_terms t join agency_clients c on c.organization_id=t.organization_id and c.id=t.client_id
     join agency_collaborators r on r.organization_id=t.organization_id and r.id=t.commission_recipient_id
     where t.organization_id=$1 and t.starts_on<($2::date+interval '1 month')::date and c.active=true and r.active=true and ${visibleRecord('c','clients')} and ${visibleRecord('r','collaborators')}

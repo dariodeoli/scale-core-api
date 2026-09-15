@@ -111,7 +111,7 @@ async function commercialTerms(db,org,id) {
   t.commission_mode as "commissionMode",t.commission_value::text as "commissionValue",t.updated_at as "updatedAt"
   from agency_client_commercial_terms t join agency_plans p on p.organization_id=t.organization_id and p.id=t.plan_id
   join agency_collaborators c on c.organization_id=t.organization_id and c.id=t.commission_recipient_id
-  where t.organization_id=$1 and t.client_id=$2`,[org,id])).rows[0]||null;
+  where t.organization_id=$1 and t.client_id=$2 and t.effective_until is null order by t.id desc limit 1`,[org,id])).rows[0]||null;
  const plans=(await db.query(`select p.id::text,p.name,p.currency from agency_plans p where p.organization_id=$1 and p.active
   and not exists(select 1 from agency_archived_records a where a.organization_id=p.organization_id and a.kind='plans' and a.record_id=p.id) order by p.name,p.id`,[org])).rows;
  const collaborators=(await db.query(`select c.id::text,c.full_name from agency_collaborators c where c.organization_id=$1 and c.active and ${'not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind=\'collaborators\' and a.record_id=c.id)'} order by c.full_name,c.id`,[org])).rows;
@@ -197,8 +197,12 @@ export async function reports({req,res,url,db,session,body,send}) {
    const client=(await c.query(`select c.id from agency_clients c where c.organization_id=$1 and c.id=$2 and not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='clients' and a.record_id=c.id) for update`,[user.organization_id,id])).rows[0];
    if(!client)fail('Cliente no disponible',404);
    const value=await validateTerms(c,user.organization_id,await body(req));
-   await c.query(`insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,invoice_required,commission_recipient_id,commission_mode,commission_value)
-    values($1,$2,$3,$4,$5,$6::date,$7,$8,$9,$10) on conflict(organization_id,client_id) do update set plan_id=excluded.plan_id,recurring_amount=excluded.recurring_amount,currency=excluded.currency,starts_on=excluded.starts_on,invoice_required=excluded.invoice_required,commission_recipient_id=excluded.commission_recipient_id,commission_mode=excluded.commission_mode,commission_value=excluded.commission_value,updated_at=clock_timestamp()`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue]);
+   // The terms contract keeps one effective row per client. The lifecycle
+   // contract stores append-only history, so reconcile both by writing the
+   // open row instead of relying on a full-table unique constraint.
+   const open=(await c.query('select id from agency_client_commercial_terms where organization_id=$1 and client_id=$2 and effective_until is null for update',[user.organization_id,id])).rows[0];
+   if(open)await c.query(`update agency_client_commercial_terms set plan_id=$3,recurring_amount=$4,currency=$5,starts_on=$6::date,invoice_required=$7,commission_recipient_id=$8,commission_mode=$9,commission_value=$10,updated_at=clock_timestamp() where organization_id=$1 and client_id=$2 and effective_until is null`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue]);
+   else await c.query(`insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,invoice_required,commission_recipient_id,commission_mode,commission_value) values($1,$2,$3,$4,$5,$6::date,$7,$8,$9,$10)`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue]);
    const result=await commercialTerms(c,user.organization_id,id);await c.query('commit');c.release();c=null;send(res,200,result);return true;
   }
   if(req.method==='GET'){send(res,200,await metadata(db,user.organization_id,id));return true;}

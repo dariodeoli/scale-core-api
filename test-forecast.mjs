@@ -8,7 +8,7 @@ import {agencyReport,reports} from './reports.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_terms_and_planned_expenses.sql']) {
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql']) {
  await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 }
 // Startup migrations must be repeatable.
