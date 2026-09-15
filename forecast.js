@@ -65,19 +65,18 @@ const forecastSnapshot=async(db,organizationId,label)=>{
   from entries group by currency order by currency`,[organizationId,`${label}-01`,forecastTimezone]);
  const personnel=await db.query(`
   with included as (
-   select c.monthly_salary_currency as currency,c.monthly_salary_amount as base_amount,o.amount as override_amount
+   select c.currency as currency,c.compensation_amount as base_amount
    from agency_collaborators c
-   left join agency_salary_month_overrides o on o.organization_id=c.organization_id and o.collaborator_id=c.id and o.month=$2::date
-   where c.organization_id=$1 and c.active=true and c.monthly_salary_amount is not null and ${visibleRecord('c','collaborators')}
+   where c.organization_id=$1 and c.active=true and c.compensation_type='fixed' and c.compensation_amount>0 and ${visibleRecord('c','collaborators')}
     and (c.started_on is null or c.started_on<($2::date+interval '1 month')::date)
     and (c.ended_on is null or c.ended_on>=$2::date)
   )
   select currency,count(*)::int as included_headcount,
-   count(*) filter(where override_amount is null)::int as base_count,
-   coalesce(sum(base_amount) filter(where override_amount is null),0)::text as base_amount,
-   count(*) filter(where override_amount is not null)::int as override_count,
-   coalesce(sum(override_amount) filter(where override_amount is not null),0)::text as override_amount,
-   coalesce(sum(coalesce(override_amount,base_amount)),0)::text as expected_end_of_month_expense
+   count(*)::int as base_count,
+   coalesce(sum(base_amount),0)::text as base_amount,
+   0::int as override_count,
+   '0'::text as override_amount,
+   coalesce(sum(base_amount),0)::text as expected_end_of_month_expense
   from included group by currency order by currency`,[organizationId,`${label}-01`]);
  const [contractedRecurring,collectedActual,commissionForecast,plannedExpenses]=await Promise.all([
   db.query(`select t.currency,count(*)::int as client_count,coalesce(sum(coalesce(t.recurring_amount,round(case when t.discount_type='percent' then t.monthly_price*(1-t.discount_value/100) when t.discount_type='fixed' then greatest(t.monthly_price-t.discount_value,0) else t.monthly_price end)::bigint)),0)::text as amount
@@ -182,7 +181,7 @@ export async function financialForecast({req,res,url,db,session,send}) {
     contracted_recurring:'Solo acuerdos mensuales fijos de clientes activos al cierre del mes: empezaron antes de fin de mes y no tienen fecha de fin, o su fin cae dentro del mes. Contratos por única vez o cada varios meses no se proyectan como ingreso mensual. Es ingreso contractual y no representa una factura ni un cobro.',
     invoiced:'Facturas emitidas en el mes. Se informa por separado del ingreso contractual y de los cobros.',
     collected_actual:'Cobros efectivamente registrados por fecha de cobro, menos reversiones registradas en el mes. No se suma al ingreso contractual.',
-    personnel:'Solo incluye colaboradores activos dentro de las fechas laborales, con salario mensual recurrente configurado. Un ajuste del mes reemplaza ese salario; no incluye pagos, comisiones ni compensaciones variables.',
+    personnel:'Solo incluye colaboradores activos dentro de las fechas laborales, con modalidad fijo mensual e importe acordado mayor a cero. No incluye pagos, comisiones, compensaciones variables ni ajustes mensuales históricos.',
     commission_forecast:'Comisiones previstas de acuerdos vigentes de clientes y destinatarios activos; las porcentuales se redondean al entero más cercano.',
     planned_expenses:'Gastos mensuales del mes seleccionado y gastos recurrentes vigentes desde su mes efectivo; no son pagos reales.',
     opening_balance:'Saldo actual de las cuentas activas por moneda; es la base de caja del primer mes de la proyección.',
