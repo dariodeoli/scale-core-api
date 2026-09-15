@@ -86,8 +86,8 @@ const cookie = (name, value, maxAge) => `${name}=${value}; Max-Age=${maxAge}; Pa
 // proxy and consumed at the admin-host callback. Domain-scoped with the same
 // HttpOnly/Secure/SameSite posture as the rest of the session cookies.
 const oauthStateCookie = (value, maxAge) => `scale_oauth_state=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax; Domain=.scaleparaguay.com`;
-const parseCookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(v => { const i=v.indexOf('='); return [v.slice(0,i).trim(), decodeURIComponent(v.slice(i+1))]; }));
-const body = async (req) => { let s=''; for await (const c of req) {s += c;if(s.length>1048576)throw Object.assign(new Error('Solicitud demasiado grande'),{status:413});} return s ? JSON.parse(s) : {}; };
+const parseCookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(v => { const i=v.indexOf('='); const raw=v.slice(i+1); let value=raw; try{value=decodeURIComponent(raw);}catch{/* Keep the raw value; a malformed cookie must not fail the whole request. */} return [v.slice(0,i).trim(), value]; }));
+const body = async (req) => { let s=''; for await (const c of req) {s += c;if(s.length>1048576)throw Object.assign(new Error('Solicitud demasiado grande'),{status:413});} if(!s)return {}; try{return JSON.parse(s);}catch{throw Object.assign(new Error('Cuerpo JSON inválido'),{status:400});} };
 const id = () => crypto.randomBytes(32).toString('hex');
 async function sendInvitation(email, organizationName, role) {
   return emailDelivery.send({to:email,message:invitationEmail({email,organizationName,role,appUrl})});
@@ -471,6 +471,7 @@ const server = http.createServer(async (req,res) => {
       }catch(e){await c.query('rollback');return send(res,e.status||500,{error:e.status?e.message:'No se pudo abrir la empresa'});}finally{c.release();}
     }
     if (url.pathname === '/api/events' && req.method === 'POST') {
+      if(!await throttle(db,'events:public',2000))return send(res,429,{error:'Límite temporal. Intentá nuevamente más tarde.'});
       const {name,metadata={}}=await body(req);
       if(!/^[a-z0-9:_-]{1,80}$/i.test(name||'') || !metadata || Array.isArray(metadata) || typeof metadata !== 'object') return send(res,400,{error:'Evento inválido'});
       const scale=await db.query("select id from organizations where slug='scale'");
@@ -693,14 +694,21 @@ const server = http.createServer(async (req,res) => {
       const user=await session(req); if(!roleCan(user,'payments.manage')) return send(res,403,{error:'Sin permiso'});
       const {invoiceId,accountId,amount,receivedOn=null,reference=null,receivedByUserId=null}=await body(req); const paid=Number(amount);
       if(!Number.isInteger(Number(invoiceId)) || !Number.isInteger(Number(accountId)) || !Number.isFinite(paid) || paid<=0) return send(res,400,{error:'Pago inválido'});
-      const valid=await db.query('select i.currency,i.total,i.paid_amount from agency_invoices i join bank_accounts a on a.id=$2 and a.organization_id=i.organization_id and a.currency=i.currency where i.id=$1 and i.organization_id=$3',[Number(invoiceId),Number(accountId),user.organization_id]);
-      if(!valid.rows[0]) return send(res,404,{error:'Factura o cuenta no encontrada, o monedas distintas'});
-      if(paid > Number(valid.rows[0].total) - Number(valid.rows[0].paid_amount)) return send(res,400,{error:'El cobro supera el saldo pendiente'});
       const receiver=receivedByUserId === null || receivedByUserId === '' ? Number(user.id) : Number(receivedByUserId);
-      if(!Number.isInteger(receiver) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,receiver])).rows[0]) return send(res,400,{error:'Persona que recibió el pago inválida'});
-      const r=await db.query('insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference,received_by_user_id) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(invoiceId),Number(accountId),paid,receivedOn || new Date().toISOString().slice(0,10),reference || null,receiver]);
-      await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'received_by_user_id'}]);
-      return send(res,201,{payment:r.rows[0]});
+      const c=await db.connect();
+      try{
+        await c.query('begin');
+        await auditContext(c,user,req);
+        // Lock the invoice row so two concurrent payments cannot both pass the pending-balance check.
+        const valid=await c.query('select i.currency,i.total,i.paid_amount from agency_invoices i join bank_accounts a on a.id=$2 and a.organization_id=i.organization_id and a.currency=i.currency where i.id=$1 and i.organization_id=$3 for update of i',[Number(invoiceId),Number(accountId),user.organization_id]);
+        if(!valid.rows[0]){await c.query('rollback');return send(res,404,{error:'Factura o cuenta no encontrada, o monedas distintas'});}
+        if(paid > Number(valid.rows[0].total) - Number(valid.rows[0].paid_amount)){await c.query('rollback');return send(res,400,{error:'El cobro supera el saldo pendiente'});}
+        if(!Number.isInteger(receiver) || !(await c.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,receiver])).rows[0]){await c.query('rollback');return send(res,400,{error:'Persona que recibió el pago inválida'});}
+        const r=await c.query('insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference,received_by_user_id) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(invoiceId),Number(accountId),paid,receivedOn || new Date().toISOString().slice(0,10),reference || null,receiver]);
+        await c.query('commit');
+        await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'received_by_user_id'}]);
+        return send(res,201,{payment:r.rows[0]});
+      }catch(error){await c.query('rollback');throw error;}finally{c.release();}
     }
     if (url.pathname === '/api/agency/transfers' && req.method === 'GET') {
       const user=await session(req); if(!roleCan(user,'transfers.manage')) return send(res,403,{error:'Sin permiso'});
@@ -712,13 +720,20 @@ const server = http.createServer(async (req,res) => {
       const user=await session(req); if(!roleCan(user,'transfers.manage')) return send(res,403,{error:'Sin permiso'});
       const {fromAccountId,toAccountId,amount,transferredOn=null,reference=null,notes=null}=await body(req); const transferAmount=Number(amount);
       if(!Number.isInteger(Number(fromAccountId)) || !Number.isInteger(Number(toAccountId)) || Number(fromAccountId)===Number(toAccountId) || !Number.isFinite(transferAmount) || transferAmount<=0) return send(res,400,{error:'Transferencia inválida'});
-      const accounts=await db.query('select id,currency,balance from bank_accounts where organization_id=$1 and id=any($2::bigint[])',[user.organization_id,[Number(fromAccountId),Number(toAccountId)]]);
-      if(accounts.rows.length!==2 || accounts.rows[0].currency!==accounts.rows[1].currency) return send(res,400,{error:'Las cuentas deben existir y usar la misma moneda'});
-      const source=accounts.rows.find(account=>Number(account.id)===Number(fromAccountId));
-      if(Number(source.balance)<transferAmount) return send(res,400,{error:'Saldo insuficiente en la cuenta de origen'});
-      const r=await db.query('insert into account_transfers(organization_id,from_account_id,to_account_id,amount,transferred_on,reference,notes,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,Number(fromAccountId),Number(toAccountId),transferAmount,transferredOn || new Date().toISOString().slice(0,10),typeof reference === 'string' ? reference.trim() || null : null,typeof notes === 'string' ? notes.trim() || null : null,user.id]);
-      await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'created_by_user_id'}]);
-      return send(res,201,{transfer:r.rows[0]});
+      const c=await db.connect();
+      try{
+        await c.query('begin');
+        await auditContext(c,user,req);
+        // Lock both account rows so concurrent transfers cannot both pass the balance check.
+        const accounts=await c.query('select id,currency,balance from bank_accounts where organization_id=$1 and id=any($2::bigint[]) order by id for update',[user.organization_id,[Number(fromAccountId),Number(toAccountId)]]);
+        if(accounts.rows.length!==2 || accounts.rows[0].currency!==accounts.rows[1].currency){await c.query('rollback');return send(res,400,{error:'Las cuentas deben existir y usar la misma moneda'});}
+        const source=accounts.rows.find(account=>Number(account.id)===Number(fromAccountId));
+        if(Number(source.balance)<transferAmount){await c.query('rollback');return send(res,400,{error:'Saldo insuficiente en la cuenta de origen'});}
+        const r=await c.query('insert into account_transfers(organization_id,from_account_id,to_account_id,amount,transferred_on,reference,notes,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,Number(fromAccountId),Number(toAccountId),transferAmount,transferredOn || new Date().toISOString().slice(0,10),typeof reference === 'string' ? reference.trim() || null : null,typeof notes === 'string' ? notes.trim() || null : null,user.id]);
+        await c.query('commit');
+        await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'created_by_user_id'}]);
+        return send(res,201,{transfer:r.rows[0]});
+      }catch(error){await c.query('rollback');throw error;}finally{c.release();}
     }
     const orderMatch = url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)$/);
     if (orderMatch && req.method === 'PATCH') {
