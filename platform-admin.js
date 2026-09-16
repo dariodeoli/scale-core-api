@@ -207,10 +207,12 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
     }
     await client.query('delete from sessions where user_id=$1',[targetId]);
     await client.query('delete from oauth_states where recent_auth_user_id=$1',[targetId]);
+    // Children of destructive_action_previews reference it ON DELETE RESTRICT;
+    // remove them before the previews themselves.
+    await client.query('delete from destructive_email_challenges where user_id=$1',[targetId]);
     await client.query('delete from destructive_google_handoffs where user_id=$1',[targetId]);
     await client.query('delete from destructive_auth_proofs where user_id=$1',[targetId]);
     await client.query('delete from destructive_action_previews where user_id=$1',[targetId]);
-    await client.query('delete from destructive_email_challenges where user_id=$1',[targetId]);
     await client.query('delete from platform_administrators where user_id=$1',[targetId]);
     // Memberships are soft-removed so inventory/studio/verification rows that
     // reference (organization_id,user_id) keep their foreign keys and history.

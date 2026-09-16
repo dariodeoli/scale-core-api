@@ -22,10 +22,10 @@ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migra
  await pg.exec(`
   create table sessions(id bigint primary key,user_id bigint,organization_id bigint);
   create table oauth_states(id bigint primary key,recent_auth_user_id bigint);
-  create table destructive_google_handoffs(user_id bigint);
-  create table destructive_auth_proofs(user_id bigint);
-  create table destructive_action_previews(user_id bigint);
-  create table destructive_email_challenges(user_id bigint);
+  create table destructive_action_previews(token_hash text primary key,user_id bigint);
+  create table destructive_email_challenges(id bigint primary key,preview_token_hash text not null references destructive_action_previews(token_hash) on delete restrict,user_id bigint);
+  create table destructive_google_handoffs(token_hash text primary key,preview_token_hash text not null references destructive_action_previews(token_hash) on delete restrict,user_id bigint);
+  create table destructive_auth_proofs(token_hash text primary key,preview_token_hash text not null references destructive_action_previews(token_hash) on delete restrict,user_id bigint);
   alter table users add column deleted_at timestamptz,add column anonymized_at timestamptz,add column password_hash text,add column full_name text,add column google_photo_url text,add column google_full_name text;
   alter table organizations add column deleted_at timestamptz,add column deleted_by_user_id bigint;
   alter table organization_members add unique(organization_id,user_id);
@@ -124,12 +124,16 @@ await pg.query("insert into organizations(id,name,slug) values(60,'Tester Agency
 await pg.query("insert into organization_members values(60,11,true,null,'owner')");
 const inventoryId=(await pg.query("insert into agency_inventory(organization_id,name,serial_number) values(60,'Cámara Sony','SN-60') returning id")).rows[0].id;
 await pg.query("insert into agency_inventory_verifications(organization_id,inventory_id,verified_by_user_id,result,before_state,after_state) values(60,$1,11,'confirmed','{}'::jsonb,'{}'::jsonb)",[inventoryId]);
+await pg.query("insert into destructive_action_previews(token_hash,user_id) values('preview-11',11)");
+await pg.query("insert into destructive_email_challenges(id,preview_token_hash,user_id) values(1,'preview-11',11)");
+await pg.query("insert into destructive_google_handoffs(token_hash,preview_token_hash,user_id) values('handoff-11','preview-11',11)");
 const removedOwner=await call('/api/platform/users/11',{method:'DELETE'});
 assert.equal(removedOwner.status,200,'deleting a user with inventory history succeeds');assert.deepEqual(removedOwner.data.deleted,{userId:11,self:false,agencies:[60]},'deleting an owner removes their agency too');
 assert.equal((await pg.query('select deleted_at is not null as gone,active from organizations where id=60')).rows[0].gone,true,'the owned agency is soft-deleted with the user');
 assert.equal((await pg.query('select deleted_at is not null as gone from users where id=11')).rows[0].gone,true);
 assert.equal((await pg.query('select removed_at is not null as gone,active from organization_members where user_id=11 and organization_id=60')).rows[0].gone,true,'the membership is soft-removed, not hard-deleted');
 assert.equal((await pg.query('select count(*)::int as n from agency_inventory_verifications where verified_by_user_id=11')).rows[0].n,1,'inventory history survives the user deletion');
+assert.equal((await pg.query('select count(*)::int as n from destructive_email_challenges where user_id=11')).rows[0].n,0,'destructive challenges are removed with the user');
 const removedViewer=await call('/api/platform/users/3',{method:'DELETE'});
 assert.equal(removedViewer.status,200);assert.deepEqual(removedViewer.data.deleted,{userId:3,self:false,agencies:[]});
 assert.ok(!(await call('/api/platform/users?limit=100')).data.users.some(row=>row.email==='member@agency.example'),'deleted users leave the global listing');
