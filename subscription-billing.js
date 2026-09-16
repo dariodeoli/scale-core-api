@@ -351,8 +351,13 @@ export async function subscriptionBilling({req,res,url,db,session,body,send}){
     if(!coupon)fail('Cupón inválido o desactivado',400);
     if(coupon.max_redemptions!==null&&Number(coupon.used)>=Number(coupon.max_redemptions))fail('Este cupón ya alcanzó su límite de usos',400);
     if((await c.query('select 1 from platform_coupon_redemptions where coupon_id=$1 and organization_id=$2',[coupon.id,user.organization_id])).rows[0])fail('Tu empresa ya canjeó este cupón',409);
-    const sub=(await c.query('select due_at,paid_through_at from organization_subscriptions where organization_id=$1 for update',[user.organization_id])).rows[0];
-    if(!sub)fail('Suscripción no encontrada',404);
+    let sub=(await c.query('select due_at,paid_through_at from organization_subscriptions where organization_id=$1 for update',[user.organization_id])).rows[0];
+    if(!sub){
+     // Coupons also work before any trial or payment: the granted period opens
+     // the subscription runway for companies that never enrolled.
+     await c.query(`insert into organization_subscriptions(organization_id,currency,binding_token) values($1,'USD',$2) on conflict(organization_id) do nothing`,[user.organization_id,randomUUID()]);
+     sub=(await c.query('select due_at,paid_through_at from organization_subscriptions where organization_id=$1 for update',[user.organization_id])).rows[0];
+    }
     if(coupon.discount_type==='days'){
      const days=Number(coupon.discount_value);
      const base=new Date(Math.max(Date.now(),sub.paid_through_at?new Date(sub.paid_through_at).getTime():new Date(sub.due_at).getTime()));
