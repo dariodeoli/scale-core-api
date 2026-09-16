@@ -48,7 +48,7 @@ import {trialDetails,trialDetailsFromInput,registerTrial} from './trial-registra
 import {platformAdmin,bootstrapInitialPlatformAdmin,ensurePlatformOwnerAdmin} from './platform-admin.js';
 import {rolePermissions,roleCan} from './permissions.js';
 import {createEmailDelivery,publicEmailDeliveryStatus} from './email-delivery.js';
-import {acceptClientPortalGoogleInvite,clientPortal,clientPortalGoogleInvite,clientPortalResetEmail,clientPortalUrl} from './client-portal.js';
+import {acceptClientPortalGoogleInvite,clientPortal,clientPortalGoogleInvite,clientPortalResetEmail,clientPortalInviteEmail,clientPortalUrl} from './client-portal.js';
 import {accountSecurity,googleRecentAuthBinding,issueGoogleRecentAuthHandoff} from './account-security.js';
 
 const { Pool } = pg;
@@ -101,6 +101,7 @@ async function sendReset(email,token){return emailDelivery.send({to:email,messag
 async function sendVerification(email,token){return emailDelivery.send({to:email,message:verificationEmail({token,appUrl}),idempotencyKey:'verify-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function sendDestructiveEmailCode(email,code){return emailDelivery.send({to:email,message:destructiveReauthEmail({code}),idempotencyKey:'destructive-reauth-'+crypto.createHash('sha256').update(code).digest('hex')});}
 async function sendClientPortalReset(email,token){return emailDelivery.send({to:email,message:clientPortalResetEmail({token}),idempotencyKey:'client-portal-reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
+async function sendClientPortalInvite(email,message){return emailDelivery.send({to:email,message,idempotencyKey:'client-portal-invite-'+crypto.createHash('sha256').update(email.toLowerCase()+message.subject).digest('hex')});}
 async function runOptionalMigration(filename,client=db) {
   try {
     await client.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
@@ -294,7 +295,7 @@ const server = http.createServer(async (req,res) => {
     if(await inventoryReservations({req,res,url,db,session,body,send}))return;
     if(await workChecklists({req,res,url,db,session,body,send}))return;
     if(await publicExperience({req,res,url,db,session,body,send,cookie,parseCookies}))return;
-    if(await clientPortal({req,res,url,db,session,body,send,sendPasswordReset:sendClientPortalReset,emailAvailable:emailDelivery.status.available}))return;
+    if(await clientPortal({req,res,url,db,session,body,send,sendPasswordReset:sendClientPortalReset,sendInvite:sendClientPortalInvite,emailAvailable:emailDelivery.status.available}))return;
     if(await inviteLinks({req,res,url,db,session,body,send,appUrl,sendAccessGranted}))return;
     if(req.method!=='GET'){
       const actor=await session(req);

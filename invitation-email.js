@@ -7,16 +7,17 @@ function appLink(appUrl){
  return url;
 }
 const roles={owner:'Dueño',admin:'Administrador',management:'Gerencia',finance:'Finanzas',sales:'Ventas',production:'Producción',editor:'Editor',viewer:'Solo lectura'};
+const facts=rows=>`<div style="margin:0 0 14px;padding:12px 14px;border:1px solid #e8e3ea;border-radius:10px;background:#f9f6fb">${rows.map(([k,v])=>`<p style="margin:0;font-size:13px"><strong style="color:#4d065b">${k}:</strong> ${escape(v)}</p>`).join('')}</div>`;
+
 export function invitationEmail({email,organizationName,role,appUrl}){
  const url=appLink(appUrl);
  const organization=singleLine(organizationName),permission=Object.hasOwn(roles,role)?roles[role]:'Solo lectura';
  const subject=`Invitación a ${organization} · Scale OS`.slice(0,160);
  const text=`Te invitaron a ${organization}\n\nTu permiso: ${permission}\nCorreo con acceso: ${email}\n\nAbrí Scale OS: ${url.href}\n\nIngresá con Google usando ese mismo correo. Si preferís una contraseña y todavía no tenés una, elegí «Establecer o recuperar contraseña» en el inicio de sesión.\n\nSi participás en varias empresas, podrás elegir en cuál trabajar.\n\n¿No esperabas esta invitación? Podés ignorarla. No se crea una cuenta de Google ni se comparte tu acceso con otras personas.\n\nScale OS · Gestión de agencias\nNotificación de acceso enviada por Owncoding.`;
  const html=emailShell({
-  eyebrow:`${escape(organization)}`,
-  title:'Te invitaron a Scale OS',
-  lead:`Ya podés acceder al espacio de trabajo de ${escape(organization)}.`,
-  body:`<p style="margin:0 0 16px"><strong>Tu permiso:</strong> ${escape(permission)}<br><strong>Correo con acceso:</strong> ${escape(email)}</p><p style="margin:0">Ingresá con Google usando ese mismo correo. Si preferís una contraseña y todavía no tenés una, elegí <strong>Establecer o recuperar contraseña</strong> en el inicio de sesión. Si participás en varias empresas, podrás elegir en cuál trabajar.</p>`,
+  title:`Te invitaron a ${organization}`,
+  lead:'Ya podés entrar al espacio de trabajo de esta empresa.',
+  body:facts([['Tu permiso',permission],['Correo con acceso',email]])+`<p style="margin:0;font-size:13px;color:#4b4252">Ingresá con Google usando ese mismo correo, o con tu contraseña si ya la configuraste. Si participás en varias empresas, podrás elegir en cuál trabajar.</p>`,
   cta:{label:'Abrir Scale OS',href:url.href},
   footer:'¿No esperabas esta invitación? Podés ignorarla. No se crea una cuenta de Google ni se comparte tu acceso con otras personas.',
   footerNote:'Scale OS · Gestión de agencias · Notificación de acceso enviada por Owncoding.',
@@ -36,7 +37,6 @@ export function resetEmail({token,appUrl}){
  const html=emailShell({
   title:'Establecé tu contraseña',
   lead:instructions,
-  body:'<p style="margin:0">Elegí una contraseña segura y guardala en tu gestor de contraseñas. Es de un solo uso: si vence, podés solicitar otro enlace desde el inicio de sesión.</p>',
   cta:{label:'Establecer contraseña',href:url.href},
   footerNote:'Scale OS · Gestión de agencias · Notificación de acceso enviada por Owncoding.',
  });
@@ -54,7 +54,6 @@ export function verificationEmail({token,appUrl}){
  const html=emailShell({
   title:'Verificá tu correo',
   lead:instructions,
-  body:'<p style="margin:0">Con el correo verificado podés registrarte con contraseña, recibir invitaciones y recuperar tu acceso cuando lo necesites.</p>',
   cta:{label:'Verificar correo',href:url.href},
   footerNote:'Scale OS · Gestión de agencias',
  });
@@ -67,10 +66,9 @@ export function accessGrantedEmail({email,organizationName,role,appUrl}){
  const subject=`Tu acceso a ${organization} está habilitado · Scale OS`.slice(0,160);
  const text=`Tu acceso a ${organization} está habilitado\n\nTu permiso: ${permission}\nCorreo con acceso: ${email}\n\nAbrí Scale OS: ${url.href}\n\nIngresá con Google usando ese mismo correo, o con tu contraseña si ya la configuraste.\n\nScale OS · Gestión de agencias`;
  const html=emailShell({
-  eyebrow:`${escape(organization)}`,
-  title:'Tu acceso está habilitado',
-  lead:`Ya podés entrar al espacio de trabajo de ${escape(organization)}.`,
-  body:`<p style="margin:0 0 16px"><strong>Tu permiso:</strong> ${escape(permission)}<br><strong>Correo con acceso:</strong> ${escape(email)}</p><p style="margin:0">Ingresá con Google usando ese mismo correo, o con tu contraseña si ya la configuraste.</p>`,
+  title:`Tu acceso a ${organization} está habilitado`,
+  lead:'Ya podés entrar al espacio de trabajo.',
+  body:facts([['Tu permiso',permission],['Correo con acceso',email]])+'<p style="margin:0;font-size:13px;color:#4b4252">Ingresá con Google usando ese mismo correo, o con tu contraseña si ya la configuraste.</p>',
   cta:{label:'Entrar a Scale OS',href:url.href},
   footerNote:'Scale OS · Gestión de agencias',
  });
@@ -86,7 +84,7 @@ export function destructiveReauthEmail({code}){
   eyebrow:'Seguridad de cuenta',
   title:'Confirmá la eliminación',
   lead:instructions,
-  body:`<p style="margin:22px 0;text-align:center"><span style="display:inline-block;padding:14px 26px;border:1px solid #e8e3ea;border-radius:12px;background:#f7f3fa;font-size:28px;font-weight:bold;letter-spacing:.14em;color:#4d065b">${escape(code)}</span></p>`,
+  body:`<p style="margin:18px 0 4px;text-align:center"><span style="display:inline-block;padding:12px 24px;border:1px solid #e8e3ea;border-radius:10px;background:#f7f3fa;font-size:26px;font-weight:bold;letter-spacing:.14em;color:#4d065b">${escape(code)}</span></p>`,
   footerNote:'Scale OS · Gestión de agencias · Notificación de acceso enviada por Owncoding.',
  });
  return{subject,text,html};

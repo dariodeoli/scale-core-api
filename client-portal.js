@@ -81,6 +81,21 @@ export function clientPortalResetEmail({token}){
   footerNote:'Scale OS · Portal del cliente',
  })};
 }
+
+export function clientPortalInviteEmail({organizationName,clientName,url}){
+ const org=String(organizationName||'tu agencia'),client=String(clientName||'el cliente');
+ const safeUrl=htmlEscape(url);
+ const subject=`Te invitaron al portal de ${client} · Scale OS`.slice(0,160);
+ const text=`Te invitaron a revisar las entregas de ${client} en el Portal del Cliente de ${org}.\n\nAbrí tu portal: ${url}\n\nEste enlace es personal y vence pronto. Si no lo esperabas, podés ignorarlo.\n\nScale OS · Portal del cliente`;
+ return{subject,text,html:emailShell({
+  eyebrow:'Portal del cliente',
+  title:`Entregas de ${client}`,
+  lead:`${org} te invita a revisar entregas desde tu portal privado. No necesitás una cuenta.`,
+  cta:{label:'Ver entregas',href:safeUrl},
+  footer:'Este enlace es personal y vence pronto. Si no lo esperabas, podés ignorarlo.',
+  footerNote:'Scale OS · Portal del cliente',
+ })};
+}
 export async function clientPortalGoogleInvite(db,raw){return validInvite(db,raw);}
 export async function acceptClientPortalGoogleInvite({db,inviteId,email:googleEmail,fullName}){
  const c=await db.connect();let transaction=false;
@@ -103,7 +118,7 @@ export async function acceptClientPortalGoogleInvite({db,inviteId,email:googleEm
   await c.query('commit');transaction=false;return {rawSession};
  }catch(error){if(transaction)await c.query('rollback');throw error;}finally{c.release();}
 }
-export async function clientPortal({req,res,url,db,session,body,send,sendPasswordReset,emailAvailable=true}){
+export async function clientPortal({req,res,url,db,session,body,send,sendPasswordReset,sendInvite,emailAvailable=true}){
  const invitePreview=url.pathname==='/api/client-portal/invites/preview';
  const inviteAccept=url.pathname==='/api/client-portal/invites/accept';
   const login=url.pathname==='/api/client-portal/auth/login';
@@ -135,7 +150,13 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
     const raw=crypto.randomBytes(32).toString('hex');const ttl=Number(b.expiresInDays||7);if(!Number.isInteger(ttl)||ttl<1||ttl>30)fail('La invitación debe vencer entre 1 y 30 días');const expiresAt=new Date(Date.now()+ttl*86400000).toISOString();
     await c.query('update client_portal_invites set revoked_at=now() where organization_id=$1 and client_id=$2 and email_normalized=$3 and accepted_at is null and revoked_at is null',[employee.organization_id,client.id,recipient]);
     const invite=(await c.query("insert into client_portal_invites(organization_id,client_id,email_normalized,token_hash,expires_at,invited_by_user_id) values($1,$2,$3,$4,$5,$6) returning id,expires_at",[employee.organization_id,client.id,recipient,hash(raw),expiresAt,employee.id])).rows[0];
-    await c.query('commit');transaction=false;send(res,201,{invite:{...invite,email:recipient},url:`${clientOrigin}/invitacion?token=${raw}`});return true;
+    await c.query('commit');transaction=false;
+    if(typeof sendInvite==='function'){
+     const orgName=(await c.query('select name from organizations where id=$1',[employee.organization_id])).rows[0]?.name||'tu agencia';
+     const clientName=(await c.query('select name from agency_clients where id=$1 and organization_id=$2',[client.id,employee.organization_id])).rows[0]?.name||'el cliente';
+     await sendInvite(recipient,clientPortalInviteEmail({organizationName:orgName,clientName,url:`${clientOrigin}/invitacion?token=${raw}`})).catch(()=>false);
+    }
+    send(res,201,{invite:{...invite,email:recipient},url:`${clientOrigin}/invitacion?token=${raw}`});return true;
    }
    if(revokeInvite){
     if(req.method!=='POST')fail('Método no permitido',405);const result=(await c.query('update client_portal_invites set revoked_at=now() where id=$1 and organization_id=$2 and accepted_at is null and revoked_at is null returning id',[id(revokeInvite[1]),employee.organization_id])).rows[0];
