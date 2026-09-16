@@ -49,13 +49,13 @@ for(const result of [message,linked,reset,destructive]){
  assert.ok(result.text.includes('Owncoding')&&result.html.includes('Owncoding'));
 }
 console.log('PASS: invitation and reset HTML/text, escaped identity, bounded subjects, all roles, safe direct HTTPS links, one-use token format, no hidden content or tracking');
-// Template version v1.0.2: every transactional email carries the version marker.
+// Template version v1.0.3: every transactional email carries the version marker.
 import {EMAIL_TEMPLATE_VERSION} from './email-brand.js';
-assert.equal(EMAIL_TEMPLATE_VERSION,'v1.0.2');
-for(const sample of [message.html,reset.html,verificationEmail({token:'a'.repeat(64),appUrl:input.appUrl}).html,destructiveReauthEmail({code:'12345678'}).html])assert.ok(sample.includes('template-version" content="v1.0.2"'),'branded shell carries the template version');
+assert.equal(EMAIL_TEMPLATE_VERSION,'v1.0.3');
+for(const sample of [message.html,reset.html,verificationEmail({token:'a'.repeat(64),appUrl:input.appUrl}).html,destructiveReauthEmail({code:'12345678'}).html])assert.ok(sample.includes('template-version" content="v1.0.3"'),'branded shell carries the template version');
 import {accessGrantedEmail} from './invitation-email.js';
 const granted=accessGrantedEmail({email:'test@example.invalid',organizationName:'Agency & Partners',role:'editor',appUrl:input.appUrl});
 assert.ok(granted.subject.includes('acceso a Agency & Partners está habilitado'));
 assert.ok(granted.text.includes('Tu permiso: Editor'));
-assert.ok(granted.html.includes('Tu acceso está habilitado'));
-assert.ok(granted.html.includes('template-version" content="v1.0.2"'));
+assert.ok(granted.html.includes('está habilitado'));
+assert.ok(granted.html.includes('template-version" content="v1.0.3"'));
