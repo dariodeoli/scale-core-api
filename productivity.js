@@ -61,12 +61,13 @@ export async function productivity({req,res,url,db,session,body,send}){
     const incoming=await body(req);if(Object.keys(incoming).some(k=>!['full_name','photo_url'].includes(k)))fail('Solo podés modificar tu nombre y foto');
     const b={...current,...incoming},name=text(b.full_name,120);if(name.length<2)fail('Ingresá tu nombre completo');
     const photo=Object.hasOwn(incoming,'photo_url')?await profilePhoto(incoming.photo_url):current.photo_url;
+    const photoEdit=Object.hasOwn(incoming,'photo_url');
     const saved=current.is_demo
      ?(await c.query('insert into agency_user_profiles(user_id,organization_id,full_name,photo_url) values($1,$2,$3,$4) on conflict(user_id,organization_id) do update set full_name=excluded.full_name,photo_url=excluded.photo_url,updated_at=now() returning full_name,photo_url',[user.id,org,name,photo])).rows[0]
-     :(await c.query(`insert into user_personal_identities(user_id,full_name,photo_url)
-       select user_id,$3,$4 from organization_person_identity where user_id=$1 and organization_id=$2 and not is_demo
-       on conflict(user_id) do update set full_name=excluded.full_name,photo_url=excluded.photo_url,updated_at=now()
-       returning full_name,photo_url`,[user.id,org,name,photo])).rows[0];
+     :(await c.query(`insert into user_personal_identities(user_id,full_name,photo_url,photo_removed_at)
+       select user_id,$3,$4,case when $4::text is null and $5::boolean then now() else null end from organization_person_identity where user_id=$1 and organization_id=$2 and not is_demo
+       on conflict(user_id) do update set full_name=excluded.full_name,photo_url=excluded.photo_url,photo_removed_at=case when $5::boolean then excluded.photo_removed_at else user_personal_identities.photo_removed_at end,updated_at=now()
+       returning full_name,photo_url`,[user.id,org,name,photo,photoEdit])).rows[0];
     if(!saved)fail('Sin acceso activo a esta empresa',403);
     result={profile:{...saved,...context}};
    }else fail('Método no permitido',405);

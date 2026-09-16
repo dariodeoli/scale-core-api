@@ -20,7 +20,7 @@ for (const name of ['20260908_client_payment_status', '20260908_treasury_ledger'
  '20260908_collaborator_profiles', '20260908_agency_suite', '20260908_daily_controls',
  '20260910_productivity', '20260910_profile_identity', '20260910_demo_sessions', '20260910_notifications',
  '20260910_client_links', '20260910_client_lifecycle', '20260910_ruc_lookup', '20260910_presence',
- '20260910_invite_links', '20260910_currencies', '20260910_global_identity', '20260910_project_assignees',
+ '20260910_invite_links', '20260910_currencies', '20260910_global_identity', '20260916_identity_photo_removal', '20260910_project_assignees',
  '20260910_live_visitors', '20260910_company_currency', '20260910_inventory_reservations',
  '20260910_work_checklists','20260911_agency_reports']) await pg.exec(await fs.readFile(`migrations/${name}.sql`, 'utf8'));
 const query = (s, v) => pg.query(s, v), c = {query};
