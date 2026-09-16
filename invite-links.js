@@ -59,10 +59,10 @@ export async function claimInvite(c,linkId,profile){
  await c.query('update agency_invite_links set used_at=now() where id=$1',[l.id]);
  return{userId:u.id,organizationId:l.organization_id};
 }
-export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
+export async function inviteLinks({req,res,url,db,session,body,send,appUrl,sendAccessGranted}){
  const match=url.pathname.match(/^\/api\/agency\/(invite-links|access-requests)(?:\/(\d+))?$/);
  if(!match&&url.pathname!=='/api/invitations/preview')return false;
- let c;
+ let c,notifyGranted=null;
  try{
   if(!match){if(req.method!=='GET')fail('Método no permitido',405);send(res,200,await resolveInvite(db,url.searchParams.get('token'),{countVisit:true}));return true;}
   const user=await session(req);if(!user)fail('Ingresá a tu cuenta',401);
@@ -122,6 +122,10 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
     else await c.query('insert into organization_members(organization_id,user_id,role,invite_link_id) values($1,$2,$3,$4)',[org,r.user_id,r.role,r.link_id]);
     await c.query('insert into agency_user_profiles(organization_id,user_id,full_name) values($1,$2,$3) on conflict do nothing',[org,r.user_id,r.full_name]);
     await c.query('update agency_invite_links set account_count=account_count+1,used_at=case when mode=\'single\' then now() else used_at end where id=$1',[r.link_id]);
+    if(typeof sendAccessGranted==='function'){
+     const target=(await c.query('select u.email,o.name as organization_name from users u join organizations o on o.id=$1 where u.id=$2',[org,r.user_id])).rows[0];
+     if(target?.email)notifyGranted={email:target.email,organizationName:target.organization_name,role:r.role};
+    }
    }
    await c.query('update agency_access_requests set status=$1,decided_at=now(),decided_by=$2 where id=$3',[b.action==='approve'?'approved':'rejected',user.id,key]);result={ok:true};
   }else fail('Método no permitido',405);
@@ -130,6 +134,8 @@ export async function inviteLinks({req,res,url,db,session,body,send,appUrl}){
    {rows:(result.links||[]).flatMap(link=>link.joined_users),userId:'user_id',fallback:['full_name','email']},
    {rows:result.requests,userId:'user_id',fallback:['full_name','email']},
   ]);
-  await c.query('commit');send(res,200,result);return true;
- }catch(e){if(c)await c.query('rollback');send(res,e.status||500,{error:e.status?e.message:'No se pudo gestionar la invitación',...(!match&&e.status===410?{link_status:e.link_status||'unavailable'}:{})});return true;}finally{c?.release();}
+  await c.query('commit');c.release();c=null;
+  if(notifyGranted&&typeof sendAccessGranted==='function')await sendAccessGranted(notifyGranted.email,notifyGranted.organizationName,notifyGranted.role).catch(()=>false);
+  send(res,200,result);return true;
+ }catch(e){if(c){await c.query('rollback');c.release();}send(res,e.status||500,{error:e.status?e.message:'No se pudo gestionar la invitación',...(!match&&e.status===410?{link_status:e.link_status||'unavailable'}:{})});return true;}
 }
