@@ -32,8 +32,11 @@ for(const demo of [first,second,nextLogin]){
  assert.equal(await scalar('select count(distinct logo_url)::int n from agency_clients where organization_id=$1'),20);
  assert.equal(await scalar("select count(*)::int n from agency_collaborators where organization_id=$1 and photo_url like 'data:image/webp;base64,%' and email like '%@horizonte.example' and notes like '%no operativo%'"),5);
  assert.equal(await scalar('select count(distinct photo_url)::int n from agency_collaborators where organization_id=$1'),5);
+ assert.equal(await scalar('select count(*)::int n from agency_collaborators where organization_id=$1'),9);
  assert.equal(await scalar('select count(*)::int n from agency_inventory_categories where organization_id=$1'),7);
- assert.equal(await scalar('select count(*)::int n from agency_inventory i join agency_inventory_categories c on c.id=i.category_id and c.organization_id=i.organization_id and c.name=i.category where i.organization_id=$1 and i.storage_shelf<>\'\''),4);
+ assert.equal(await scalar('select count(*)::int n from agency_inventory_categories where organization_id=$1 and icon is not null'),7);
+ assert.equal(await scalar("select count(*)::int n from agency_inventory i join agency_inventory_categories c on c.id=i.category_id and c.organization_id=i.organization_id and c.name=i.category where i.organization_id=$1 and i.storage_shelf<>''"),6);
+ assert.equal(await scalar("select count(*)::int n from agency_inventory where organization_id=$1 and storage_shelf=''"),1);
  assert.equal(await scalar('select count(distinct assigned_user_id)::int n from agency_work_orders where organization_id=$1'),4);
  const owner=(await c.query('select demo_owner_user_id from organizations where id=$1',[demo])).rows[0].demo_owner_user_id;
  const mine=(await c.query("select count(*) filter(where due_date<current_date)::int overdue,count(*) filter(where due_date=current_date)::int today,count(*) filter(where due_date>current_date)::int future from agency_work_orders where organization_id=$1 and assigned_user_id=$2 and status not in ('approved','published')",[demo,owner])).rows[0];
@@ -41,7 +44,13 @@ for(const demo of [first,second,nextLogin]){
  assert.equal(await scalar("select count(*)::int n from agency_work_orders where organization_id=$1 and status='published' and due_date<>current_date-1"),0);
  assert.equal(await scalar("select count(*)::int n from agency_work_orders w join organization_members m on m.user_id=w.assigned_user_id and m.organization_id=w.organization_id where w.organization_id=$1 and m.role in ('finance','sales')"),0);
  assert.equal(await scalar('select count(*)::int n from agency_projects where organization_id=$1 and assigned_user_id is not null'),20);
- assert.equal(await scalar('select count(*)::int n from agency_project_assignees where organization_id=$1'),20);
+ assert.equal(await scalar('select count(*)::int n from agency_project_assignees where organization_id=$1'),40);
+ assert.equal(await scalar('select count(*)::int n from agency_client_commercial_terms where organization_id=$1'),14);
+ assert.equal(await scalar("select count(*)::int n from agency_client_commercial_terms where organization_id=$1 and cadence='monthly'"),7);
+ assert.equal(await scalar("select count(*)::int n from agency_client_commercial_terms where organization_id=$1 and cadence='interval'"),4);
+ assert.equal(await scalar("select count(*)::int n from agency_client_commercial_terms where organization_id=$1 and cadence='once'"),3);
+ assert.equal(await scalar('select count(*)::int n from agency_planned_expenses where organization_id=$1'),2);
+ assert.equal(await scalar('select count(*)::int n from agency_salary_month_overrides where organization_id=$1'),1);
  assert.equal(await scalar('select count(*)::int n from agency_work_checklists where organization_id=$1'),80);
  assert.equal(await scalar('select count(*)::int n from agency_work_checklist_items where organization_id=$1'),240);
  assert.equal(await scalar("select count(*)::int n from (select w.id from agency_work_orders w join agency_work_checklist_items i on i.work_order_id=w.id and i.organization_id=w.organization_id where w.organization_id=$1 group by w.id having count(*)<>3 or count(*) filter(where i.completed)<>case w.status when 'blocked' then 0 when 'to_record' then 1 when 'recorded' then 1 when 'editing' then 2 when 'review' then 2 else 3 end) invalid"),0);
@@ -69,7 +78,7 @@ assert.deepEqual(await snapshot(source),templateBefore,'Shared template stays un
 assert.deepEqual((await c.query('select * from user_personal_identities order by user_id')).rows,globalBefore,'Seeding never writes canonical identities');
 assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[real])).rows[0].n,0);
 assert.equal((await c.query('select count(*)::int as n from agency_clients where organization_id=$1',[source])).rows[0].n,0);
-assert.equal((await c.query('select count(*)::int as n from organization_members where organization_id=$1',[first])).rows[0].n,6);
+assert.equal((await c.query('select count(*)::int as n from organization_members where organization_id=$1',[first])).rows[0].n,9);
 const accounts=(await c.query("select balance from bank_accounts where organization_id=$1 and currency='PYG' order by id",[first])).rows;
 const pastReceipts=(await c.query("select coalesce(sum(p.amount),0)::text total from agency_payments p join agency_invoices i on i.id=p.invoice_id and i.organization_id=p.organization_id where p.organization_id=$1 and i.currency='PYG' and i.number like 'DEMO-REPORTS-V1-%'",[first])).rows[0];
 assert(BigInt(pastReceipts.total.split('.')[0])>0n,'new demo includes past receipts');
