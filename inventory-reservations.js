@@ -202,7 +202,9 @@ async function storageLocation(c,org,old,payload,key=null){
  return {id:String(row.id),shelf:row.name};
 }
 async function listStorageLocations(c,org){
- return (await c.query(`select l.*,count(i.id)::int as item_count
+ return (await c.query(`select l.*,count(i.id)::int as item_count,
+  (select coalesce(nullif(p.full_name,''),u.email) from organization_person_identity p join users u on u.id=p.user_id where p.user_id=l.responsible_user_id and p.organization_id=l.organization_id) as responsible_name,
+  (select p.photo_url from organization_person_identity p where p.user_id=l.responsible_user_id and p.organization_id=l.organization_id) as responsible_photo_url
   from agency_inventory_storage_locations l left join agency_inventory i on i.storage_location_id=l.id and i.organization_id=l.organization_id
   where l.organization_id=$1 group by l.id order by l.active desc,l.name`,[org])).rows;
 }
@@ -321,7 +323,9 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
     if(key&&!old)fail('Lugar de guardado no encontrado',404);
     const name=storageLocationName(b.name??old?.name);if(!name)fail('Ingresá el nombre del lugar de guardado');
     const active=b.active??old?.active??true;if(typeof active!=='boolean')fail('Estado de lugar inválido');
-    const row=old?(await c.query('update agency_inventory_storage_locations set name=$1,active=$2,updated_at=now() where id=$3 and organization_id=$4 returning *',[name,active,key,org])).rows[0]:(await c.query('insert into agency_inventory_storage_locations(organization_id,name,active) values($1,$2,$3) returning *',[org,name,active])).rows[0];
+    const responsible=Object.hasOwn(b,'responsible_user_id')?optionalId(b.responsible_user_id):old?.responsible_user_id??null;
+    if(responsible)await activeMembers(c,org,[responsible]);
+    const row=old?(await c.query('update agency_inventory_storage_locations set name=$1,active=$2,responsible_user_id=$3,updated_at=now() where id=$4 and organization_id=$5 returning *',[name,active,responsible,key,org])).rows[0]:(await c.query('insert into agency_inventory_storage_locations(organization_id,name,active,responsible_user_id) values($1,$2,$3,$4) returning *',[org,name,active,responsible])).rows[0];
     result={location:row};status=old?200:201;
    }else if(req.method==='DELETE'&&key){
     const row=(await c.query('select id from agency_inventory_storage_locations where id=$1 and organization_id=$2 for update',[key,org])).rows[0];if(!row)fail('Lugar de guardado no encontrado',404);

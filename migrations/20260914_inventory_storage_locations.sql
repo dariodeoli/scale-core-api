@@ -38,3 +38,6 @@ update agency_inventory i
    and i.storage_location_id is null
    and nullif(trim(i.storage_shelf),'') is not null
    and lower(trim(l.name))=lower(trim(i.storage_shelf));
+
+-- Optional responsible person for the place: any active member of the tenant.
+alter table agency_inventory_storage_locations add column if not exists responsible_user_id bigint references users(id) on delete set null;
