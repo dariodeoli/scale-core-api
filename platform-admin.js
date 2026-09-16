@@ -80,6 +80,33 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
   }
   const subscriptionPath=url.pathname.match(/^\/api\/platform\/agencies\/(\d+)\/subscription$/);
   if(subscriptionPath&&req.method==='GET'){send(res,200,await inspectInternalSubscription(db,subscriptionPath[1]));return true;}
+  const extendPath=url.pathname.match(/^\/api\/platform\/agencies\/(\d+)\/subscription\/extend$/);
+  if(extendPath&&req.method==='POST'){
+   requireWrite(role);
+   const input=await body(req),days=integer(input?.days??0,-1);
+   if(days<1||days>3650)fail('Los días deben ser un entero entre 1 y 3650.');
+   const reasonText=queryText(input?.reason||'');if(reasonText.length<3)fail('Indicá un motivo de al menos 3 caracteres.');
+   const result=await mutation(db,async client=>{
+    const id=Number(extendPath[1]);
+    const org=(await client.query(`select id,name from organizations where id=$1 and ${realOrganization('organizations')} for update`,[id])).rows[0];
+    if(!org)fail('Agencia no encontrada o protegida.',404);
+    // Manual payments work even before any trial: open the runway row first.
+    await client.query(`insert into organization_subscriptions(organization_id,currency,binding_token) values($1,'USD',$2) on conflict(organization_id) do nothing`,[id,crypto.randomUUID()]);
+    const sub=(await client.query('select due_at,paid_through_at from organization_subscriptions where organization_id=$1 for update',[id])).rows[0];
+    const base=new Date(Math.max(Date.now(),sub.paid_through_at?new Date(sub.paid_through_at).getTime():new Date(sub.due_at).getTime()));
+    base.setDate(base.getDate()+days);
+    const due=new Date(Math.max(base.getTime(),new Date(sub.due_at).getTime()));
+    await client.query('update organization_subscriptions set paid_through_at=$2,due_at=$3,updated_at=now() where organization_id=$1',[id,base.toISOString(),due.toISOString()]);
+    const internal=(await client.query('select expires_at from platform_subscription_states where organization_id=$1 for update',[id])).rows[0];
+    const internalBase=new Date(Math.max(Date.now(),internal?.expires_at?new Date(internal.expires_at).getTime():Date.now()));
+    internalBase.setDate(internalBase.getDate()+days);
+    await client.query(`insert into platform_subscription_states(organization_id,state,reason,expires_at,updated_by_user_id)
+     values($1,'active',$2,$3,$4) on conflict(organization_id) do update set state='active',reason=excluded.reason,expires_at=excluded.expires_at,updated_by_user_id=excluded.updated_by_user_id,updated_at=now()`,[id,reasonText,internalBase.toISOString(),user.id]);
+    await audit(client,user,'subscription.manual_extend','organization_subscription',id,{days,reason:reasonText});
+    return inspectInternalSubscription(client,id);
+   });
+   send(res,200,result);return true;
+  }
   if(subscriptionPath&&req.method==='PATCH'){
    requireWrite(role);
    const result=await mutation(db,async client=>{
