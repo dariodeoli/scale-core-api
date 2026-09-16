@@ -39,24 +39,28 @@ export async function seedPrivateDemo(c,org,userId){
  }
  const staff=[],people=[];
  let personIndex=0;
- for(const [name,job,salary,role] of [['Lucía Acosta','Dirección',6000000,'admin'],['Mateo Ríos','Editor audiovisual',3500000,'editor'],['Camila Vera','Administración',4000000,'finance'],['Nicolás Duarte','Comercial',2500000,'sales'],['Valentina Sol','Producción',3800000,'production']]){
-  const [,mail,photo]=demoStaff[personIndex];
+ for(const [name,job,salary,role] of [['Lucía Acosta','Dirección',6000000,'admin'],['Mateo Ríos','Editor audiovisual',3500000,'editor'],['Camila Vera','Administración',4000000,'finance'],['Nicolás Duarte','Comercial',2500000,'sales'],['Valentina Sol','Producción',3800000,'production'],['Facundo Ortiz','Producción de campo',3000000,'production'],['Renata López','Edición',3200000,'editor'],['Diego Insfrán','Producción',2800000,'production']]){
+  const [,mail,photo]=demoStaff[personIndex]||[];
   // Preserve internal no-login markers used by auth and bounded demo cleanup.
   const email=`persona-${org}-${personIndex}@demo.example.invalid`;
   const person=(await c.query("insert into users(email,password_hash) values($1,'!fictional-demo-no-login') returning id",[email])).rows[0].id;
   await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,person,role]);
   people.push(person);
-  staff.push((await c.query("insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_amount,payment_day,started_on,notes) values($1,$2,$3,$4,$5,$6,$7,5,current_date-90,$8) returning id",[org,person,name,`${mail}@horizonte.example`,demoPortrait(photo),job,salary,`Honorarios mensuales. Coordinación de entregas en la reunión semanal. Contacto ilustrativo: ${demoPhone(++personIndex)} (no operativo).`])).rows[0].id);
+  staff.push((await c.query("insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_amount,payment_day,started_on,notes) values($1,$2,$3,$4,$5,$6,$7,5,current_date-90,$8) returning id",[org,person,name,mail?`${mail}@horizonte.example`:null,personIndex<5?demoPortrait(photo):null,job,salary,`Honorarios mensuales. Coordinación de entregas en la reunión semanal. Contacto ilustrativo: ${demoPhone(++personIndex)} (no operativo).`])).rows[0].id);
  }
+ await c.query("insert into agency_collaborators(organization_id,user_id,full_name,job_title,compensation_amount,payment_day,started_on,notes) values($1,$2,'Sebastián Benítez','Dirección general',0,5,current_date-120,$3)",[org,userId,'Socio fundador. Contacto ilustrativo: '+demoPhone(100)+' (no operativo).']);
  const names=demoClients.map(client=>client.name);
- const projects=[];
+ const projects=[],clients=[];
  for(let i=0;i<names.length;i++){
   const currency=i%5===3?'USD':'PYG',total=i%5===3?1200:((i%5)+3)*1000000;
   const identity=demoClients[i];
-  const client=(await c.query("insert into agency_clients(organization_id,name,email,notes,color_key,logo_url,phone) values($1,$2,$3,'Enviar calendario de contenidos antes del inicio de cada mes. Datos de contacto ilustrativos, no operativos.',$4,$5,$6) returning id",[org,names[i],identity.email,['violet','blue','teal','gold','rose'][i%5],identity.logo,identity.phone])).rows[0].id;
-  const project=(await c.query('insert into agency_projects(organization_id,client_id,name,approval_levels,start_date,due_date,assigned_user_id) values($1,$2,$3,$4,current_date-7,current_date+21,$5) returning id',[org,client,'Campaña · '+names[i],i%3+1,i%2?userId:people[0]])).rows[0].id;
+  const client=(await c.query("insert into agency_clients(organization_id,name,email,notes,color_key,logo_url,phone,tax_id) values($1,$2,$3,'Enviar calendario de contenidos antes del inicio de cada mes. Datos de contacto ilustrativos, no operativos.',$4,$5,$6,$7) returning id",[org,names[i],identity.email,['violet','blue','teal','gold','rose'][i%5],identity.logo,identity.phone,'80'+String(100000+i).padStart(6,'0')+'-'+String(i%9+1)])).rows[0].id;
+  clients.push([client,total,currency]);
+  const lead=(i%4===0)?userId:people[i%people.length];
+  const project=(await c.query('insert into agency_projects(organization_id,client_id,name,approval_levels,start_date,due_date,assigned_user_id) values($1,$2,$3,$4,current_date-7,current_date+21,$5) returning id',[org,client,'Campaña · '+names[i],i%3+1,lead])).rows[0].id;
   projects.push(project);
-  await c.query('insert into agency_project_assignees(organization_id,project_id,user_id) values($1,$2,$3)',[org,project,people[4]]);
+  await c.query('insert into agency_project_assignees(organization_id,project_id,user_id) values($1,$2,$3)',[org,project,lead]);
+  await c.query('insert into agency_project_assignees(organization_id,project_id,user_id) values($1,$2,$3)',[org,project,people[(i+2)%people.length]]);
   for(let j=0;j<4;j++){
    const stage=(i*4+j)%7,status=['blocked','to_record','recorded','editing','review','approved','published'][stage];
    // Production prepares/shoots, editing finishes, direction reviews; the visitor
@@ -80,22 +84,33 @@ export async function seedPrivateDemo(c,org,userId){
  }
  await c.query("insert into account_transfers(organization_id,from_account_id,to_account_id,amount,reference,created_by_user_id) values($1,$2,$3,1000000,'Depósito de caja en caja de ahorro',$4)",[org,account[0],account[1],userId]);
  await c.query("insert into agency_commissions(organization_id,collaborator_id,kind,beneficiary_name,amount,status,due_on) values($1,$2,'sales','Nicolás Duarte',150000,'approved',current_date+5)",[org,staff[3]]);
- for(const person of staff){
+ for(const person of staff.slice(0,5)){
   await c.query("insert into agency_payouts(organization_id,collaborator_id,account_id,amount,paid_on,reference,created_by_user_id) values($1,$2,$3,250000,current_date-1,'Adelanto de honorarios del mes',$4)",[org,person,account[0],userId]);
   await c.query('update bank_accounts set balance=balance-250000 where id=$1 and organization_id=$2',[account[0],org]);
  }
- for(const [name,price]of [['Inicio',3000000],['Crecimiento',5000000],['Integral',8000000]])await c.query('insert into agency_plans(organization_id,name,items,notes) values($1,$2,$3,$4)',[org,name,JSON.stringify([{description:'Producción mensual',quantity:1,unitPrice:price}]),'Plan mensual de contenidos con revisión y seguimiento.']);
- await c.query("insert into agency_plans(organization_id,name,currency,items,notes) values($1,'Internacional','USD',$2,'Servicio internacional. Facturación en dólares.')",[org,JSON.stringify([{description:'Estrategia y producción de contenidos',quantity:1,unitPrice:1200}])]);
+ const demoPlans=[];
+ for(const [name,price]of [['Inicio',3000000],['Crecimiento',5000000],['Integral',8000000]])demoPlans.push((await c.query('insert into agency_plans(organization_id,name,items,notes) values($1,$2,$3,$4) returning id',[org,name,JSON.stringify([{description:'Producción mensual',quantity:1,unitPrice:price}]),'Plan mensual de contenidos con revisión y seguimiento.'])).rows[0].id);
+ demoPlans.push((await c.query("insert into agency_plans(organization_id,name,currency,items,notes) values($1,'Internacional','USD',$2,'Servicio internacional. Facturación en dólares.') returning id",[org,JSON.stringify([{description:'Estrategia y producción de contenidos',quantity:1,unitPrice:1200}])])).rows[0].id);
+ for(let i=0;i<clients.length;i++)if(i%3===0||i%2===1){
+  const [client,total,currency]=clients[i];
+  const cadence=['monthly','interval','once'][i%3];
+  await c.query('insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,invoice_required,commission_recipient_id,commission_mode,commission_value,cadence,interval_months,ends_on) values($1,$2,$3,$4,$5,current_date-20+$6::int,$7,$8,$9,$10,$11,$12,current_date+$13::int)',[org,client,demoPlans[i%4],total,currency,i,i%2===0,staff[3],'percentage',5+(i%5),cadence,cadence==='interval'?(i%2?3:2):1,cadence==='once'?90:null]);
+ }
+ await c.query("insert into agency_planned_expenses(organization_id,cadence,effective_month,category,amount,currency,kind,note,created_by_user_id) values($1,'recurring',date_trunc('month',current_date)::date,'Operación',2500000,'PYG','fixed','Servicios de nube y software mensual.',$2)",[org,userId]);
+ await c.query("insert into agency_planned_expenses(organization_id,cadence,effective_month,category,amount,currency,kind,note,created_by_user_id) values($1,'monthly',date_trunc('month',current_date)::date,'Marketing',1200000,'PYG','variable','Pauta publicitaria del mes.',$2)",[org,userId]);
+ await c.query("insert into agency_salary_month_overrides(organization_id,collaborator_id,month,amount,note) values($1,$2,date_trunc('month',current_date)::date,750000,'Extra por cobertura del evento.')",[org,staff[0]]);
  // These catalogs must also exist for organizations created after migrations.
  const categories=new Map();
- for(const name of ['Cámara','Lente','Audio','Iluminación','Computación','Accesorio','Otro']){
-  const category=(await c.query('insert into agency_inventory_categories(organization_id,name) values($1,$2) returning id',[org,name])).rows[0].id;
+ for(const [name,icon] of [['Cámara','camera'],['Lente','camera'],['Audio','mic'],['Iluminación','lamp'],['Computación','laptop'],['Accesorio','package'],['Otro','home']]){
+  const category=(await c.query('insert into agency_inventory_categories(organization_id,name,icon) values($1,$2,$3) returning id',[org,name,icon])).rows[0].id;
   categories.set(name,category);
  }
  const equipment=[];
- for(const [name,value,category,shelf]of [['Cámara',7000000,'Cámara','Armario A'],['Luces',2500000,'Iluminación','Estante B'],['Micrófono',1200000,'Audio','Armario A']]){
+ for(const [name,value,category,shelf]of [['Cámara',7000000,'Cámara','Armario A'],['Luces',2500000,'Iluminación','Estante B'],['Micrófono',1200000,'Audio','Armario A'],['DJI Mic 2',900000,'Audio','Armario B'],['Monitor de campo',1800000,'Computación','Estante C'],['Batería Sony',450000,'Accesorio','']]){
   equipment.push((await c.query("insert into agency_inventory(organization_id,name,category,category_id,value,status,storage_shelf,storage_row,notes) values($1,$2,$3,$4,$5,'available',$6,'1','Disponible para las producciones del equipo.') returning id",[org,name,category,categories.get(category),value,shelf])).rows[0].id);
  }
+ await c.query("update agency_inventory set last_verified_at=now()-interval '2 days',last_verified_by_user_id=$2,last_verification_result='confirmed' where id=$1 and organization_id=$3",[equipment[0],people[0],org]);
+ await c.query("insert into agency_inventory_verifications(organization_id,inventory_id,verified_by_user_id,verified_at,result,before_state,after_state) values($1,$2,$3,now()-interval '2 days','confirmed','{}'::jsonb,'{}'::jsonb)",[org,equipment[0],people[0]]);
  // Planned shoots, not physical checkouts: equipment remains available now.
  // Reusing the camera on different days demonstrates bookings without overlap.
  for(const [index,itemIds] of [[equipment[0],equipment[1]],[equipment[0],equipment[2]]].entries()){
