@@ -11,8 +11,9 @@ const migrations=[
  '20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql',
  '20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql',
  '20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_invite_links.sql',
- '20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql',
- '20260910_client_lifecycle.sql','20260911_agency_reports.sql','20260911_invite_link_metrics.sql',
+  '20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql',
+  '20260916_identity_photo_removal.sql',
+  '20260910_client_lifecycle.sql','20260911_agency_reports.sql','20260911_invite_link_metrics.sql',
  '20260911_invite_link_details.sql'
 ];
 

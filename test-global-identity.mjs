@@ -30,6 +30,7 @@ for(const u of [tied,removed])for(const o of [org,other])await query("insert int
 for(const [o,u,name,at] of [[org,tied,'Empate A','2026-09-08'],[other,tied,'Empate B','2026-09-08'],[org,removed,'Nombre vigente','2026-09-01'],[other,removed,'Nombre retirado','2026-09-10']])await query('insert into agency_user_profiles(organization_id,user_id,full_name,updated_at) values($1,$2,$3,$4)',[o,u,name,at]);
 await query('update organization_members set removed_at=now(),active=false where organization_id=$1 and user_id=$2',[other,removed]);
 await sql('migrations/20260910_global_identity.sql');
+await sql('migrations/20260916_identity_photo_removal.sql');
 const canonical=async u=>(await query('select * from user_personal_identities where user_id=$1',[u])).rows[0];
 assert.equal((await canonical(uid)).full_name,'Nombre reciente');assert.equal((await canonical(uid)).photo_url,null);
 assert.equal((await canonical(outsider)).photo_url,'https://example.invalid/outsider.png');assert.equal(await canonical(guest),undefined);

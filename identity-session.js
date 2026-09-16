@@ -39,6 +39,7 @@ export async function ensurePersonalIdentityInTransaction(c,userId,orgId){
  // Fill only an absent photo, under the same owner lock. Never replace a chosen photo.
  await c.query(`update user_personal_identities g set photo_url=to_jsonb(u)->>'google_photo_url',updated_at=now()
   from users u where g.user_id=$1 and u.id=g.user_id and nullif(g.photo_url,'') is null
+  and g.photo_removed_at is null
   and nullif(to_jsonb(u)->>'google_photo_url','') is not null`,[user]);
  await c.query(`update user_personal_identities g set full_name=to_jsonb(u)->>'google_full_name',updated_at=now()
   from users u where g.user_id=$1 and u.id=g.user_id and (g.full_name=u.email or nullif(trim(g.full_name),'') is null)

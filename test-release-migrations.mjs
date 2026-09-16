@@ -76,6 +76,15 @@ try{
  assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.full_name,'Actualizado desde B');
  assert.equal((await call(productivity,'productivity/profile',demoSelf)).profile.photo_url,null);
  assert.equal((await query('select role from organization_members where organization_id=$1 and user_id=$2',[b,uid])).rows[0].role,'editor');
+ const google=await insert("insert into users(email,password_hash,google_photo_url,google_full_name) values('release-google@example.invalid','unused','https://example.invalid/google.png','Nombre Google')");
+ await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[a,google]);
+ const googleSelf={id:google,email:'release-google@example.invalid',organization_id:a,role:'owner'};
+ assert.equal((await ensurePersonalIdentity(db,google,a)).photo_url,'https://example.invalid/google.png');
+ await call(productivity,'productivity/profile',googleSelf,'PATCH',{photo_url:''});
+ assert.equal((await query('select photo_url from user_personal_identities where user_id=$1',[google])).rows[0].photo_url,null);
+ assert.equal((await ensurePersonalIdentity(db,google,a)).photo_url,null,'explicit removal survives the Google photo fallback');
+ await call(productivity,'productivity/profile',googleSelf,'PATCH',{photo_url:'https://example.invalid/chosen.png'});
+ assert.equal((await ensurePersonalIdentity(db,google,a)).photo_url,'https://example.invalid/chosen.png','a chosen photo is never replaced by the Google fallback');
  console.log(`PASS: schema + ${files.length} server-registered migrations twice, session identity initialization, real reactivation/HR sync, demo isolation, assignee flow, inventory/checklist relations; optional Dadoo excluded`);
 }catch(error){console.error(error.stack||error);process.exitCode=1;}
 finally{await pg.close();}
