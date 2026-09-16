@@ -53,3 +53,9 @@ console.log('PASS: invitation and reset HTML/text, escaped identity, bounded sub
 import {EMAIL_TEMPLATE_VERSION} from './email-brand.js';
 assert.equal(EMAIL_TEMPLATE_VERSION,'v1.0.2');
 for(const sample of [message.html,reset.html,verificationEmail({token:'a'.repeat(64),appUrl:input.appUrl}).html,destructiveReauthEmail({code:'12345678'}).html])assert.ok(sample.includes('template-version" content="v1.0.2"'),'branded shell carries the template version');
+import {accessGrantedEmail} from './invitation-email.js';
+const granted=accessGrantedEmail({email:'test@example.invalid',organizationName:'Agency & Partners',role:'editor',appUrl:input.appUrl});
+assert.ok(granted.subject.includes('acceso a Agency & Partners está habilitado'));
+assert.ok(granted.text.includes('Tu permiso: Editor'));
+assert.ok(granted.html.includes('Tu acceso está habilitado'));
+assert.ok(granted.html.includes('template-version" content="v1.0.2"'));

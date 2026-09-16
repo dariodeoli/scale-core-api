@@ -61,6 +61,22 @@ export function verificationEmail({token,appUrl}){
  return{subject,text,html};
 }
 
+export function accessGrantedEmail({email,organizationName,role,appUrl}){
+ const url=appLink(appUrl);
+ const organization=singleLine(organizationName),permission=Object.hasOwn(roles,role)?roles[role]:'Solo lectura';
+ const subject=`Tu acceso a ${organization} está habilitado · Scale OS`.slice(0,160);
+ const text=`Tu acceso a ${organization} está habilitado\n\nTu permiso: ${permission}\nCorreo con acceso: ${email}\n\nAbrí Scale OS: ${url.href}\n\nIngresá con Google usando ese mismo correo, o con tu contraseña si ya la configuraste.\n\nScale OS · Gestión de agencias`;
+ const html=emailShell({
+  eyebrow:`${escape(organization)}`,
+  title:'Tu acceso está habilitado',
+  lead:`Ya podés entrar al espacio de trabajo de ${escape(organization)}.`,
+  body:`<p style="margin:0 0 16px"><strong>Tu permiso:</strong> ${escape(permission)}<br><strong>Correo con acceso:</strong> ${escape(email)}</p><p style="margin:0">Ingresá con Google usando ese mismo correo, o con tu contraseña si ya la configuraste.</p>`,
+  cta:{label:'Entrar a Scale OS',href:url.href},
+  footerNote:'Scale OS · Gestión de agencias',
+ });
+ return{subject,text,html};
+}
+
 export function destructiveReauthEmail({code}){
  if(typeof code!=='string'||!/^\d{8}$/.test(code))throw new Error('Invalid destructive reauthentication code');
  const subject='Código para confirmar una eliminación en Scale OS';

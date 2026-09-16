@@ -32,11 +32,11 @@ function patchDriveLinks(old,incoming){
 }
 async function member(c,key,org){if(key&&!(await c.query('select 1 from organization_members where user_id=$1 and organization_id=$2 and active=true',[key,org])).rows.length)fail('La persona no tiene acceso activo a esta empresa');}
 async function document(c,budgetId,org){const b=(await c.query('select b.*,c.name as client_name,o.name as organization_name,s.tax_id from agency_budgets b join agency_clients c on c.id=b.client_id join organizations o on o.id=b.organization_id left join agency_settings s on s.organization_id=o.id where b.id=$1 and b.organization_id=$2',[budgetId,org])).rows[0];if(!b)fail('Presupuesto no encontrado',404);return{budget:b,items:(await c.query('select * from agency_budget_items where budget_id=$1 order by position',[b.id])).rows};}
-export async function suite({req,res,url,db,session,body,send,sendInvitation}){
+export async function suite({req,res,url,db,session,body,send,sendInvitation,sendAccessGranted}){
  const publicMatch=url.pathname.match(/^\/p\/([A-Za-z0-9_-]{16,128})(?:\/(pdf|respond))?$/);
  const m=url.pathname.match(/^\/api\/agency\/(leads|inventory|plans|activity|dashboard|settings|exchange-rates|members|clients|projects|work-orders|budgets)(?:\/(\d+))?(?:\/(convert|resend|approve|publish|pdf|share|revoke|invoice))?$/);
  if(!publicMatch&&(!m||['members','clients','projects','work-orders','budgets'].includes(m[1])&&!m[2]))return false;
- let c,transaction=false;
+ let c,transaction=false,grantedNotify=null;
  try{
   const user=publicMatch?null:await session(req);if(!publicMatch&&!user)fail('No autenticado',401);
   c=await db.connect();
@@ -75,6 +75,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
    if(user.role!=='owner'&&(current.role==='owner'||role==='owner'))fail('Solo el propietario puede cambiar este rol',403);
    if(current.role==='owner'&&(!active||role!=='owner')){const n=await c.query("select count(*)::int as count from organization_members where organization_id=$1 and role='owner' and active=true",[org]);if(n.rows[0].count<=1)fail('Debe quedar al menos un propietario activo');}
    await c.query('update organization_members set role=$1,active=$2 where user_id=$3 and organization_id=$4',[role,active,key,org]);await c.query('delete from sessions where user_id=$1 and organization_id=$2',[key,org]);result={ok:true};
+   if(!current.active&&active&&typeof sendAccessGranted==='function')grantedNotify={email:current.email,organizationName:user.organization_name,role};
   }else if(kind==='clients'||kind==='projects'||kind==='work-orders'){
    const table={clients:'agency_clients',projects:'agency_projects','work-orders':'agency_work_orders'}[kind],old=await owned(c,table,key,org);
    if(req.method==='GET'){
@@ -170,6 +171,8 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation}){
    else if(req.method==='POST'){const b=await body(req),rate=amount(b.usd_to_pyg),on=date(b.rate_date);if(!rate||!on)fail('Fecha y cotización requeridas');await c.query('insert into agency_exchange_rates values($1,$2,$3) on conflict(organization_id,rate_date) do update set usd_to_pyg=excluded.usd_to_pyg',[org,on,rate]);result={ok:true};}else fail('Método no permitido',405);
   }else fail('Método no permitido',405);
   if(kind==='work-orders')await enrichWorkOrderAssignees(c,org,result.record||result.workOrder);
-  await c.query('commit');transaction=false;send(res,status,result);return true;
+  await c.query('commit');transaction=false;
+  if(grantedNotify)await sendAccessGranted(grantedNotify.email,grantedNotify.organizationName,grantedNotify.role).catch(()=>false);
+  send(res,status,result);return true;
  }catch(e){if(transaction)await c.query('rollback');console.error(JSON.stringify({event:'suite_error',path:url.pathname,status:e.status||500,code:e.code}));send(res,e.status||500,{error:e.status?e.message:'No se pudo completar la operación'});return true;}finally{c?.release();}
 }

@@ -20,7 +20,7 @@ import { budgetSections } from './budget-sections.js';
 import { externalLink } from './media-policy.js';
 import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
-import { invitationEmail,resetEmail,verificationEmail,destructiveReauthEmail } from './invitation-email.js';
+import { invitationEmail,accessGrantedEmail,resetEmail,verificationEmail,destructiveReauthEmail } from './invitation-email.js';
 import {financialForecast} from './forecast.js';
 import {commercialLifecycle} from './commercial-lifecycle.js';
 import {reports} from './reports.js';
@@ -93,6 +93,9 @@ const body = async (req) => { let s=''; for await (const c of req) {s += c;if(s.
 const id = () => crypto.randomBytes(32).toString('hex');
 async function sendInvitation(email, organizationName, role) {
   return emailDelivery.send({to:email,message:invitationEmail({email,organizationName,role,appUrl})});
+}
+async function sendAccessGranted(email, organizationName, role) {
+  return emailDelivery.send({to:email,message:accessGrantedEmail({email,organizationName,role,appUrl}),idempotencyKey:'access-granted-'+crypto.createHash('sha256').update(email.toLowerCase()).digest('hex')});
 }
 async function sendReset(email,token){return emailDelivery.send({to:email,message:resetEmail({token,appUrl}),idempotencyKey:'reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function sendVerification(email,token){return emailDelivery.send({to:email,message:verificationEmail({token,appUrl}),idempotencyKey:'verify-'+crypto.createHash('sha256').update(token).digest('hex')});}
@@ -292,7 +295,7 @@ const server = http.createServer(async (req,res) => {
     if(await workChecklists({req,res,url,db,session,body,send}))return;
     if(await publicExperience({req,res,url,db,session,body,send,cookie,parseCookies}))return;
     if(await clientPortal({req,res,url,db,session,body,send,sendPasswordReset:sendClientPortalReset,emailAvailable:emailDelivery.status.available}))return;
-    if(await inviteLinks({req,res,url,db,session,body,send,appUrl}))return;
+    if(await inviteLinks({req,res,url,db,session,body,send,appUrl,sendAccessGranted}))return;
     if(req.method!=='GET'){
       const actor=await session(req);
       if(actor?.demo_owner_user_id&&(url.pathname==='/api/auth/organizations'||url.pathname==='/api/events'||/\/(share|client-review)$/.test(url.pathname)||/\/budgets\/\d+\/publish$/.test(url.pathname)))return send(res,403,{error:'El Demo no comparte datos públicamente ni crea empresas o eventos externos.'});
@@ -314,7 +317,7 @@ const server = http.createServer(async (req,res) => {
     if(await notifications({req,res,url,db,session,body,send}))return;
     if(await automationApi({req,res,url,db,session,body,send}))return;
     if(await studioReservations({req,res,url,db,session,body,send}))return;
-    if(await suite({req,res,url,db,session,body,send,sendInvitation}))return;
+    if(await suite({req,res,url,db,session,body,send,sendInvitation,sendAccessGranted}))return;
     if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {
       res.writeHead(307, { Location: 'https://app.scaleparaguay.com/superadmin' });

@@ -20,10 +20,10 @@ const uid=(await query("insert into users(email,password_hash) values('suite-own
 const viewer=(await query("insert into users(email,password_hash) values('suite-viewer@example.invalid','unused') returning id")).rows[0].id;
 await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner'),($1,$3,'viewer')",[org,uid,viewer]);
 const user={id:uid,organization_id:org,role:'owner',organization_name:'Scale'};
-let resetToken='',sent=0;
+let resetToken='',sent=0;const grantedEmails=[];
 async function call(path,method='GET',payload={},as=user,form=''){
  let result={status:0};const req={method,socket:{remoteAddress:'127.0.0.1'},async *[Symbol.asyncIterator](){yield form;}};
- const args={req,res:{writeHead(status,headers){result={status,headers};},end(content){result.content=content;}},url:new URL('https://test'+path),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>{result={status,...data};},sendInvitation:async()=>true,sendReset:async(_,token)=>{resetToken=token;sent++;return true;}};
+ const args={req,res:{writeHead(status,headers){result={status,headers};},end(content){result.content=content;}},url:new URL('https://test'+path),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>{result={status,...data};},sendInvitation:async()=>true,sendAccessGranted:async(email,organizationName,role)=>{grantedEmails.push({email,organizationName,role});return true;},sendReset:async(_,token)=>{resetToken=token;sent++;return true;}};
  const handled=path.startsWith('/api/auth/password')?await passwordAccess(args):await suite(args);assert.equal(handled,true);return result;
 }
 const client=(await query("insert into agency_clients(organization_id,name) values($1,'Client') returning id",[org])).rows[0].id;
@@ -47,6 +47,11 @@ assert.equal((await call(`/api/agency/work-orders/${order}`,'PATCH',{status:'edi
 assert.equal((await call('/api/agency/dashboard','GET',{}, {...user,role:'sales'})).status,403);
 assert.equal((await call(`/api/agency/members/${uid}`,'PATCH',{active:false})).status,400);
 assert.equal((await call(`/api/agency/members/${viewer}`,'PATCH',{active:false})).status,200);
+assert.equal(grantedEmails.length,0,'suspending a member never emails');
+assert.equal((await call(`/api/agency/members/${viewer}`,'PATCH',{active:true})).status,200);
+assert.equal(grantedEmails.length,1,'reactivating a member emails the access-granted notice');
+assert.deepEqual(grantedEmails[0],{email:'suite-viewer@example.invalid',organizationName:'Scale',role:'viewer'});
+await call(`/api/agency/members/${viewer}`,'PATCH',{active:false});
 const access=await collaboratorAccess({query},{email:'suite-viewer@example.invalid',org,actorRole:'owner',active:true});assert.equal(access.status,'suspended');
 let r=await call('/api/agency/leads','POST',{name:'Prospect',amount:1000,currency:'USD'});assert.equal(r.status,201);const lead=r.record.id;
 const converted=await call(`/api/agency/leads/${lead}/convert`,'POST');assert.equal(converted.status,200);assert.equal((await call(`/api/agency/leads/${lead}/convert`,'POST')).clientId,converted.clientId);
