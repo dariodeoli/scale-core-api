@@ -1,3 +1,4 @@
+import {emailShell} from './email-brand.js';
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const singleLine=value=>String(value??'').replace(/[\u0000-\u001f\u007f\u2028\u2029]/g,' ').trim();
 function appLink(appUrl){
@@ -11,7 +12,15 @@ export function invitationEmail({email,organizationName,role,appUrl}){
  const organization=singleLine(organizationName),permission=Object.hasOwn(roles,role)?roles[role]:'Solo lectura';
  const subject=`Invitación a ${organization} · Scale OS`.slice(0,160);
  const text=`Te invitaron a ${organization}\n\nTu permiso: ${permission}\nCorreo con acceso: ${email}\n\nAbrí Scale OS: ${url.href}\n\nIngresá con Google usando ese mismo correo. Si preferís una contraseña y todavía no tenés una, elegí «Establecer o recuperar contraseña» en el inicio de sesión.\n\nSi participás en varias empresas, podrás elegir en cuál trabajar.\n\n¿No esperabas esta invitación? Podés ignorarla. No se crea una cuenta de Google ni se comparte tu acceso con otras personas.\n\nScale OS · Gestión de agencias\nNotificación de acceso enviada por Owncoding.`;
- const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#F7F6F8;color:#251C29;font:16px/1.6 Arial,sans-serif"><table role="presentation" style="width:100%;border:0"><tr><td style="padding:24px 12px"><main style="max-width:560px;margin:auto;background:#fff;border:1px solid #E8E3EA;border-radius:16px;padding:28px"><p style="margin:0 0 24px;color:#4D065B;font-weight:bold">Scale OS</p><h1 style="font-size:26px;line-height:1.3;margin:0 0 20px">Te invitaron a ${escape(organization)}</h1><p>Ya podés acceder al espacio de trabajo de esta empresa.</p><p><strong>Tu permiso:</strong> ${escape(permission)}<br><strong>Correo con acceso:</strong> ${escape(email)}</p><p style="margin:28px 0"><a href="${escape(url.href)}" style="display:inline-block;padding:12px 20px;background:#4D065B;color:#fff;border-radius:8px;text-decoration:none;font-weight:bold">Abrir Scale OS</a></p><p>Ingresá con Google usando ese mismo correo. Si preferís una contraseña y todavía no tenés una, elegí <strong>Establecer o recuperar contraseña</strong> en el inicio de sesión.</p><p>Si participás en varias empresas, podrás elegir en cuál trabajar.</p><p style="font-size:13px;overflow-wrap:anywhere">Si el botón no abre, copiá esta dirección en tu navegador:<br>${escape(url.href)}</p><hr style="border:0;border-top:1px solid #E8E3EA;margin:24px 0"><p style="font-size:13px;color:#746C78">¿No esperabas esta invitación? Podés ignorarla. No se crea una cuenta de Google ni se comparte tu acceso con otras personas.</p><p style="font-size:12px;color:#746C78;margin-bottom:0">Scale OS · Gestión de agencias<br>Notificación de acceso enviada por Owncoding.</p></main></td></tr></table></body></html>`;
+ const html=emailShell({
+  eyebrow:`${escape(organization)}`,
+  title:'Te invitaron a Scale OS',
+  lead:`Ya podés acceder al espacio de trabajo de ${escape(organization)}.`,
+  body:`<p style="margin:0 0 16px"><strong>Tu permiso:</strong> ${escape(permission)}<br><strong>Correo con acceso:</strong> ${escape(email)}</p><p style="margin:0">Ingresá con Google usando ese mismo correo. Si preferís una contraseña y todavía no tenés una, elegí <strong>Establecer o recuperar contraseña</strong> en el inicio de sesión. Si participás en varias empresas, podrás elegir en cuál trabajar.</p>`,
+  cta:{label:'Abrir Scale OS',href:url.href},
+  footer:'¿No esperabas esta invitación? Podés ignorarla. No se crea una cuenta de Google ni se comparte tu acceso con otras personas.',
+  footerNote:'Scale OS · Gestión de agencias · Notificación de acceso enviada por Owncoding.',
+ });
  return{subject,text,html};
 }
 
@@ -24,7 +33,13 @@ export function resetEmail({token,appUrl}){
  const subject='Establecé tu contraseña de Scale OS';
  const instructions='Este enlace es de un solo uso y vence en una hora. Si no lo solicitaste, ignorá este correo.';
  const text=`Tu contraseña de Scale OS\n\n${instructions}\n\nEstablecer contraseña: ${url.href}\n\nScale OS · Gestión de agencias\nNotificación de acceso enviada por Owncoding.`;
- const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main style="font:16px/1.6 Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><p>Scale OS</p><h1>Tu contraseña</h1><p>${instructions}</p><p><a href="${escape(url.href)}">Establecer contraseña</a></p><p style="font-size:13px;overflow-wrap:anywhere">Si el botón no abre, copiá esta dirección en tu navegador:<br>${escape(url.href)}</p><hr><p style="font-size:12px">Scale OS · Gestión de agencias<br>Notificación de acceso enviada por Owncoding.</p></main></body></html>`;
+ const html=emailShell({
+  title:'Establecé tu contraseña',
+  lead:instructions,
+  body:'<p style="margin:0">Elegí una contraseña segura y guardala en tu gestor de contraseñas. Es de un solo uso: si vence, podés solicitar otro enlace desde el inicio de sesión.</p>',
+  cta:{label:'Establecer contraseña',href:url.href},
+  footerNote:'Scale OS · Gestión de agencias · Notificación de acceso enviada por Owncoding.',
+ });
  return{subject,text,html};
 }
 
@@ -36,7 +51,13 @@ export function verificationEmail({token,appUrl}){
  const subject='Verificá tu correo de Scale OS';
  const instructions='Este enlace es de un solo uso y vence en 24 horas. Hasta verificarlo no se activa una prueba ni se solicita acceso a una empresa.';
  const text=`Verificá tu correo de Scale OS\n\n${instructions}\n\nVerificar correo: ${url.href}\n\nScale OS · Gestión de agencias`;
- const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main style="font:16px/1.6 Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><p>Scale OS</p><h1>Verificá tu correo</h1><p>${instructions}</p><p><a href="${escape(url.href)}">Verificar correo</a></p><p style="font-size:13px;overflow-wrap:anywhere">Si el botón no abre, copiá esta dirección en tu navegador:<br>${escape(url.href)}</p></main></body></html>`;
+ const html=emailShell({
+  title:'Verificá tu correo',
+  lead:instructions,
+  body:'<p style="margin:0">Con el correo verificado podés registrarte con contraseña, recibir invitaciones y recuperar tu acceso cuando lo necesites.</p>',
+  cta:{label:'Verificar correo',href:url.href},
+  footerNote:'Scale OS · Gestión de agencias',
+ });
  return{subject,text,html};
 }
 
@@ -45,6 +66,12 @@ export function destructiveReauthEmail({code}){
  const subject='Código para confirmar una eliminación en Scale OS';
  const instructions='Usá este código de un solo uso para confirmar la eliminación. Vence en 5 minutos. Si no iniciaste esta operación, ignorá este correo.';
  const text=`Confirmación de eliminación en Scale OS\n\n${instructions}\n\nCódigo: ${code}\n\nScale OS · Gestión de agencias\nNotificación de acceso enviada por Owncoding.`;
- const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><main style="font:16px/1.6 Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><p>Scale OS</p><h1>Confirmá la eliminación</h1><p>${instructions}</p><p style="font-size:28px;font-weight:bold;letter-spacing:0.12em">${escape(code)}</p><hr><p style="font-size:12px">Scale OS · Gestión de agencias<br>Notificación de acceso enviada por Owncoding.</p></main></body></html>`;
+ const html=emailShell({
+  eyebrow:'Seguridad de cuenta',
+  title:'Confirmá la eliminación',
+  lead:instructions,
+  body:`<p style="margin:22px 0;text-align:center"><span style="display:inline-block;padding:14px 26px;border:1px solid #e8e3ea;border-radius:12px;background:#f7f3fa;font-size:28px;font-weight:bold;letter-spacing:.14em;color:#4d065b">${escape(code)}</span></p>`,
+  footerNote:'Scale OS · Gestión de agencias · Notificación de acceso enviada por Owncoding.',
+ });
  return{subject,text,html};
 }

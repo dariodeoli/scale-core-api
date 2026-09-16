@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import {roleCan} from './permissions.js';
+import {emailShell} from './email-brand.js';
 import bcrypt from 'bcryptjs';
 import {throttle,validatePassword} from './password-access.js';
 import {externalLink} from './media-policy.js';
@@ -72,7 +73,13 @@ async function notifyPortalActivity(c,delivery,{label,body,dedupe}){
 export function clientPortalResetEmail({token}){
  const resetUrl=`${clientOrigin}/recuperar?resetToken=${token}`;
  const safeUrl=htmlEscape(resetUrl);
- return {subject:'Restablecé tu contraseña del portal de cliente',text:`Recibimos una solicitud para restablecer la contraseña de tu Portal del Cliente de Scale OS. Abrí este enlace dentro de una hora: ${resetUrl}\n\nSi no lo solicitaste, podés ignorar este correo.`,html:`<h1>Restablecé tu contraseña</h1><p>Recibimos una solicitud para tu Portal del Cliente de Scale OS.</p><p><a href="${safeUrl}">Elegir una contraseña nueva</a></p><p>Este enlace vence en una hora. Si no lo solicitaste, podés ignorar este correo.</p>`};
+ return {subject:'Restablecé tu contraseña del portal de cliente',text:`Recibimos una solicitud para restablecer la contraseña de tu Portal del Cliente de Scale OS. Abrí este enlace dentro de una hora: ${resetUrl}\n\nSi no lo solicitaste, podés ignorar este correo.`,html:emailShell({
+  eyebrow:'Portal del cliente',
+  title:'Restablecé tu contraseña',
+  lead:'Recibimos una solicitud para tu Portal del Cliente de Scale OS. Este enlace vence en una hora; si no lo solicitaste, podés ignorar este correo.',
+  cta:{label:'Elegir una contraseña nueva',href:safeUrl},
+  footerNote:'Scale OS · Portal del cliente',
+ })};
 }
 export async function clientPortalGoogleInvite(db,raw){return validInvite(db,raw);}
 export async function acceptClientPortalGoogleInvite({db,inviteId,email:googleEmail,fullName}){
