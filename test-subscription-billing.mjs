@@ -239,6 +239,14 @@ try{
  assert.equal(new Date(paidAfter).getTime()-new Date(paidBefore).getTime(),10*DAY,'free days extend the paid period by exactly the granted days');
  assert.equal((await call('/api/billing/coupon-redeem','POST',{code:'DAYS10'},owner)).status,409,'a coupon redeems once per company');
  assert.equal((await call('/api/billing/coupon-redeem','POST',{code:'DAYS10'},actors[0])).status,403,'only owner or admin can redeem');
+ // Companies without any subscription row still open their runway with a coupon.
+ const couponless=await tenant('couponless');
+ await query("insert into platform_coupons(code,discount_type,discount_value,currency,created_by_user_id) values('DAYS5','days',5,null,$1)",[uid]);
+ const couponlessRedeem=await call('/api/billing/coupon-redeem','POST',{code:'DAYS5'},couponless);
+ assert.equal(couponlessRedeem.status,200,'a coupon works before any trial or payment');
+ assert.match(couponlessRedeem.data.message,/5 días gratis/);
+ const runway=(await query('select paid_through_at,trial_ends_at from organization_subscriptions where organization_id=$1',[couponless.organization_id])).rows[0];
+ assert.equal(new Date(runway.paid_through_at).getTime()-new Date(runway.trial_ends_at).getTime(),5*DAY,'free days extend the freshly opened trial runway');
  console.log(`PASS: ${calls} billing handler cases; idempotent caller-transaction trial, 30-day/48h boundaries, legacy/demo exemptions, owner/tenant isolation, optional config, exact server prices, durable checkout retries, raw HMAC timestamps, duplicate/stale events, verified monthly USD/PYG invoice binding, immutable grace and paused portal. PGlite single connection + mocked Stripe only; no real concurrency or provider activation verified.`);
 }finally{
  Date.now=originalNow;globalThis.fetch=originalFetch;for(const [key,value] of Object.entries(originalEnv)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await pg.close();
