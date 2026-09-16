@@ -7,7 +7,7 @@ await pg.exec(`
  create table users(id bigint primary key,email text not null,created_at timestamptz not null default now(),email_verified_at timestamptz,is_demo_guest boolean not null default false);
  create table organizations(id bigint primary key,name text not null,slug text not null,active boolean not null default true,created_at timestamptz not null default now(),demo_owner_user_id bigint,demo_source_id bigint);
  create table organization_members(organization_id bigint,user_id bigint,active boolean not null default true,removed_at timestamptz,role text);
- create table organization_subscriptions(organization_id bigint primary key,stripe_status text,currency text,trial_started_at timestamptz,trial_ends_at timestamptz,due_at timestamptz,paid_through_at timestamptz);
+ create table organization_subscriptions(organization_id bigint primary key,stripe_status text,currency text,trial_started_at timestamptz,trial_ends_at timestamptz,due_at timestamptz,paid_through_at timestamptz,binding_token uuid unique,updated_at timestamptz not null default now());
  insert into users(id,email,email_verified_at,is_demo_guest) values(1,'owner@agency.example',now(),false),(2,'platform@scale.example',now(),false),(3,'member@agency.example',now(),false),(4,'persona@demo.example.invalid',now(),false),(5,'persona0@scale-demo.example.invalid',now(),false),(6,'persona1@scale-demo.example.invalid',now(),false),(7,'persona2@scale-demo.example.invalid',now(),false),(8,'persona3@scale-demo.example.invalid',now(),false),(9,'persona4@scale-demo.example.invalid',now(),false),(10,'guest@agency.example',now(),true);
  insert into organizations(id,name,slug,demo_owner_user_id,demo_source_id) values(10,'Agency One','agency-one',null,null),(20,'Agency Two','agency-two',null,null),(30,'Demo','scale-demo-controles-20260908',null,null),(40,'Private demo','private-demo',4,10),(50,'AgenciaPrueba','agencia-prueba',null,null);
  insert into organization_members values(10,1,true,null,'owner'),(10,3,true,null,'viewer'),(20,2,true,null,'owner'),(30,2,true,null,'owner'),(30,4,true,null,'viewer'),(40,4,true,null,'owner'),(10,4,true,null,'viewer'),(10,5,true,null,'viewer'),(10,10,true,null,'viewer'),(50,2,true,null,'owner');
@@ -65,6 +65,14 @@ const daysCoupon=await call('/api/platform/coupons',{method:'POST',payload:{code
 assert.equal((await call('/api/platform/coupons',{method:'POST',payload:{code:'DAYSBAD',discount_type:'days',discount_value:30.5}})).status,400,'free days must be an integer');
 assert.equal((await call('/api/platform/coupons',{method:'POST',payload:{code:'DAYSCUR',discount_type:'days',discount_value:7,currency:'USD'}})).status,400,'free days carry no currency');
 const audit=await call('/api/platform/audit');assert.equal(audit.status,200);assert.equal(audit.data.actions.length,4);assert.equal(audit.data.actions[0].action,'coupon.create');assert.equal(audit.data.actions[1].action,'coupon.deactivate');assert.equal((await pg.query('select count(*)::int as n from platform_audit_log')).rows[0].n,4);
+// Manual payments extend the runway, even before any trial, and are audited.
+const extended=await call('/api/platform/agencies/20/subscription/extend',{method:'POST',payload:{days:7,reason:'Efectivo recibido'}});
+assert.equal(extended.status,200);assert.equal(extended.data.subscription.internal_state,'active','manual payments activate the internal access state');
+assert(extended.data.subscription.internal_expires_at,'manual payments set an internal expiry');
+assert(extended.data.subscription.paid_through_at,'manual payments extend the paid runway');
+assert.equal((await call('/api/platform/agencies/20/subscription/extend',{method:'POST',payload:{days:0,reason:'Nada'}})).status,400,'days must be a positive integer');
+assert.equal((await call('/api/platform/agencies/20/subscription/extend',{method:'POST',actor:{id:3,email:'member@agency.example'},payload:{days:7,reason:'Intento'}})).status,403,'only global admins register manual payments');
+assert.equal((await call('/api/platform/audit')).data.actions[0].action,'subscription.manual_extend','manual payments are audited');
 await pg.query('insert into sessions(id,user_id,organization_id) values(1,1,10)');
 const removedAgency=await call('/api/platform/agencies/10',{method:'DELETE'});
 assert.equal(removedAgency.status,200);assert.deepEqual(removedAgency.data.deleted,{agencyId:10,name:'Agency One',slug:'agency-one'},'an admin can delete a real agency');
