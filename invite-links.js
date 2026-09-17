@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
-export const accessRoles=['owner','admin','management','finance','sales','production','editor','viewer'];
+export const accessRoles=['owner','admin','management','finance','sales','production','editor','viewer','collaborator'];
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
 const inviteKey=crypto.createHash('sha256').update(process.env.INVITE_LINK_SECRET||process.env.GOOGLE_CLIENT_SECRET||'scale-os-invite-key').digest();

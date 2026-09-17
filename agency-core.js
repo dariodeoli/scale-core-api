@@ -15,7 +15,7 @@ import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {startTrial,subscriptionState} from './subscription-billing.js';
 import {throttle} from './password-access.js';
 
-const memberRoles=['owner','admin','management','finance','sales','production','editor','viewer'];
+const memberRoles=['owner','admin','management','finance','sales','production','editor','viewer','collaborator'];
 
 // Legacy operational endpoints extracted from the server entrypoint. Handlers
 // keep their original behavior and responses; the dispatcher returns true when
@@ -142,7 +142,7 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'GET') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
-      const r=await db.query(`select p.*,c.name as client_name,coalesce((select jsonb_agg(jsonb_build_object('id',a.user_id::text,'full_name',coalesce(nullif(i.full_name,''),i.email),'photo_url',i.photo_url,'is_primary',a.is_primary) order by a.is_primary desc,a.user_id) from agency_record_assignees a join organization_person_identity i on i.organization_id=a.organization_id and i.user_id=a.user_id where a.organization_id=p.organization_id and a.kind='projects' and a.record_id=p.id),'[]'::jsonb) as assignees,count(o.id)::int as work_order_count from agency_projects p join agency_clients c on c.id=p.client_id left join agency_work_orders o on o.project_id=p.id and ${visibleRecord('o','work-orders')} where p.organization_id=$1 and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} group by p.id,c.name order by p.created_at desc`,[user.organization_id]);
+      const r=await db.query(`select p.*,c.name as client_name,coalesce((select jsonb_agg(jsonb_build_object('id',a.user_id::text,'full_name',coalesce(nullif(i.full_name,''),i.email),'photo_url',i.photo_url,'is_primary',a.is_primary) order by a.is_primary desc,a.user_id) from agency_record_assignees a join organization_person_identity i on i.organization_id=a.organization_id and i.user_id=a.user_id where a.organization_id=p.organization_id and a.kind='projects' and a.record_id=p.id),'[]'::jsonb) as assignees,count(o.id)::int as work_order_count from agency_projects p join agency_clients c on c.id=p.client_id left join agency_work_orders o on o.project_id=p.id and ${visibleRecord('o','work-orders')} where p.organization_id=$1 and ${visibleRecord('p','projects')} and ${visibleRecord('c','clients')} group by p.id,c.name order by p.active desc,p.created_at desc`,[user.organization_id]);
       return send(res,200,{projects:r.rows});
     }
     if (url.pathname === '/api/agency/projects' && req.method === 'POST') {

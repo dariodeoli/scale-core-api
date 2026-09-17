@@ -1,6 +1,6 @@
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
-export const roles=['owner','admin','management','finance','sales','production','editor','viewer'];
-export const roleLabels={owner:'Dueño',admin:'Administrador',management:'Gerencia',finance:'Finanzas',sales:'Ventas',production:'Producción',editor:'Editor',viewer:'Solo lectura'};
+export const roles=['owner','admin','management','finance','sales','production','editor','viewer','collaborator'];
+export const roleLabels={owner:'Dueño',admin:'Administrador',management:'Gerencia',finance:'Finanzas',sales:'Ventas',production:'Producción',editor:'Editor',viewer:'Solo lectura',collaborator:'Colaborador'};
 const all=[...roles];
 export const CAPABILITIES=[
  {id:'members.manage',label:'Equipo y accesos',description:'Personas, cargos, accesos, invitaciones y remuneraciones.',roles:['owner','admin','management']},
@@ -9,15 +9,15 @@ export const CAPABILITIES=[
  {id:'metrics.view',label:'Métricas y crecimiento',description:'Métricas del sitio y panel de crecimiento.',roles:['owner','admin']},
  {id:'visitors.view',label:'Visitantes en vivo',description:'Visitas activas del landing y uso.',roles:['owner','admin']},
  {id:'company.create',label:'Crear empresas',description:'Crear empresas adicionales.',roles:['owner','admin']},
- {id:'clients.manage',label:'Gestionar clientes',description:'Crear y editar clientes, enlaces y ficha comercial.',roles:['owner','admin','management','sales','finance']},
- {id:'projects.manage',label:'Crear proyectos',description:'Crear proyectos de trabajo.',roles:['owner','admin','management','sales','production']},
- {id:'projects.edit',label:'Editar proyectos',description:'Editar datos y responsables de proyectos.',roles:['owner','admin','management','production']},
- {id:'work-orders.manage',label:'Gestionar piezas',description:'Crear piezas y acciones de producción.',roles:['owner','admin','management','production']},
- {id:'work-orders.edit',label:'Editar y mover piezas',description:'Editar piezas y cambiar su estado.',roles:['owner','admin','management','production','editor']},
- {id:'assignees.manage',label:'Responsables',description:'Asignar responsables a proyectos y piezas.',roles:['owner','admin','management','production']},
- {id:'checklists.edit',label:'Checklists',description:'Editar checklists de piezas.',roles:['owner','admin','management','production','editor']},
- {id:'commercial.manage',label:'Pipeline comercial',description:'Oportunidades y seguimiento comercial.',roles:['owner','admin','management','finance','sales']},
- {id:'budgets.manage',label:'Presupuestos y planes',description:'Presupuestos, planes reutilizables y cotización.',roles:['owner','admin','management','finance','sales','production']},
+ {id:'clients.manage',label:'Gestionar clientes',description:'Crear y editar clientes, enlaces y ficha comercial.',roles:['owner','admin','management','sales','finance','collaborator']},
+ {id:'projects.manage',label:'Crear proyectos',description:'Crear proyectos de trabajo.',roles:['owner','admin','management','sales','production','collaborator']},
+ {id:'projects.edit',label:'Editar proyectos',description:'Editar datos y responsables de proyectos.',roles:['owner','admin','management','production','collaborator']},
+ {id:'work-orders.manage',label:'Gestionar piezas',description:'Crear piezas y acciones de producción.',roles:['owner','admin','management','production','collaborator']},
+ {id:'work-orders.edit',label:'Editar y mover piezas',description:'Editar piezas y cambiar su estado.',roles:['owner','admin','management','production','editor','collaborator']},
+ {id:'assignees.manage',label:'Responsables',description:'Asignar responsables a proyectos y piezas.',roles:['owner','admin','management','production','collaborator']},
+ {id:'checklists.edit',label:'Checklists',description:'Editar checklists de piezas.',roles:['owner','admin','management','production','editor','collaborator']},
+ {id:'commercial.manage',label:'Pipeline comercial',description:'Oportunidades y seguimiento comercial.',roles:['owner','admin','management','finance','sales','collaborator']},
+ {id:'budgets.manage',label:'Presupuestos y planes',description:'Presupuestos, planes reutilizables y cotización.',roles:['owner','admin','management','finance','sales','production','collaborator']},
  {id:'commercial-terms.manage',label:'Términos comerciales',description:'Plan contratado, monto, comisión y factura por cliente.',roles:['owner','admin','management','sales','finance']},
  {id:'billing.view',label:'Cobranza y facturas',description:'Ver mora, facturas y cobros.',roles:['owner','admin','management','finance','sales']},
  {id:'finance.view',label:'Saldos y previsión',description:'Saldos, dashboard financiero y previsión mensual.',roles:['owner','admin','finance']},
@@ -29,10 +29,10 @@ export const CAPABILITIES=[
  {id:'reports.view',label:'Informes',description:'Informes mensuales y evolución.',roles:['owner','admin','finance','sales']},
  {id:'expenses.manage',label:'Gastos planificados',description:'Gastos fijos y variables mensuales.',roles:['owner','admin','finance']},
  {id:'inventory.view',label:'Ver inventario',description:'Equipos, categorías y reservas.',roles:all},
- {id:'inventory.manage',label:'Gestionar inventario',description:'Equipos, categorías y ubicaciones.',roles:['owner','admin','management','production','finance']},
- {id:'inventory.book',label:'Reservar equipos',description:'Crear y editar reservas de equipos.',roles:['owner','admin','management','production']},
- {id:'studio.manage',label:'Estudio',description:'Espacios y reservas del estudio.',roles:['owner','admin','management','sales']},
- {id:'portal.manage',label:'Portal del cliente',description:'Publicar entregas y gestionar revisiones.',roles:['owner','admin','management','production']},
+ {id:'inventory.manage',label:'Gestionar inventario',description:'Equipos, categorías y ubicaciones.',roles:['owner','admin','management','production','finance','collaborator']},
+ {id:'inventory.book',label:'Reservar equipos',description:'Crear y editar reservas de equipos.',roles:['owner','admin','management','production','collaborator']},
+ {id:'studio.manage',label:'Estudio',description:'Espacios y reservas del estudio.',roles:['owner','admin','management','sales','collaborator']},
+ {id:'portal.manage',label:'Portal del cliente',description:'Publicar entregas y gestionar revisiones.',roles:['owner','admin','management','production','collaborator']},
  {id:'salary.view',label:'Ver salarios',description:'Salarios y ajustes mensuales del equipo.',roles:['owner','admin','finance']},
 ];
 const byId=new Map(CAPABILITIES.map(capability=>[capability.id,capability]));
