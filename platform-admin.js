@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import {inspectInternalSubscription,updateInternalSubscription} from './platform-subscription-service.js';
+import {optionalUpdate} from './account-security.js';
 
 const currencies=['USD','PYG'];
 const realOrganization=alias=>`${alias}.demo_owner_user_id is null and ${alias}.demo_source_id is null and ${alias}.deleted_at is null and lower(${alias}.slug) not in ('scale-demo-controles-20260908','agenciaprueba','agencia-prueba') and lower(${alias}.name)<>'agenciaprueba'`;
@@ -218,7 +219,13 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
     // reference (organization_id,user_id) keep their foreign keys and history.
     await client.query('update organization_members set active=false,removed_at=now() where user_id=$1',[targetId]);
     const anonymous=`deleted+${targetId}+${crypto.randomBytes(8).toString('hex')}@deleted.invalid`;
-    await client.query("update users set email=$2,password_hash='!deleted-account',full_name=null,google_photo_url=null,google_full_name=null,deleted_at=now(),anonymized_at=now() where id=$1",[targetId,anonymous]);
+    await optionalUpdate(client,'user_personal_identities',"update user_personal_identities set full_name='Deleted account',photo_url=null,updated_at=now() where user_id=$1",[targetId]);
+    await optionalUpdate(client,'agency_user_profiles',"update agency_user_profiles set full_name='Deleted account',photo_url=null,updated_at=now() where user_id=$1",[targetId]);
+    await optionalUpdate(client,'agency_collaborators',"update agency_collaborators set full_name='Deleted account',email=null,photo_url=null,updated_at=now() where user_id=$1",[targetId]);
+    await optionalUpdate(client,'agency_access_requests',"update agency_access_requests set full_name='Deleted account' where user_id=$1",[targetId]);
+    await optionalUpdate(client,'oauth_handoffs','delete from oauth_handoffs where user_id=$1',[targetId]);
+    await optionalUpdate(client,'account_closure_requests','update account_closure_requests set cancelled_at=coalesce(cancelled_at,now()) where user_id=$1',[targetId]);
+    await client.query("update users set email=$2,password_hash='!deleted-account',google_photo_url=null,google_full_name=null,deleted_at=now(),anonymized_at=now() where id=$1",[targetId,anonymous]);
     await audit(client,user,'user.delete','user',targetId,{self,agencies:owned.map(org=>org.id)});
     return {userId:targetId,self,agencies:owned.map(org=>org.id)};
    });

@@ -324,4 +324,4 @@ export async function accountSecurity({req,res,url,db,session,body,send,parseCoo
  }
 }
 
-export {CLOSE_CONFIRMATION,DELETE_ACCOUNT_CONFIRMATION,RECOVERY_DAYS};
+export {CLOSE_CONFIRMATION,DELETE_ACCOUNT_CONFIRMATION,RECOVERY_DAYS,optionalUpdate};
