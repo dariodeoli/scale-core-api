@@ -39,7 +39,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const org=user.organization_id;
   let result, status=200, notifyEmail=null;
-  const withoutSalary=row=>{if(roleCan(user,'salary.view'))return row;return {...row,compensation_amount:null,monthly_salary_amount:null,monthly_salary_currency:null};};
+  const withoutSalary=row=>{if(roleCan(user,'salary.view'))return row;return {...row,compensation_amount:null,monthly_salary_amount:null,monthly_salary_currency:null,payment_day:null,invoices_company:null};};
   if(teamRoute){
    if(req.method!=='GET')fail('Método no permitido',405);
    // Every member reaches the team directory, but only finance keeps the full
@@ -105,7 +105,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
    else if(req.method==='POST'||(req.method==='PATCH'&&collaboratorMatch[1])) {
     let previous={};if(collaboratorMatch[1]){previous=(await c.query('select * from agency_collaborators where id=$1 and organization_id=$2 for update',[collaboratorMatch[1],org])).rows[0];if(!previous)fail('Registro no encontrado',404);await assertRecordAvailable(c,'agency_collaborators',previous);}
     const incoming=await body(req), b={compensation_type:'fixed',compensation_amount:0,active:true,...previous,...incoming};
-    if(!roleCan(user,'salary.view')&&(Object.hasOwn(incoming,'compensation_amount')||Object.hasOwn(incoming,'monthly_salary_amount')||Object.hasOwn(incoming,'monthly_salary_currency')))fail('Tu rol no permite editar salarios',403);
+    if(!roleCan(user,'salary.view')&&(Object.hasOwn(incoming,'compensation_amount')||Object.hasOwn(incoming,'monthly_salary_amount')||Object.hasOwn(incoming,'monthly_salary_currency')||Object.hasOwn(incoming,'payment_day')||Object.hasOwn(incoming,'invoices_company')))fail('Tu rol no permite editar salarios',403);
     if(!collaboratorMatch[1]&&b.currency===undefined)b.currency=await companyCurrency(c,org);
     const name=text(b.full_name,120);if(name.length<2) fail('Ingresá el nombre');
     for(const key of ['started_on','ended_on'])if(b[key] instanceof Date)b[key]=b[key].toISOString().slice(0,10);
