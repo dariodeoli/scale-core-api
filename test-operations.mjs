@@ -133,8 +133,12 @@ r=await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{photo_url:''});a
 const beforeTeam=(await sql('select balance from bank_accounts where id=$1',[account])).rows[0].balance;
 const team=await call('/api/agency/team');assert.equal(team.status,200);assert.ok(team.collaborators.some(p=>String(p.id)===String(minimal.id)));assert.ok(team.members.some(m=>String(m.id)===String(minimal.user_id)));
 assert.ok(team.members.every(m=>!Object.hasOwn(m,'password_hash')));
-assert.equal((await call('/api/agency/team','GET',{}, {...user,role:'editor'})).status,403);
-assert.equal((await call('/api/agency/team','GET',{}, {...user,role:'viewer'})).status,403);
+assert.equal((await call('/api/agency/team','GET',{}, {...user,role:'editor'})).status,200,'every member reaches the directory');
+const viewerTeam=await call('/api/agency/team','GET',{}, {...user,role:'viewer'});
+assert.equal(viewerTeam.status,200);
+assert.ok(Array.isArray(viewerTeam.directory),'non-finance roles receive the stripped directory');
+assert.equal(viewerTeam.collaborators,undefined,'directory roles never receive the full record');
+assert.ok(viewerTeam.directory.every(m=>!Object.hasOwn(m,'email')&&!Object.hasOwn(m,'compensation_amount')&&!Object.hasOwn(m,'monthly_salary_amount')),'directory rows carry photo, name and cargo only');
 assert.equal((await call('/api/agency/team','GET',{}, {...user,role:'finance'})).status,200);
 assert.equal((await call('/api/agency/team','GET',{}, {...user,organization_id:other})).collaborators.length,0);
 assert.equal((await call('/api/agency/team','POST')).status,405);
