@@ -31,7 +31,7 @@ create table if not exists events (
 create index if not exists events_name_date_idx on events(name,event_date);
 
 alter table users drop constraint if exists users_role_check;
-alter table users add constraint users_role_check check (role in ('owner','admin','management','finance','sales','production','editor','viewer'));
+alter table users add constraint users_role_check check (role in ('owner','admin','management','finance','sales','production','editor','viewer','collaborator'));
 
 create table if not exists agency_clients (
   id bigserial primary key,
@@ -91,7 +91,7 @@ insert into organizations(slug,name) values('scale','Scale Strategy Group') on c
 create table if not exists organization_members (
   organization_id bigint not null references organizations(id) on delete cascade,
   user_id bigint not null references users(id) on delete cascade,
-  role text not null check (role in ('owner','admin','management','finance','sales','production','editor','viewer')),
+  role text not null check (role in ('owner','admin','management','finance','sales','production','editor','viewer','collaborator')),
   created_at timestamptz not null default now(),
   primary key(organization_id,user_id)
 );
