@@ -8,9 +8,9 @@ export const archiveKinds = {
  projects: {table:'agency_projects',name:'name',capability:'projects.edit'},
  'work-orders': {table:'agency_work_orders',name:'title',capability:'work-orders.manage'},
  leads: {table:'agency_leads',name:'name',capability:'commercial.manage'},
- plans: {table:'agency_plans',name:'name',capability:'commercial.manage'},
+ plans: {table:'agency_plans',name:'name',capability:'budgets.manage'},
  inventory: {table:'agency_inventory',name:'name',capability:'inventory.manage'},
- budgets: {table:'agency_budgets',name:'title',capability:'commercial.manage'},
+ budgets: {table:'agency_budgets',name:'title',capability:'budgets.manage'},
  collaborators: {table:'agency_collaborators',name:'full_name',capability:'members.manage'},
  accounts: {table:'bank_accounts',name:'name',capability:'accounts.manage'},
 };
