@@ -10,7 +10,7 @@ for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_c
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 await pg.exec(await fs.readFile('migrations/20260910_productivity.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_client_links.sql','utf8'));
-for(const file of ['20260908_google_oauth.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_invite_links.sql','20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql','20260916_identity_photo_removal.sql','20260914_role_permissions.sql','20260918_collaborator_role_and_project_archive.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
+for(const file of ['20260908_google_oauth.sql','20260910_profile_identity.sql','20260910_demo_sessions.sql','20260910_invite_links.sql','20260910_currencies.sql','20260910_company_currency.sql','20260910_global_identity.sql','20260916_identity_photo_removal.sql','20260914_role_permissions.sql','20260918_collaborator_role_and_project_archive.sql','20260919_collaborator_role_member_checks.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 await pg.exec(await fs.readFile('migrations/20260911_drive_links.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_project_assignees.sql','utf8'));
 for(const file of ['20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260910_work_checklists.sql','20260910_notifications.sql','20260913_ruc_collaboration.sql','20260914_production_traceability.sql','20260915_planned_expense_kind.sql','20260915_inventory_photos.sql','20260915_salary_override_signed.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
@@ -51,6 +51,8 @@ assert.equal(grantedEmails.length,0,'suspending a member never emails');
 assert.equal((await call(`/api/agency/members/${viewer}`,'PATCH',{active:true})).status,200);
 assert.equal(grantedEmails.length,1,'reactivating a member emails the access-granted notice');
 assert.deepEqual(grantedEmails[0],{email:'suite-viewer@example.invalid',organizationName:'Scale',role:'viewer'});
+assert.equal((await call(`/api/agency/members/${viewer}`,'PATCH',{role:'collaborator'})).status,200,'the collaborator role passes the membership check');
+assert.equal((await query('select role from organization_members where organization_id=$1 and user_id=$2',[org,viewer])).rows[0].role,'collaborator');
 await call(`/api/agency/members/${viewer}`,'PATCH',{active:false});
 const access=await collaboratorAccess({query},{email:'suite-viewer@example.invalid',org,actorRole:'owner',active:true});assert.equal(access.status,'suspended');
 let r=await call('/api/agency/leads','POST',{name:'Prospect',amount:1000,currency:'USD'});assert.equal(r.status,201);const lead=r.record.id;

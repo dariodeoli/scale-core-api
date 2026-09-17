@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import {currencies} from './currencies.js';
 import {normalizeUrgency} from './urgency.js';
 import {visibleRecord} from './record-lifecycle.js';
