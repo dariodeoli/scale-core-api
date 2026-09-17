@@ -233,12 +233,12 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'GET') {
-      const user = await session(req); if (!roleCan(user,'commercial.manage')) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!roleCan(user,'budgets.manage')) return send(res,403,{error:'Sin permiso'});
       const r = await db.query(`select b.*,c.name as client_name,count(i.id)::int as item_count from agency_budgets b join agency_clients c on c.id=b.client_id left join agency_budget_items i on i.budget_id=b.id where b.organization_id=$1 and ${visibleRecord('b','budgets')} group by b.id,c.name order by b.created_at desc`,[user.organization_id]);
       return send(res,200,{budgets:r.rows});
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {
-      const user = await session(req); if (!roleCan(user,'commercial.manage')) return send(res,403,{error:'Sin permiso'});
+      const user = await session(req); if (!roleCan(user,'budgets.manage')) return send(res,403,{error:'Sin permiso'});
       const {title='',clientId,currency=user.default_currency??'PYG',items=[],notes=null,validUntil=null,tax_rate=.1,sections=null} = await body(req);
       const normalizedSections=budgetSections(sections);
       if(![0,.05,.1].includes(Number(tax_rate)))return send(res,400,{error:'IVA inválido'});
@@ -367,7 +367,7 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       // Operational signals respect the same visibility as their modules: a
       // role that cannot open the source list receives null, never a number.
       const summary={...r.rows[0]};
-      if(!roleCan(user,'commercial.manage'))summary.unanswered_budgets=null;
+      if(!roleCan(user,'budgets.manage'))summary.unanswered_budgets=null;
       if(!roleCan(user,'inventory.view'))summary.unverified_inventory=null;
       return send(res,200,{summary});
     }

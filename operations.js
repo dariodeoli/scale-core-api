@@ -31,7 +31,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
  if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!salaryOverrideMatch&&!commissionMatch&&!commissionMonthlyRoute&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
  const user=await session(req);
  if(!user) {send(res,401,{error:'No autenticado'});return true;}
- const allowed=commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? roleCan(user,'members.manage') : roleCan(user,'finance.view');
+ const allowed=teamRoute&&req.method==='GET' ? true : commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? roleCan(user,'members.manage') : collaboratorMatch ? roleCan(user,'members.manage')||roleCan(user,'finance.view') : roleCan(user,'finance.view');
  if(!allowed) {send(res,403,{error:'Tu rol no permite esta operación'});return true;}
  const c=await db.connect();
  try {
@@ -39,12 +39,22 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const org=user.organization_id;
   let result, status=200, notifyEmail=null;
+  const withoutSalary=row=>{if(roleCan(user,'salary.view'))return row;return {...row,compensation_amount:null,monthly_salary_amount:null,monthly_salary_currency:null};};
   if(teamRoute){
    if(req.method!=='GET')fail('Método no permitido',405);
+   // Every member reaches the team directory, but only finance keeps the full
+   // record. Directory roles receive photo, name and cargo and nothing else:
+   // no salaries, no contact data, no access state.
+   if(!roleCan(user,'finance.view')&&!roleCan(user,'members.manage')){
+    const members=(await c.query(`select u.id::text as id,coalesce(nullif(p.full_name,''),u.email) as full_name,p.photo_url,m.role from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=u.id and p.organization_id=m.organization_id where m.organization_id=$1 and m.active and m.removed_at is null order by full_name`,[org])).rows;
+    const extra=(await c.query(`select c.id::text as id,c.full_name,c.photo_url,c.job_title from agency_collaborators c where c.organization_id=$1 and c.user_id is null and ${visibleRecord('c','collaborators')} order by c.full_name`,[org])).rows;
+    result={directory:[...members,...extra.map(person=>({id:person.id,full_name:person.full_name,photo_url:person.photo_url,role:'',cargo:person.job_title||''}))]};
+   }else{
    const collaborators=(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows;
    const members=(await c.query('select u.id,u.email,m.role,m.active,m.removed_at,p.full_name,p.photo_url from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=u.id and p.organization_id=m.organization_id where m.organization_id=$1 order by u.email',[org])).rows;
    const archivedProfiles=(await c.query("select c.id,c.user_id,c.email from agency_collaborators c join agency_archived_records a on a.organization_id=c.organization_id and a.record_id=c.id and a.kind='collaborators' where c.organization_id=$1",[org])).rows;
-   result={collaborators,members,archivedProfiles};
+   result={collaborators:collaborators.map(withoutSalary),members,archivedProfiles};
+   }
   }else if(jobMatch) {
    await c.query('select ensure_agency_job_catalog($1)',[org]);
    if(req.method==='GET')result={roles:(await c.query('select * from agency_job_roles where organization_id=$1 order by active desc,name',[org])).rows};
@@ -91,10 +101,11 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     await c.query('delete from agency_salary_month_overrides where organization_id=$1 and collaborator_id=$2 and month=$3::date',[org,collaborator.id,`${month}-01`]);result={month,override:null};
    } else fail('Método no permitido',405);
   } else if(collaboratorMatch) {
-   if(req.method==='GET') result={collaborators:(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows};
+   if(req.method==='GET') result={collaborators:(await c.query(`select c.*,u.email as access_email from agency_collaborators c left join users u on u.id=c.user_id where c.organization_id=$1 and ${visibleRecord('c','collaborators')} order by c.active desc,c.full_name`,[org])).rows.map(withoutSalary)};
    else if(req.method==='POST'||(req.method==='PATCH'&&collaboratorMatch[1])) {
     let previous={};if(collaboratorMatch[1]){previous=(await c.query('select * from agency_collaborators where id=$1 and organization_id=$2 for update',[collaboratorMatch[1],org])).rows[0];if(!previous)fail('Registro no encontrado',404);await assertRecordAvailable(c,'agency_collaborators',previous);}
     const incoming=await body(req), b={compensation_type:'fixed',compensation_amount:0,active:true,...previous,...incoming};
+    if(!roleCan(user,'salary.view')&&(Object.hasOwn(incoming,'compensation_amount')||Object.hasOwn(incoming,'monthly_salary_amount')||Object.hasOwn(incoming,'monthly_salary_currency')))fail('Tu rol no permite editar salarios',403);
     if(!collaboratorMatch[1]&&b.currency===undefined)b.currency=await companyCurrency(c,org);
     const name=text(b.full_name,120);if(name.length<2) fail('Ingresá el nombre');
     for(const key of ['started_on','ended_on'])if(b[key] instanceof Date)b[key]=b[key].toISOString().slice(0,10);
@@ -126,7 +137,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     const values=[org,uid,name,contact,photo||null,jobTitle,option(b.compensation_type,['fixed','variable','hourly','per_project']),money(b.compensation_amount,true),Boolean(b.invoices_company),start,day,b.active!==false,text(b.notes||''),option(b.currency,currencies),end,salaryAmount,salaryCurrency];
     if(collaboratorMatch[1]) {await belongs(c,'agency_collaborators',collaboratorMatch[1],org);values.push(collaboratorMatch[1]);result={collaborator:(await c.query('update agency_collaborators set user_id=$2,full_name=$3,email=$4,photo_url=$5,job_title=$6,compensation_type=$7,compensation_amount=$8,invoices_company=$9,started_on=$10,payment_day=$11,active=$12,notes=$13,currency=$14,ended_on=$15,monthly_salary_amount=$16,monthly_salary_currency=$17,updated_at=now() where organization_id=$1 and id=$18 returning *',values)).rows[0]};}
     else {result={collaborator:(await c.query('insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_type,compensation_amount,invoices_company,started_on,payment_day,active,notes,currency,ended_on,monthly_salary_amount,monthly_salary_currency) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) returning *',values)).rows[0]};status=201;}
-    result.collaborator=(await c.query('update agency_collaborators set job_role_id=$1 where id=$2 and organization_id=$3 returning *',[jobId,result.collaborator.id,org])).rows[0];result.access={status:access.status};
+    result.collaborator=(await c.query('update agency_collaborators set job_role_id=$1 where id=$2 and organization_id=$3 returning *',[jobId,result.collaborator.id,org])).rows[0];result.access={status:access.status};result.collaborator=withoutSalary(result.collaborator);
    } else fail('Método no permitido',405);
   } else if(commissionMonthlyRoute) {
    if(req.method!=='GET')fail('Método no permitido',405);
