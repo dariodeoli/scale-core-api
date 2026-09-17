@@ -151,8 +151,9 @@ try{
  const aDemo=await loginFixture(ana,demo);
  assert.equal((await profile(aDemo,{full_name:'Identidad Demo',photo_url:'https://example.invalid/demo.png'})).status,403,'a unified owner edits their identity from the real company, not the demo');
  const demoOnly=await insert("insert into users(email,password_hash) values('demo-only-presence@example.invalid','unused')");
- await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[demo,demoOnly]);
- const aDemoOnly=await loginFixture(demoOnly,demo);
+ const demoOnlyOrg=await insert("insert into organizations(slug,name,demo_owner_user_id,demo_expires_at) values('presence-demo-only','Demo only',$1,now()+interval '1 day')",[demoOnly]);
+ await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[demoOnlyOrg,demoOnly]);
+ const aDemoOnly=await loginFixture(demoOnly,demoOnlyOrg);
  assert.equal((await profile(aDemoOnly,{full_name:'Solo Demo',photo_url:''})).status,200,'a demo-only owner edits the demo-local profile');
  assert.equal((await read('projects?ids='+project,aDemo)).data.people.length,0);
  assert.equal((await heartbeat(aDemo,crypto.randomUUID(),project)).status,404);
