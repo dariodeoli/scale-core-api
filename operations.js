@@ -113,6 +113,15 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     const day=b.payment_day?Number(b.payment_day):null;if(day!==null&&(!Number.isInteger(day)||day<1||day>31)) fail('Día de pago inválido');
     const start=date(b.started_on),end=date(b.ended_on);if(start&&end&&end<start) fail('La salida no puede ser anterior al ingreso');
     const access=await collaboratorAccess(c,{email:contact,org,actorRole:user.demo_owner_user_id?'finance':user.role,active:b.active!==false,previousUserId:uid});uid=access.userId;notifyEmail=access.notifyEmail;
+    // Administration may set the member photo from the team directory. The photo
+    // lives in the personal identity, so an authorized org context updates it and
+    // every organization copy syncs from there; removal keeps its tombstone.
+    if(Object.hasOwn(incoming,'photo_url')&&uid){
+      await c.query("select set_config('app.current_organization',$1,true),set_config('app.identity_admin','true',true)",[String(org)]);
+      await c.query(`insert into user_personal_identities(user_id,full_name,photo_url,photo_removed_at)
+        select $1,$2,$3,case when $3::text is null then now() else null end from organization_person_identity where user_id=$1 and organization_id=$4 and not is_demo
+        on conflict(user_id) do update set photo_url=excluded.photo_url,photo_removed_at=excluded.photo_removed_at,updated_at=now()`,[uid,name,photo||null,org]);
+    }
     const salaryAmount=Object.hasOwn(incoming,'monthly_salary_amount')?monthlySalary(incoming.monthly_salary_amount):previous.monthly_salary_amount??null,salaryCurrency=salaryAmount===null?null:option(b.monthly_salary_currency||'PYG',['PYG','USD']);
     const values=[org,uid,name,contact,photo||null,jobTitle,option(b.compensation_type,['fixed','variable','hourly','per_project']),money(b.compensation_amount,true),Boolean(b.invoices_company),start,day,b.active!==false,text(b.notes||''),option(b.currency,currencies),end,salaryAmount,salaryCurrency];
     if(collaboratorMatch[1]) {await belongs(c,'agency_collaborators',collaboratorMatch[1],org);values.push(collaboratorMatch[1]);result={collaborator:(await c.query('update agency_collaborators set user_id=$2,full_name=$3,email=$4,photo_url=$5,job_title=$6,compensation_type=$7,compensation_amount=$8,invoices_company=$9,started_on=$10,payment_day=$11,active=$12,notes=$13,currency=$14,ended_on=$15,monthly_salary_amount=$16,monthly_salary_currency=$17,updated_at=now() where organization_id=$1 and id=$18 returning *',values)).rows[0]};}

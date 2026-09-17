@@ -217,11 +217,17 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       try {
         await client.query('begin');
         await auditContext(client,user,req);
+        // Administration manages the member photo from the team directory: the
+        // authorized org context lets identity_admin pass the owner-only guard,
+        // and the membership check still applies inside the trigger.
+        await client.query("select set_config('app.current_organization',$1,true),set_config('app.identity_admin','true',true)",[String(user.organization_id)]);
         const identity = await client.query(`select is_demo,coalesce((to_jsonb(i)->>'personal_in_demo')::boolean,false) as personal_in_demo,coalesce(nullif(full_name,''),email) as full_name from organization_person_identity i where user_id=$1 and organization_id=$2`,[target,user.organization_id]);
         if (!identity.rows[0]) { await client.query('rollback'); return send(res,404,{error:'Miembro no encontrado en esta empresa'}); }
         const saved = identity.rows[0].is_demo || identity.rows[0].personal_in_demo
           ? (await client.query('insert into agency_user_profiles(user_id,organization_id,full_name,photo_url) values($1,$2,$3,$4) on conflict(user_id,organization_id) do update set photo_url=excluded.photo_url,updated_at=now() returning full_name,photo_url',[target,user.organization_id,identity.rows[0].full_name,photo])).rows[0]
-          : (await client.query('insert into user_personal_identities(user_id,full_name,photo_url,photo_removed_at) select user_id,$3,$4,case when $4::text is null then now() else null end from organization_person_identity where user_id=$1 and organization_id=$2 and not is_demo on conflict(user_id) do update set photo_url=excluded.photo_url,photo_removed_at=excluded.photo_removed_at,updated_at=now() returning full_name,photo_url',[target,user.organization_id,identity.rows[0].full_name,photo])).rows[0];
+          : (await client.query(`insert into user_personal_identities(user_id,full_name,photo_url,photo_removed_at)
+              select user_id,$3,$4,case when $4::text is null then now() else null end from organization_person_identity where user_id=$1 and organization_id=$2 and not is_demo
+              on conflict(user_id) do update set photo_url=excluded.photo_url,photo_removed_at=excluded.photo_removed_at,updated_at=now() returning full_name,photo_url`,[target,user.organization_id,identity.rows[0].full_name,photo])).rows[0];
         await client.query('commit');
         return send(res,200,{member:{id:target,full_name:saved.full_name,photo_url:saved.photo_url}});
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
