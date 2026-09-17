@@ -78,6 +78,13 @@ assert.equal(verified.status,200);assert.equal(verified.record.last_verification
 assert.equal(verified.record.storage_location_id,null,'verification adjustments retain legacy free-text locations');
 let trace=await call(`inventory/${card}`);assert.equal(trace.verifications.length,1);assert.equal(trace.verifications[0].adjusted,true);assert.equal(trace.verifications[0].verified_by_user_id,management.id);assert.equal(trace.verifications[0].counted_quantity,1);assert(trace.verifications[0].verified_at);assert.equal(trace.record.last_verified_counted_quantity,1);assert(trace.trace.some(event=>event.event_type==='inventory.created'));assert(trace.trace.some(event=>event.event_type==='stock.verified'));
 assert.equal((await call(`inventory/${card}/verify`,'POST',{result:'confirmed',counted_quantity:2})).status,400);
+const batch=await call('inventory/batch','POST',{ids:[card,micId],change:{verify:true,location:{storage_shelf:'Estante Lote',storage_row:'7'}}},management);
+assert.equal(batch.status,200);assert.equal(batch.verified,2);assert.equal(batch.moved,2,'the batch verifies and moves every selected item');
+const batchCard=await call(`inventory/${card}`);assert.equal(batchCard.record.last_verification_result,'confirmed');assert.equal(batchCard.record.storage_shelf,'Estante Lote');assert.equal(batchCard.record.storage_row,'7');
+assert.equal((await call(`inventory/${micId}`)).record.storage_shelf,'Estante Lote','the second selected item moved too');
+assert.equal((await call('inventory/batch','POST',{ids:[card,'999999'],change:{verify:true}})).status,404,'every id must belong to the company');
+assert.equal((await call('inventory/batch','POST',{ids:[card],change:{}})).status,400,'a batch needs something to change');
+assert.equal((await call('inventory/batch','POST',{ids:[card],change:{verify:true}},viewer)).status,403,'batch actions require inventory.manage');
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'Memorias'})).status,200);
 assert.equal((await call(`inventory/${card}`)).record.category,'Memorias');
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{active:false})).status,200);
