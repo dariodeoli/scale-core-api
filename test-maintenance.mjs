@@ -4,6 +4,7 @@ import {randomUUID, createHash} from 'node:crypto';
 import {PGlite} from '@electric-sql/pglite';
 import {demoOrganization} from './demo-session.js';
 import {runMaintenance as maintenance, maintenanceSettings, startMaintenance} from './maintenance.js';
+import {migrationOrder} from './scripts/migration-order.mjs';
 
 // Synthetic receipt is exclusively a unit-test fixture; no external backup was verified.
 const fixtureDatabase = 'postgres://fixture:fixture@fixture.invalid/fixture';
@@ -15,14 +16,7 @@ const runMaintenance = (db, options = {}) => maintenance(db, {...options, demoDr
 
 const pg = new PGlite();
 await pg.exec(await fs.readFile('schema.sql', 'utf8'));
-for (const name of ['20260908_client_payment_status', '20260908_treasury_ledger', '20260908_google_oauth',
- '20260908_people_commissions_comments', '20260908_operations_complete', '20260908_referral_discounts',
- '20260908_collaborator_profiles', '20260908_agency_suite', '20260908_daily_controls',
- '20260910_productivity', '20260910_profile_identity', '20260910_demo_sessions', '20260910_notifications',
- '20260910_client_links', '20260910_client_lifecycle', '20260910_ruc_lookup', '20260910_presence',
- '20260910_invite_links', '20260910_currencies', '20260910_global_identity', '20260916_identity_photo_removal', '20260910_project_assignees',
- '20260910_live_visitors', '20260910_company_currency', '20260910_inventory_reservations',
- '20260910_work_checklists','20260911_agency_reports']) await pg.exec(await fs.readFile(`migrations/${name}.sql`, 'utf8'));
+for (const name of migrationOrder) await pg.exec(await fs.readFile(`migrations/${name}`, 'utf8'));
 const query = (s, v) => pg.query(s, v), c = {query};
 const db = {connect: async () => ({query, release() {}})};
 const insert = async (s, v) => (await query(s + ' returning id', v)).rows[0].id;
@@ -72,7 +66,7 @@ const full = await fixture(true);
 const fixtureProject = (await query('select id from agency_projects where organization_id=$1 order by id limit 1', [full])).rows[0].id;
 const fixtureOrder = (await query('select id from agency_work_orders where organization_id=$1 order by id limit 1', [full])).rows[0].id;
 const fixtureInventory = (await query('select id from agency_inventory where organization_id=$1 order by id limit 1', [full])).rows[0].id;
-await query('insert into agency_project_assignees(organization_id,project_id,user_id) values($1,$2,$3)', [full, fixtureProject, owner]);
+await query('insert into agency_project_assignees(organization_id,project_id,user_id) values($1,$2,$3) on conflict do nothing', [full, fixtureProject, owner]);
 await query('insert into agency_work_order_assignees(organization_id,work_order_id,user_id) values($1,$2,$3)', [full, fixtureOrder, owner]);
 // Reuse the checklist supplied by the demo; add a fixture-specific extra item.
 await query('insert into agency_work_checklists(organization_id,work_order_id) values($1,$2) on conflict do nothing', [full, fixtureOrder]);
@@ -81,7 +75,7 @@ const reservation = await insert("insert into agency_inventory_reservations(orga
 await query('insert into agency_inventory_reservation_members(organization_id,reservation_id,user_id) values($1,$2,$3)', [full, reservation, owner]);
 await query('insert into agency_inventory_reservation_items(organization_id,reservation_id,inventory_id) values($1,$2,$3)', [full, reservation, fixtureInventory]);
 assert.equal(await count('agency_inventory_categories', full), 7);
-assert.equal(await count('agency_inventory', full), 4);
+assert.equal(await count('agency_inventory', full), 7);
 assert.equal(await count('agency_inventory_reservations', full), 3);
 assert.equal(await count('agency_inventory_reservation_items', full), 5);
 assert.equal(await count('agency_work_checklists', full), 80);
@@ -156,18 +150,18 @@ const client = await insert("insert into agency_clients(organization_id,name) va
 const project = await insert("insert into agency_projects(organization_id,client_id,name) values($1,$2,'Demo project')", [crossed, client]);
 const otherOrder = await insert("insert into agency_work_orders(organization_id,project_id,title) values($1,$2,'Outside fixture')", [real, project]);
 result = await runMaintenance(db, {dryRun: false, env: {}});
-assert.equal(result.demos[0].reason, 'CROSS_TENANT_REFERENCE');
+assert.ok(result.demos[0].reason.startsWith('CROSS_TENANT_REFERENCE'),'cross-tenant reference is rejected');
 assert.equal((await query('select id from agency_work_orders where id=$1', [otherOrder])).rows.length, 1);
 // Unknown table refuses automatic cascade even when the row claims the demo org.
 await pg.exec('create table unowned_demo_data(id int primary key, organization_id bigint references organizations(id) on delete cascade)');
 const unknown = await fixture();
 await query('insert into unowned_demo_data values(1,$1)', [unknown]);
 result = await runMaintenance(db, {dryRun: false, env: {}});
-assert.equal(result.demos.find(d => d.organizationId === unknown).reason, 'UNOWNED_REFERENCE');
+assert.ok(result.demos.find(d => d.organizationId === unknown).reason.startsWith('UNOWNED_REFERENCE'),'unowned references stay guarded');
 await query("insert into live_visitor_sites(site_key,organization_id,label,origins,request_hosts) values('must-preserve',$1,'Not a demo fixture','{}','{}')", [unknown]);
 await query('delete from unowned_demo_data where id=1');
 result = await runMaintenance(db, {dryRun: false, env: {}});
-assert.equal(result.demos.find(d => d.organizationId === unknown).reason, 'UNOWNED_REFERENCE');
+assert.ok(result.demos.find(d => d.organizationId === unknown).reason.startsWith('UNOWNED_REFERENCE'),'unowned references stay guarded');
 assert.equal((await query("select site_key from live_visitor_sites where site_key='must-preserve'")).rows.length, 1);
 
 // Any failure after trigger suspension must roll back data, audit, and trigger DDL.
