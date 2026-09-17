@@ -4,6 +4,7 @@ import {normalizeUrgency} from './urgency.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {roleCan} from './permissions.js';
 import {externalLink,profilePhoto} from './media-policy.js';
+import {email as normalizedEmail,phone as normalizedPhone} from './suite-validation.js';
 import {budgetSections} from './budget-sections.js';
 import {clientColor,clientLogo} from './client-identity.js';
 import {assertUniqueClientRuc} from './ruc-lookup.js';
@@ -127,13 +128,15 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       const user = await session(req); if (!roleCan(user,'clients.manage')) return send(res,403,{error:'Sin permiso'});
       const {name='',email=null,phone=null,notes=null,logo_url=null,color_key='violet',tax_id='',legal_name=''}=await body(req);
       if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 120) return send(res,400,{error:'Nombre inválido'});
+      let contact;
+      try{contact={email:normalizedEmail(email),phone:normalizedPhone(phone)};}catch(error){return send(res,400,{error:error.message||'Contacto inválido'});}
       const logo=await clientLogo(logo_url),color=clientColor(color_key);
       const client=await db.connect();
       try{
        await client.query('begin');await client.query('select id from organizations where id=$1 for update',[user.organization_id]);
        await assertUniqueClientRuc(client,user.organization_id,tax_id);
        await client.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
-       const r=await client.query('insert into agency_clients(name,email,phone,notes,organization_id,logo_url,color_key,tax_id,legal_name) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *',[name.trim(),email||null,phone||null,notes||null,user.organization_id,logo,color,String(tax_id||'').trim()||null,String(legal_name||'').trim()||null]);
+       const r=await client.query('insert into agency_clients(name,email,phone,notes,organization_id,logo_url,color_key,tax_id,legal_name) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *',[name.trim(),contact.email,contact.phone,notes||null,user.organization_id,logo,color,String(tax_id||'').trim()||null,String(legal_name||'').trim()||null]);
        await client.query('commit');return send(res,201,{client:r.rows[0]});
       }catch(error){await client.query('rollback');return send(res,error.status||500,{error:error.status?error.message:'No se pudo crear el cliente'});}finally{client.release();}
     }

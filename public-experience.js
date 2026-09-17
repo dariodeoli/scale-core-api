@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import {throttle} from './password-access.js';
 import {seedPrivateDemo} from './demo-session.js';
 import {accessRoles} from './invite-links.js';
+import {phone as normalizePhone} from './suite-validation.js';
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 export async function publicExperience({req,res,url,db,session,body,send,cookie,parseCookies}){
  if(!['/api/demo/start','/api/demo/role','/api/public/contact','/api/public/telemetry'].includes(url.pathname))return false;
@@ -27,14 +28,14 @@ export async function publicExperience({req,res,url,db,session,body,send,cookie,
   if(url.pathname==='/api/public/contact'){
    if(b.website){send(res,202,{ok:true});return true;}
    const clean=(v,max)=>typeof v==='string'?v.trim().slice(0,max):'';
-   const name=clean(b.name,100),company=clean(b.company,140),email=clean(b.email,254).toLowerCase(),phone=clean(b.phone,50),message=clean(b.message,1500);
+   const name=clean(b.name,100),company=clean(b.company,140),email=clean(b.email,254).toLowerCase(),phoneNumber=normalizePhone(clean(b.phone,50)),message=clean(b.message,1500);
    if(name.length<2||company.length<2||!/^\S+@\S+\.\S+$/.test(email)||b.consent!==true)fail('Completá nombre, empresa, correo y autorización de contacto.');
    if(!await throttle(db,'contact:'+email,3))fail('Ya recibimos tu consulta. Esperá unos minutos antes de reenviar.',429);
    c=await db.connect();await c.query('begin');
    const org=(await c.query("select id from organizations where slug='scale' and active=true and demo_owner_user_id is null")).rows[0];if(!org)fail('Formulario temporalmente no disponible',503);
    await c.query("select pg_advisory_xact_lock(hashtextextended($1,0))",['contact:'+email]);
    const duplicate=(await c.query("select id from agency_leads where organization_id=$1 and email=$2 and notes like 'Origen: landing Scale OS.%' and created_at>now()-interval '1 day'",[org.id,email])).rows[0];
-   if(!duplicate)await c.query("insert into agency_leads(organization_id,name,email,phone,notes) values($1,$2,$3,$4,$5)",[org.id,company+' · '+name,email,phone,'Origen: landing Scale OS. Autorizó contacto.\n'+message]);
+   if(!duplicate)await c.query("insert into agency_leads(organization_id,name,email,phone,notes) values($1,$2,$3,$4,$5)",[org.id,company+' · '+name,email,phoneNumber,'Origen: landing Scale OS. Autorizó contacto.\n'+message]);
    await c.query('commit');send(res,202,{ok:true});return true;
   }
   // Fresh browser session, never copied from a real agency. No reusable demo password.
