@@ -7,7 +7,8 @@
     "start": "node server.js",
     "test:secure-deletion": "node test-secure-deletion.mjs",
     "test:billing": "node test-subscription-billing.mjs && node test-pagaya-subscription-handoff.mjs",
-    "test:release": "node test-suite.mjs && node test-operations.mjs && node --experimental-vm-modules test-auth.mjs"
+    "test:release": "node test-suite.mjs && node test-operations.mjs && node --experimental-vm-modules test-auth.mjs",
+    "test:migrations-runner": "node test-migrations-runner.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -46,6 +46,7 @@ import {automationApi,startAutomation} from './automation.js';
 import {subscriptionBilling,subscriptionState,startTrial} from './subscription-billing.js';
 import {trialDetails,trialDetailsFromInput,registerTrial} from './trial-registration.js';
 import {platformAdmin,bootstrapInitialPlatformAdmin,ensurePlatformOwnerAdmin} from './platform-admin.js';
+import {applyPendingMigrations} from './migrations-runner.mjs';
 import {rolePermissions,roleCan} from './permissions.js';
 import {createEmailDelivery,publicEmailDeliveryStatus} from './email-delivery.js';
 import {acceptClientPortalGoogleInvite,clientPortal,clientPortalGoogleInvite,clientPortalResetEmail,clientPortalInviteEmail,clientPortalUrl} from './client-portal.js';
@@ -185,6 +186,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_inventory_category_icons.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_salary_override_signed.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260916_identity_photo_removal.sql'),'utf8'));
+    await applyPendingMigrations(migration, path.join(root,'migrations'), {firstRun: 'baseline'});
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
