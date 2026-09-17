@@ -14,16 +14,13 @@ import {automationApi} from './automation.js';
 import {inventoryReservations} from './inventory-reservations.js';
 import {contentReview} from './content-review.js';
 import {recordLifecycle} from './record-lifecycle.js';
+import {migrationOrder} from './scripts/migration-order.mjs';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile('schema.sql','utf8'));
-for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete',
- '20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls'])
- await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
+for(const name of migrationOrder)await pg.exec(await fs.readFile(`migrations/${name}`,'utf8'));
 await identitySchema(pg);
-for(const name of ['20260910_project_assignees','20260910_presence','20260910_currencies','20260910_company_currency','20260910_notifications',
- '20260910_inventory_reservations','20260910_work_checklists','20260911_invite_link_metrics','20260911_invite_link_details'])
- await pg.exec(await fs.readFile(`migrations/${name}.sql`,'utf8'));
+
 const query=(s,v)=>pg.query(s,v),db={query,connect:async()=>({query,release(){}})};
 const insert=async(s,v)=>(await query(s+' returning id',v)).rows[0].id;
 const org=await insert("insert into organizations(slug,name) values('actors-a','Actors A')");
