@@ -47,7 +47,7 @@ export function notificationEmail(n,appUrl){
  const href=appUrl.replace(/\/$/,'')+(n.work_order_id?'/resumen?order='+n.work_order_id:'/proyectos');
  const text=n.title+'\n\n'+n.body+'\n\nAbrir Scale OS: '+href+'\n\nPodés desactivar estos correos en la campana de notificaciones → Preferencias.';
  return{subject:n.title.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g,' ').trim().slice(0,160),text,html:emailShell({
-  eyebrow:n.organization_name?escape(n.organization_name):'Scale OS',
+  eyebrow:n.organization_name||'Scale OS',
   title:n.title,
   lead:n.body,
   cta:{label:'Abrir en Scale OS',href},
