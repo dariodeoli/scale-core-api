@@ -77,4 +77,5 @@ export const migrationOrder = [
   '20260915_salary_override_signed.sql',
   '20260916_identity_photo_removal.sql',
   '20260917_identity_admin_photo.sql',
+  '20260918_collaborator_role_and_project_archive.sql',
 ];

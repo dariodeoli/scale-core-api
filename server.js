@@ -187,6 +187,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260915_salary_override_signed.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260916_identity_photo_removal.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260917_identity_admin_photo.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260918_collaborator_role_and_project_archive.sql'),'utf8'));
     await applyPendingMigrations(migration, path.join(root,'migrations'), {firstRun: 'baseline'});
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
