@@ -4,11 +4,12 @@ import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {projectAssignees,getRecordAssignees,setRecordAssignees,normalizeAssigneeIds} from './project-assignees.js';
 import {suite} from './agency-suite.js';
+import {migrationOrder} from './scripts/migration-order.mjs';
 
 const pg=new PGlite();
 const load=async file=>pg.exec(await fs.readFile(new URL(file,import.meta.url),'utf8'));
 await load('schema.sql');
-for(const name of ['20260908_treasury_ledger','20260908_people_commissions_comments','20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles','20260908_agency_suite','20260908_daily_controls','20260910_productivity'])await load(`migrations/${name}.sql`);
+for(const name of migrationOrder)await load(`migrations/${name}`);
 await identitySchema(pg);
 const query=(sql,values)=>pg.query(sql,values),db={query,connect:async()=>({query,release(){}})};
 const insert=async(sql,values)=>String((await query(sql+' returning id',values)).rows[0].id);
@@ -71,9 +72,9 @@ for(const [kind,key,field] of [['projects',project,'name'],['work-orders',order,
  assert.equal((await read()).urgency,4);
  assert.equal((await detail(kind,key,{urgency:''})).status,200);assert.equal((await read()).urgency,null);
 }
-const server=await fs.readFile(new URL('server.js',import.meta.url),'utf8');
-for(const [table,args] of [['agency_projects',['New project',client,null,org,null]],['agency_work_orders',['New piece',project,'to_record',null,null,org,3]]]){
+const server=await fs.readFile(new URL('server.js',import.meta.url),'utf8')+await fs.readFile(new URL('agency-core.js',import.meta.url),'utf8');
+for(const [table,args,expectedUrgency] of [['agency_projects',['New project',client,null,org,null],null],['agency_work_orders',['New piece',project,'to_record',null,null,org,3,null,null],3]]){
  const sql=server.match(new RegExp("'(insert into "+table+"\\([^']+urgency[^']+returning \\*)'"))[1];
- const row=(await query(sql,args)).rows[0];assert.equal(row.urgency,args.at(-1),'actual creation query persists urgency');
+ const row=(await query(sql,args)).rows[0];assert.equal(row.urgency,expectedUrgency,'actual creation query persists urgency');
 }
 await pg.close();console.log('PASS urgency normalization, migration, creation SQL, update, null, roles, tenants, revocation, concurrency and transaction rollback');
