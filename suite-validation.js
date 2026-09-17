@@ -24,6 +24,7 @@ export const phone=v=>{
  if(!valid)fail('Teléfono inválido: en Paraguay 9 dígitos para móvil u 8 para fijo; en el resto, 6 a 12. Ej.: +595 981 123 456.');
  return `+${country||'595'} ${national}`;
 };
+export const serial=v=>text(v,120).replace(/[\s\-_]+/g,'').toUpperCase();
 export {externalLink as link} from './media-policy.js';
 export function items(v){if(!Array.isArray(v)||!v.length||v.length>100)fail('Agregá entre 1 y 100 ítems');return v.map(x=>{const description=text(x.description,500),quantity=Number(x.quantity),unitPrice=amount(x.unitPrice??x.unit_price);if(!description||!Number.isFinite(quantity)||quantity<=0||quantity>999999)fail('Ítem inválido');const total=amount(quantity*unitPrice);return{description,quantity,unitPrice,total};});}
 export async function owned(c,table,key,org){const row=(await c.query(`select * from ${table} where id=$1 and organization_id=$2 for update`,[id(key),org])).rows[0];if(!row)fail('Registro no encontrado',404);await assertRecordAvailable(c,table,row);return row;}
