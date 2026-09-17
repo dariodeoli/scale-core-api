@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {recordLifecycle,archiveKinds,visibleRecord} from './record-lifecycle.js';
 import {suite} from './agency-suite.js';
+import {roleCan} from './permissions.js';
 import {collaboratorAccess} from './collaborator-access.js';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
@@ -45,7 +46,7 @@ for(const [kind,key] of Object.entries(keys)){
 }
 assert.equal((await call('/api/agency/trash')).records.length,9);
 assert.equal((await call('/api/agency/trash','GET',{...user,organization_id:other})).records.length,0);
-assert.ok((await call('/api/agency/trash','GET',{...user,role:'sales'})).records.every(r=>archiveKinds[r.kind].roles.includes('sales')));
+assert.ok((await call('/api/agency/trash','GET',{...user,role:'sales'})).records.every(r=>roleCan({role:'sales'},archiveKinds[r.kind].capability)));
 assert.equal((await call(`/api/agency/clients/${keys.clients}`,'PATCH',user,{name:'Should fail'})).status,409);
 assert.equal((await call(`/api/agency/leads/${keys.leads}/convert`,'POST')).status,409);
 assert.equal((await call('/api/agency/leads')).records.length,0);

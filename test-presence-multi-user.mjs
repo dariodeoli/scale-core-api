@@ -7,21 +7,14 @@ import vm from 'node:vm';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import {PGlite} from '@electric-sql/pglite';
+import {migrationOrder} from './scripts/migration-order.mjs';
 
 assert(vm.SourceTextModule, 'Run with node --experimental-vm-modules test-presence-multi-user.mjs');
 const pg=new PGlite();
 const sql=async file=>pg.exec(await fs.readFile(new URL(file,import.meta.url),'utf8'));
 await sql('schema.sql');
-for(const file of [
- '20260908_treasury_ledger','20260908_google_oauth','20260908_people_commissions_comments',
- '20260908_operations_complete','20260908_referral_discounts','20260908_collaborator_profiles',
- '20260908_agency_suite','20260908_daily_controls','20260910_productivity',
- '20260910_profile_identity','20260910_demo_sessions','20260910_notifications',
- '20260910_client_links','20260910_client_lifecycle','20260910_invite_links',
- '20260910_currencies','20260910_company_currency','20260910_global_identity','20260916_identity_photo_removal','20260910_presence'
-])await sql(`migrations/${file}.sql`);
-for(const file of ['20260911_subscriptions','20260911_trial_registration'])await sql(`migrations/${file}.sql`);
-await sql('migrations/20260911_agency_reports.sql');
+for(const file of migrationOrder)await sql(`migrations/${file}`);
+
 
 // Model a pg Pool with max=1: concurrent requests queue complete transactions.
 // PGlite has a single connection; interleaving BEGIN/COMMIT would falsify the test.
@@ -156,7 +149,12 @@ try{
  const demo=await insert("insert into organizations(slug,name,demo_owner_user_id,demo_expires_at) values('presence-private-demo','Demo',$1,now()+interval '1 day')",[ana]);
  await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[demo,ana]);
  const aDemo=await loginFixture(ana,demo);
- assert.equal((await profile(aDemo,{full_name:'Identidad Demo',photo_url:'https://example.invalid/demo.png'})).status,200);
+ assert.equal((await profile(aDemo,{full_name:'Identidad Demo',photo_url:'https://example.invalid/demo.png'})).status,403,'a unified owner edits their identity from the real company, not the demo');
+ const demoOnly=await insert("insert into users(email,password_hash) values('demo-only-presence@example.invalid','unused')");
+ const demoOnlyOrg=await insert("insert into organizations(slug,name,demo_owner_user_id,demo_expires_at) values('presence-demo-only','Demo only',$1,now()+interval '1 day')",[demoOnly]);
+ await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[demoOnlyOrg,demoOnly]);
+ const aDemoOnly=await loginFixture(demoOnly,demoOnlyOrg);
+ assert.equal((await profile(aDemoOnly,{full_name:'Solo Demo',photo_url:''})).status,200,'a demo-only owner edits the demo-local profile');
  assert.equal((await read('projects?ids='+project,aDemo)).data.people.length,0);
  assert.equal((await heartbeat(aDemo,crypto.randomUUID(),project)).status,404);
  assert.equal((await read('project?projectId='+project,b)).data.people.find(p=>String(p.id)===String(ana)).name,'Ana Actualizada');

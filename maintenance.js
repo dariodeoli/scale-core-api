@@ -15,13 +15,18 @@ const scopedTables = `organizations organization_members sessions events oauth_h
  agency_project_assignees agency_work_order_assignees agency_inventory_categories
  agency_inventory_reservations agency_inventory_reservation_members agency_inventory_reservation_items
  agency_work_checklists agency_work_checklist_items
- agency_reporting_coverage agency_client_reporting_events`.trim().split(/\s+/);
+ agency_reporting_coverage agency_client_reporting_events agency_assignment_notification_state agency_client_commercial_terms agency_planned_expenses agency_expenses agency_expense_reversals agency_salary_month_overrides agency_role_permissions agency_inventory_storage_locations agency_inventory_trace agency_inventory_verifications agency_order_comment_mentions agency_project_comment_mentions agency_work_order_links agency_studio_spaces agency_studio_reservations agency_studio_reservation_members agency_weekly_reports client_portal_deliveries client_portal_delivery_comments client_portal_delivery_decisions client_portal_delivery_downloads client_portal_grants client_portal_invites`.trim().split(/\s+/);
 const switches = [
  ['agency_payments', 'agency_payments_sync'],
  ['agency_payment_reversals', 'payment_reversal_sync'],
  ['account_transfers', 'account_transfers_sync'],
  ['agency_client_reporting_events', 'agency_reporting_events_immutable'],
  ['agency_archived_records', 'agency_reporting_archive_snapshot'],
+ ['agency_inventory_verifications', 'inventory_verification_immutable'],
+ ['agency_inventory_trace', 'inventory_trace_immutable'],
+ ['agency_client_commercial_terms', 'agency_client_commercial_term_guard'],
+ ['agency_expenses', 'agency_expense_sync'],
+ ['agency_expense_reversals', 'expense_reversal_sync'],
 ];
 const ident = value => '"' + value.replaceAll('"', '""') + '"';
 const tableName = table => 'public.' + ident(table);
@@ -104,7 +109,7 @@ async function deletionPlan(c, org, maxRows) {
   const unsafe = childKnown ? `and (${scope(e.child, 'ch')}) is not true` : '';
   const found = (await c.query(`select 1 from ${ident(e.child_schema)}.${ident(e.child)} ch
    join ${tableName(e.parent)} pa on ${join} where ${scope(e.parent, 'pa')} ${unsafe} limit 1`, [org])).rows.length;
-  if (found) throw failure(childKnown ? 'CROSS_TENANT_REFERENCE' : 'UNOWNED_REFERENCE');
+  if (found) throw failure((childKnown ? 'CROSS_TENANT_REFERENCE' : 'UNOWNED_REFERENCE') + ':' + e.child);
  }
  const pending = new Set(tables), order = [];
  while (pending.size) {
@@ -194,7 +199,7 @@ export async function runMaintenance(db, {dryRun = true, demoDryRun = true, veri
    } catch (error) {
     await raw.query('rollback to savepoint demo_cleanup');
     if (error.maintenanceCode === 'RUN_DEADLINE') throw error;
-    demos.push({organizationId: id, status: 'blocked', reason: error.maintenanceCode || 'DATABASE_GUARD'});
+    demos.push({organizationId: id, status: 'blocked', reason: error.maintenanceCode || 'DATABASE_GUARD:' + String(error.message || '').slice(0, 140)});
    }
   }
   const presenceTabs = await retain(c, 'agency_presence_tabs', settings.presenceDays, settings.retentionBatch, dryRun);

@@ -57,7 +57,7 @@ const second=await insert("insert into organizations(slug,name) values('default-
 const foreign=await insert("insert into organizations(slug,name) values('default-foreign','Foreign')");
 const demo=await insert("insert into organizations(slug,name) values('scale-demo-controles-20260908','Demo')");
 const password='fixture-password-123';
-const uid=await insert('insert into users(email,password_hash) values($1,$2)',[profile.email,await bcrypt.hash(password,4)]);
+const uid=await insert('insert into users(email,password_hash,email_verified_at) values($1,$2,now())',[profile.email,await bcrypt.hash(password,4)]);
 const other=await insert("insert into users(email,password_hash) values('other-default@example.invalid','unused')");
 await query("insert into organization_members(organization_id,user_id,role) values($1,$3,'owner'),($2,$3,'viewer'),($4,$5,'owner')",[org,second,uid,foreign,other]);
 async function cookieFor(user,organization){const token=crypto.randomUUID();await query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '1 day')",[token,user,organization]);return 'scale_session='+token;}
@@ -65,7 +65,7 @@ const cookie=await cookieFor(uid,org),otherCookie=await cookieFor(other,foreign)
 const set=(organizationId,as=cookie)=>request('/api/auth/default-organization',{cookie:as,method:'POST',payload:{organizationId}});
 const list=(as=cookie)=>request('/api/auth/organizations',{cookie:as});
 const orgOf=async r=>(await rows('select organization_id from sessions where id=$1',[r.headers['Set-Cookie'].split(';')[0].split('=')[1]]))[0].organization_id;
-async function passwordLogin(){return request('/api/auth/login',{method:'POST',payload:{email:profile.email,password}});}
+async function passwordLogin(){await query('delete from auth_throttles');return request('/api/auth/login',{method:'POST',payload:{email:profile.email,password}});}
 async function googleStart(params=''){
  const start=await request('/api/auth/google/start'+params);assert.equal(start.status,302);
  const state=new URL(start.headers.Location).searchParams.get('state');
@@ -141,10 +141,20 @@ r=await complete(await googleStart());assert.equal(await orgOf(r),org);assert.eq
 await set(second);
 await pg.exec(await fs.readFile(new URL('./migrations/20260911_default_login_organization.sql',import.meta.url),'utf8'));
 assert.equal((await list()).data.defaultOrganizationId,String(second));
-// Actual Google trial callback must not route back to the saved login company.
-r=await complete(await googleStart('?'+new URLSearchParams({signup:'1',company:'Trial default fixture',currency:'USD',consent:'1'})));
-const trialOrg=await orgOf(r);assert.notEqual(trialOrg,second);assert.notEqual(trialOrg,org);
-assert.equal(new URL(r.headers.Location).pathname,'/produccion');
-assert.equal((await list()).data.defaultOrganizationId,String(second));
+// Actual Google trial callback continues through pending registration instead of
+// opening a session in the saved login company: the callback itself consumes the
+// state and hands a one-time ticket.
+{
+ const params='?'+new URLSearchParams({signup:'1',company:'Trial default fixture',currency:'USD',consent:'1'});
+ const start=await request('/api/auth/google/start'+params);assert.equal(start.status,302);
+ const state=new URL(start.headers.Location).searchParams.get('state');
+ const callback=await request('/api/auth/google/callback?'+new URLSearchParams({state,code:'fixture'}),{cookie:start.headers['Set-Cookie'].split(';')[0]});
+ assert.equal(callback.status,302);
+ const trialTarget=new URL(callback.headers.Location);
+ assert.equal(trialTarget.pathname,'/registro','a trial signup continues through pending registration');
+ assert.ok(trialTarget.searchParams.get('pendingRegistration'),'the trial callback hands a one-time ticket');
+ assert.equal((await rows('select count(*)::int as n from pending_trial_registrations'))[0].n,1,'the pending registration is stored once for the trial signup');
+ assert.equal((await list()).data.defaultOrganizationId,String(second),'the saved default survives a trial signup');
+}
 await pg.close();
 console.log('PASS: persisted default company, authenticated setter/list, both login methods, stale defaults, handoff revalidation, tenant/demo isolation, invitation/trial targets, clear and migration rerun.');
