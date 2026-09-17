@@ -270,6 +270,38 @@ async function verifyItem(c,user,org,key,payload){
  return {record:inventoryPayload(verified),verification};
 }
 
+async function batchItems(c,user,org,payload){
+ const ids=[...new Set((Array.isArray(payload.ids)?payload.ids:[]).map(value=>identifier(value)))];
+ if(!ids.length||ids.length>50)fail('Elegí entre 1 y 50 equipos');
+ const change=payload.change&&typeof payload.change==='object'&&!Array.isArray(payload.change)?payload.change:fail('Cambio inválido');
+ const verify=change.verify===true,location=change.location;
+ if(!verify&&location===undefined)fail('Indicá qué cambiar en los equipos seleccionados');
+ if(location!==undefined&&(typeof location!=='object'||!location||Array.isArray(location)))fail('Ubicación inválida');
+ const rows=(await c.query('select id from agency_inventory where organization_id=$1 and id = any($2::bigint[]) order by id for update',[org,ids])).rows;
+ if(rows.length!==ids.length)fail('Algún equipo no pertenece a esta empresa',404);
+ let locationId=null,shelf='',row='';
+ if(location!==undefined){
+  locationId=location.location_id===undefined||location.location_id===null||location.location_id===''?null:identifier(location.location_id);
+  const template=locationId?(await c.query('select name from agency_inventory_storage_locations where id=$1 and organization_id=$2',[locationId,org])).rows[0]:null;
+  if(locationId&&!template)fail('Lugar de guardado no encontrado',404);
+  shelf=template?text(template.name,100):text(location.storage_shelf||'',100);
+  row=text(location.storage_row||'',80);
+ }
+ let verified=0,moved=0;
+ for(const item of rows){
+  if(location!==undefined){
+   const before=(await c.query('select storage_location_id,storage_shelf,storage_row from agency_inventory where id=$1 and organization_id=$2',[item.id,org])).rows[0];
+   await c.query('update agency_inventory set storage_location_id=$1,storage_shelf=$2,storage_row=$3 where id=$4 and organization_id=$5',[locationId,shelf,row,item.id,org]);
+   if(String(before.storage_location_id||'')!==String(locationId||'')||before.storage_shelf!==shelf||before.storage_row!==row){
+    await traceInventory(c,org,[item.id],'location.changed',user.id,null,{from:before.storage_shelf||null,to:shelf||null});
+    moved+=1;
+   }
+  }
+  if(verify){await verifyItem(c,user,org,String(item.id),{result:'confirmed',differences:'',note:''});verified+=1;}
+ }
+ return {updated:rows.length,moved,verified};
+}
+
 async function verificationHistory(c,org,key){
  return (await c.query(`select v.*,coalesce(nullif(p.full_name,''),u.email) as verifier_name,p.photo_url as verifier_photo_url
   from agency_inventory_verifications v join users u on u.id=v.verified_by_user_id
@@ -284,7 +316,7 @@ async function traceHistory(c,org,key){
 }
 
 export async function inventoryReservations({req,res,url,db,session,body,send}){
- const route=url.pathname.match(/^\/api\/agency\/(inventory|inventory-categories|inventory-locations|inventory-reservations|inventory-context)(?:\/(\d+))?(?:\/(checkout|return|check-out|check-in|cancel|restore|verify))?$/);
+ const route=url.pathname.match(/^\/api\/agency\/(inventory|inventory-categories|inventory-locations|inventory-reservations|inventory-context)(?:\/(\d+))?(?:\/(checkout|return|check-out|check-in|cancel|restore|verify|batch))?$/);
  if(!route)return false;
  let c,transaction=false;
  try{
@@ -338,6 +370,7 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
    if(req.method==='GET'&&!action){const records=await catalog(c,org);if(key){const record=records.find(r=>String(r.id)===key);if(!record)fail('Equipo no encontrado',404);result={record,verifications:await verificationHistory(c,org,key),trace:await traceHistory(c,org,key)};}else result={records};}
    else if(!action&&(req.method==='POST'&&!key||req.method==='PATCH'&&key)){result={record:await saveItem(c,user,org,key,await body(req))};status=key?200:201;}
    else if(key&&req.method==='POST'&&action==='verify'){result=await verifyItem(c,user,org,key,await body(req));}
+   else if(!key&&req.method==='POST'&&action==='batch'){result=await batchItems(c,user,org,await body(req));}
    else if(key&&(req.method==='DELETE'&&!action||req.method==='POST'&&action==='restore')){
     const item=(await c.query('select id from agency_inventory where organization_id=$1 and id=$2 for update',[org,key])).rows[0];if(!item)fail('Equipo no encontrado',404);
     if(action==='restore')await c.query("delete from agency_archived_records where organization_id=$1 and kind='inventory' and record_id=$2",[org,key]);
