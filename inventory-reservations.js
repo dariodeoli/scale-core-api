@@ -63,7 +63,7 @@ async function reservation(c,org,key){
  const row=(await c.query('select * from agency_inventory_reservations where id=$1 and organization_id=$2 for update',[key,org])).rows[0];
  if(!row)fail('Reserva no encontrada',404);return row;
 }
-function ownReservation(user,row){if(!roleCan(user,'inventory.manage')&&String(row.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
+function ownReservation(user,row){if(user.role==='viewer')fail('Tu rol es de solo lectura',403);if(!roleCan(user,'inventory.manage')&&String(row.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
 
 async function catalog(c,org){
  return (await c.query(`select i.*,cat.name as category_name,cat.active as category_active,cat.icon as category_icon,loc.name as storage_location_name,loc.active as storage_location_active,
