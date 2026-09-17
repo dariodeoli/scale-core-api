@@ -140,6 +140,26 @@ assert.ok(Array.isArray(viewerTeam.directory),'non-finance roles receive the str
 assert.equal(viewerTeam.collaborators,undefined,'directory roles never receive the full record');
 assert.ok(viewerTeam.directory.every(m=>!Object.hasOwn(m,'email')&&!Object.hasOwn(m,'compensation_amount')&&!Object.hasOwn(m,'monthly_salary_amount')),'directory rows carry photo, name and cargo only');
 assert.equal((await call('/api/agency/team','GET',{}, {...user,role:'finance'})).status,200);
+// Salary fields stay behind salary.view: management keeps the team without amounts,
+// and nobody outside owner/admin/finance may read or write them.
+assert.equal((await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{payment_day:5,invoices_company:true})).status,200,'owner sets the salary flags');
+const managementTeam=await call('/api/agency/team','GET',{}, {...user,role:'management'});
+assert.equal(managementTeam.status,200);
+assert.ok(managementTeam.collaborators.some(p=>String(p.id)===String(minimal.id)),'management keeps the full team payload');
+const managedRow=managementTeam.collaborators.find(p=>String(p.id)===String(minimal.id));
+for(const field of ['compensation_amount','monthly_salary_amount','monthly_salary_currency','payment_day','invoices_company'])assert.equal(managedRow[field],null,`${field} stays hidden without salary.view`);
+const financeTeam=await call('/api/agency/team','GET',{}, {...user,role:'finance'});
+const financeRow=financeTeam.collaborators.find(p=>String(p.id)===String(minimal.id));
+assert.ok(Number(financeRow.compensation_amount)>0,'finance keeps the agreed amount');
+assert.notEqual(financeRow.payment_day,null,'finance keeps the payment day');
+for(const payload of [{payment_day:9},{invoices_company:true},{compensation_amount:250},{monthly_salary_amount:300}]){
+ assert.equal((await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',payload,{...user,role:'management'})).status,403,`management cannot write ${Object.keys(payload)[0]}`);
+}
+assert.equal((await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{notes:'Management edit'},{...user,role:'management'})).status,200,'management keeps administrative edits');
+assert.equal((await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{job_title:'Editor audiovisual'},{...user,role:'management'})).status,200);
+assert.equal((await call('/api/agency/collaborators','POST',{full_name:'Viewer write',email:'viewer@example.invalid'},{...user,role:'viewer'})).status,403);
+assert.equal((await call(`/api/agency/collaborators/${minimal.id}`,'PATCH',{notes:'Viewer write'},{...user,role:'viewer'})).status,403);
+assert.equal((await call('/api/agency/job-roles','POST',{name:'Cargo viewer'},{...user,role:'viewer'})).status,403);
 assert.equal((await call('/api/agency/team','GET',{}, {...user,organization_id:other})).collaborators.length,0);
 assert.equal((await call('/api/agency/team','POST')).status,405);
 assert.equal((await call('/api/agency/collaborators','POST',{full_name:'Duplicate',email:'NEW@example.invalid'})).status,409);
