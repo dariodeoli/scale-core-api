@@ -15,7 +15,7 @@ import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {startTrial,subscriptionState} from './subscription-billing.js';
 import {throttle} from './password-access.js';
 
-const memberRoles=['owner','admin','management','finance','sales','production','editor','viewer'];
+const memberRoles=['owner','admin','management','finance','sales','production','editor','viewer','colaborador'];
 
 // Legacy operational endpoints extracted from the server entrypoint. Handlers
 // keep their original behavior and responses; the dispatcher returns true when

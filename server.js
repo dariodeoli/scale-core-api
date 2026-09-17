@@ -78,7 +78,7 @@ const weemRelayToken = process.env.WEEM_EMAIL_RELAY_TOKEN || '';
 const emailDelivery=createEmailDelivery({apiKey:resendApiKey,from:invitationFrom,appUrl,weemRelayUrl,weemRelayToken});
 const allowedOrigin = process.env.PUBLIC_ORIGIN || 'https://scaleparaguay.com';
 const allowedOrigins = new Set([allowedOrigin, 'https://scaleparaguay.com', 'https://www.scaleparaguay.com', 'https://admin.scaleparaguay.com', 'https://api.scaleparaguay.com', 'https://app.scaleparaguay.com', 'https://dadoocapital.com', 'https://www.dadoocapital.com', 'https://admin.dadoocapital.com']);
-const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer'];
+const memberRoles = ['owner','admin','management','finance','sales','production','editor','viewer','colaborador'];
 allowedOrigins.add('https://sistema.scaleparaguay.com');
 allowedOrigins.add('https://cliente.scaleparaguay.com');
 let databaseReady = false;
