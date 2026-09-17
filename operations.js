@@ -118,6 +118,9 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     if(collaboratorMatch[1]) {await belongs(c,'agency_collaborators',collaboratorMatch[1],org);values.push(collaboratorMatch[1]);result={collaborator:(await c.query('update agency_collaborators set user_id=$2,full_name=$3,email=$4,photo_url=$5,job_title=$6,compensation_type=$7,compensation_amount=$8,invoices_company=$9,started_on=$10,payment_day=$11,active=$12,notes=$13,currency=$14,ended_on=$15,monthly_salary_amount=$16,monthly_salary_currency=$17,updated_at=now() where organization_id=$1 and id=$18 returning *',values)).rows[0]};}
     else {result={collaborator:(await c.query('insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_type,compensation_amount,invoices_company,started_on,payment_day,active,notes,currency,ended_on,monthly_salary_amount,monthly_salary_currency) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) returning *',values)).rows[0]};status=201;}
     result.collaborator=(await c.query('update agency_collaborators set job_role_id=$1 where id=$2 and organization_id=$3 returning *',[jobId,result.collaborator.id,org])).rows[0];result.access={status:access.status};
+    // personal_identity_preserve keeps this copy in sync with the owner's personal
+    // identity, so a photo edit that did not stick must say so instead of a fake 200.
+    if(Object.hasOwn(incoming,'photo_url')&&(result.collaborator.photo_url||null)!==(photo||null))fail('La foto personal de esta persona solo la puede cambiar ella desde Mi perfil.',409);
    } else fail('Método no permitido',405);
   } else if(commissionMonthlyRoute) {
    if(req.method!=='GET')fail('Método no permitido',405);
