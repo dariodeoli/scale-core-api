@@ -3,7 +3,7 @@ export const roles=['owner','admin','management','finance','sales','production',
 export const roleLabels={owner:'Dueño',admin:'Administrador',management:'Gerencia',finance:'Finanzas',sales:'Ventas',production:'Producción',editor:'Editor',viewer:'Solo lectura'};
 const all=[...roles];
 export const CAPABILITIES=[
- {id:'members.manage',label:'Equipo y accesos',description:'Personas, cargos, accesos, invitaciones y remuneraciones.',roles:['owner','admin']},
+ {id:'members.manage',label:'Equipo y accesos',description:'Personas, cargos, accesos, invitaciones y remuneraciones.',roles:['owner','admin','management']},
  {id:'settings.manage',label:'Configuración de la empresa',description:'Datos de la empresa, moneda y cotización.',roles:['owner','admin']},
  {id:'activity.view',label:'Actividad del equipo',description:'Ver actividad y auditoría de la empresa.',roles:['owner','admin']},
  {id:'metrics.view',label:'Métricas y crecimiento',description:'Métricas del sitio y panel de crecimiento.',roles:['owner','admin']},
