@@ -21,6 +21,7 @@ import { externalLink } from './media-policy.js';
 import {clientColor,clientLogo} from './client-identity.js';
 import { recordLifecycle, visibleRecord } from './record-lifecycle.js';
 import { invitationEmail,accessGrantedEmail,resetEmail,verificationEmail,destructiveReauthEmail } from './invitation-email.js';
+import { trialStartedEmail,paymentFailedEmail } from './billing-email.js';
 import {financialForecast} from './forecast.js';
 import {commercialLifecycle} from './commercial-lifecycle.js';
 import {reports} from './reports.js';
@@ -98,6 +99,9 @@ async function sendInvitation(email, organizationName, role) {
 async function sendAccessGranted(email, organizationName, role) {
   return emailDelivery.send({to:email,message:accessGrantedEmail({email,organizationName,role,appUrl}),idempotencyKey:'access-granted-'+crypto.createHash('sha256').update(email.toLowerCase()).digest('hex')});
 }
+async function sendBillingMessage(email,message,key){return emailDelivery.send({to:email,message,idempotencyKey:key});}
+const sendTrialEmail=(email,organizationName,trialEndsOn)=>sendBillingMessage(email,trialStartedEmail({email,organizationName,trialEndsOn,appUrl}),'trial-started-'+crypto.createHash('sha256').update(email.toLowerCase()).digest('hex'));
+const sendPaymentFailed=(email,organizationName)=>sendBillingMessage(email,paymentFailedEmail({organizationName,appUrl}),'payment-failed-'+crypto.createHash('sha256').update(email.toLowerCase()+new Date().toISOString().slice(0,10)).digest('hex'));
 async function sendReset(email,token){return emailDelivery.send({to:email,message:resetEmail({token,appUrl}),idempotencyKey:'reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function sendVerification(email,token){return emailDelivery.send({to:email,message:verificationEmail({token,appUrl}),idempotencyKey:'verify-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function sendDestructiveEmailCode(email,code){return emailDelivery.send({to:email,message:destructiveReauthEmail({code}),idempotencyKey:'destructive-reauth-'+crypto.createHash('sha256').update(code).digest('hex')});}
@@ -278,7 +282,7 @@ const server = http.createServer(async (req,res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if(url.pathname.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
-    if(await subscriptionBilling({req,res,url,db,session,body,send}))return;
+    if(await subscriptionBilling({req,res,url,db,session,body,send,sendPaymentFailed}))return;
     if(await platformAdmin({req,res,url,db,session,body,send,bootstrapValue:initialPlatformAdminEmail}))return;
     if(await rolePermissions({req,res,url,db,session,body,send}))return;
     // Billing is separate from membership: suspended owners retain billing,
@@ -463,6 +467,8 @@ const server = http.createServer(async (req,res) => {
         const sessionToken=id();
         await c.query("insert into sessions(id,user_id,organization_id,expires_at) values($1,$2,$3,now()+interval '7 days')",[sessionToken,account.userId,account.organizationId]);
         await c.query('commit');
+        const trialEnds=(await db.query('select trial_ends_at from organization_subscriptions where organization_id=$1',[account.organizationId])).rows[0]?.trial_ends_at??null;
+        await sendTrialEmail(profile.email,details.name,trialEnds).catch(()=>false);
         return send(res,201,{ok:true,redirect:'/produccion'},{'Set-Cookie':cookie('scale_session',sessionToken,604800)});
       }catch(error){await c.query('rollback');return send(res,error.status||500,{error:error.status?error.message:'No se pudo iniciar la prueba. Intentá nuevamente.'});}
       finally{c.release();}
@@ -479,7 +485,7 @@ const server = http.createServer(async (req,res) => {
       res.writeHead(302,{Location:member.rows.length?(saved.rows[0].trial_registration?`${appUrl}/produccion`:preferred?.is_default?`${appUrl}/`:`${appUrl}/?chooseCompany=1`):`${appUrl}/acceso-pendiente`,'Set-Cookie':cookie('scale_session',token,604800)});return res.end();
     }
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') { const t=parseCookies(req).scale_session; if(t) await db.query('delete from sessions where id=$1',[t]); return send(res,200,{ok:true},{'Set-Cookie':cookie('scale_session','',0)}); }
-    if(await agencyCore({req,res,url,db,session,body,send,cookie,parseCookies,id,requestSubscription,sendInvitation,auditContext,auditedQuery}))return;
+    if(await agencyCore({req,res,url,db,session,body,send,cookie,parseCookies,id,requestSubscription,sendInvitation,sendTrialEmail,auditContext,auditedQuery}))return;
     if (url.pathname === '/' || url.pathname === '/index.html') { res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'}); return res.end(await fs.readFile(path.join(root,'public/index.html'))); }
     send(res,404,{error:'No encontrado'});
   } catch (e) { console.error(JSON.stringify({event:'request_error',requestId,status:e.status||500,code:e.code,method:req.method,path:req.url?.split('?')[0],duration_ms:Date.now()-startedAt})); send(res,e.status||500,{error:e.status?e.message:'Error interno'}); }

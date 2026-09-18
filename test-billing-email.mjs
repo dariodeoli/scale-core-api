@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {trialStartedEmail,paymentFailedEmail} from './billing-email.js';
+const appUrl='https://app.scaleparaguay.com';
+const trial=trialStartedEmail({email:'test@example.invalid',organizationName:'Agencia & Partners <Test>\r\n',trialEndsOn:'2026-10-16T12:00:00.000Z',appUrl});
+assert.ok(trial.subject.includes('Tu prueba de 30 días comenzó'));
+assert.ok(!/[\u0000-\u001f\u007f\u2028\u2029]/.test(trial.subject));
+assert.ok(trial.html.includes('Agencia &amp; Partners &lt;Test&gt;'),'identity is escaped');
+assert.ok(trial.html.includes('template-version" content="v1.0.3"'));
+assert.ok(!trial.html.includes('<img'));
+assert.equal((trial.html.match(/Agencia &amp; Partners/g)||[]).length,1,'the organization appears once, not duplicated');
+const failed=paymentFailedEmail({organizationName:'Agencia A',appUrl});
+assert.ok(failed.subject.includes('No pudimos cobrar tu suscripción'));
+assert.ok(failed.text.includes('2 días de gracia'));
+assert.ok(failed.text.includes('Al tercer día sin pagar se suspende el acceso'));
+assert.ok(failed.html.includes('Revisar mi suscripción'));
+for(const url of ['http://app.scaleparaguay.com','javascript:alert(1)'])assert.throws(()=>trialStartedEmail({email:'x@x.example',organizationName:'A',appUrl:url}));
+console.log('PASS: billing emails use the branded shell, escape identity once and reject unsafe links');
