@@ -11,3 +11,8 @@
 
 ## Contratos de endpoints
 - Los endpoints de salary-overrides (GET/PATCH/DELETE por colaborador y mes) sostienen los ajustes mensuales por persona de la Previsión financiera y admiten importes con signo (extra o descuento). Mantener ese contrato; cualquier cambio requiere actualizar la previsión.
+
+## Validación de campos (API)
+- Todo campo normalizado en el frontend se revalida acá: `suite-validation.js` es la fuente única (`text`, `email`, `phone`, `serial`, `amount`, `date`, `option`, `id`/`optId`). Al crear una regla nueva de campo, agregarla ahí y usarla en TODOS los endpoints que la reciben.
+- Formatos guardados normalizados: teléfono `+<código> <dígitos>`, serial mayúsculas sin separadores, correo en minúsculas (≤254). Nunca confiar en el cliente.
+- Los PATCH solo revalidan el campo que cambia: el valor viejo se preserva tal cual para no romper datos legacy.

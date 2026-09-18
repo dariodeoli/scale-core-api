@@ -84,4 +84,15 @@ r=await call('/api/auth/password/request','POST',{email:'unknown@example.invalid
 assert.equal((await call('/api/auth/password/request','POST',{email:'suite-owner@example.invalid'})).status,202);assert.equal(sent,1);assert.equal(resetToken.length,64);
 assert.equal((await call('/api/auth/password/reset','POST',{token:resetToken,password:'NuevaClave!2026'})).status,200);
 assert.equal((await call('/api/auth/password/reset','POST',{token:resetToken,password:'NuevaClave!2026'})).status,400);
+// Lote de archivar/reactivar para clientes y proyectos.
+const batchClient=(await query("insert into agency_clients(organization_id,name) values($1,'Batch client') returning id",[org])).rows[0].id;
+const batchProject=(await query("insert into agency_projects(organization_id,client_id,name,approval_levels) values($1,$2,'Batch project',1) returning id",[org,batchClient])).rows[0].id;
+r=await call('/api/agency/clients/batch','POST',{ids:[batchClient],archived:true});assert.equal(r.status,200);assert.equal(r.updated,1);
+assert.equal((await call(`/api/agency/clients/${batchClient}`)).record.active,false,'the batch archives the client');
+assert.equal((await call('/api/agency/clients/batch','POST',{ids:[batchClient],archived:false})).status,200);
+assert.equal((await call(`/api/agency/clients/${batchClient}`)).record.active,true);
+assert.equal((await call('/api/agency/projects/batch','POST',{ids:[batchProject],archived:true})).status,200);
+assert.equal((await call('/api/agency/projects/batch','POST',{ids:['999999'],archived:true})).status,404,'every id must belong to the company');
+assert.equal((await call('/api/agency/clients/batch','POST',{ids:[batchClient],archived:true},{...user,role:'viewer'})).status,403,'batch actions require the manage capability');
+assert.equal((await call('/api/agency/clients/batch','POST',{ids:['abc'],archived:true})).status,400);
 await pg.close();console.log('PASS: approvals, member suspension, tenant isolation, pipeline conversion, plans, inventory, dashboard permissions, public quotes, invoice idempotency, audit and password reset');

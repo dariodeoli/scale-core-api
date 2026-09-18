@@ -32,10 +32,27 @@ function patchDriveLinks(old,incoming){
 }
 async function member(c,key,org){if(key&&!(await c.query('select 1 from organization_members where user_id=$1 and organization_id=$2 and active=true',[key,org])).rows.length)fail('La persona no tiene acceso activo a esta empresa');}
 async function document(c,budgetId,org){const b=(await c.query('select b.*,c.name as client_name,o.name as organization_name,s.tax_id from agency_budgets b join agency_clients c on c.id=b.client_id join organizations o on o.id=b.organization_id left join agency_settings s on s.organization_id=o.id where b.id=$1 and b.organization_id=$2',[budgetId,org])).rows[0];if(!b)fail('Presupuesto no encontrado',404);return{budget:b,items:(await c.query('select * from agency_budget_items where budget_id=$1 order by position',[b.id])).rows};}
+async function batchArchive(c,user,org,kind,payload){
+ const ids=[...new Set((Array.isArray(payload.ids)?payload.ids:[]).map(value=>id(value)))];
+ if(!ids.length||ids.length>50)fail('Elegí entre 1 y 50 registros');
+ const archived=payload.archived===true;
+ if(kind==='clients'){
+  const rows=(await c.query('select id from agency_clients where organization_id=$1 and id = any($2::bigint[]) order by id for update',[org,ids])).rows;
+  if(rows.length!==ids.length)fail('Algún cliente no pertenece a esta empresa',404);
+  const hasLifecycle=(await c.query("select 1 from information_schema.columns where table_name='agency_clients' and column_name='lifecycle_status' limit 1")).rows.length>0;
+  if(hasLifecycle)await c.query("update agency_clients set active=$1,lifecycle_status=case when $1 then 'active' else 'inactive' end,updated_at=now() where organization_id=$2 and id = any($3::bigint[])",[!archived,org,ids]);
+  else await c.query('update agency_clients set active=$1,updated_at=now() where organization_id=$2 and id = any($3::bigint[])',[!archived,org,ids]);
+ }else{
+  const rows=(await c.query('select id from agency_projects where organization_id=$1 and id = any($2::bigint[]) order by id for update',[org,ids])).rows;
+  if(rows.length!==ids.length)fail('Algún proyecto no pertenece a esta empresa',404);
+  await c.query('update agency_projects set active=$1,updated_at=now() where organization_id=$2 and id = any($3::bigint[])',[!archived,org,ids]);
+ }
+ return {updated:ids.length,archived};
+}
 export async function suite({req,res,url,db,session,body,send,sendInvitation,sendAccessGranted}){
  const publicMatch=url.pathname.match(/^\/p\/([A-Za-z0-9_-]{16,128})(?:\/(pdf|respond))?$/);
- const m=url.pathname.match(/^\/api\/agency\/(leads|inventory|plans|activity|dashboard|settings|exchange-rates|members|clients|projects|work-orders|budgets)(?:\/(\d+))?(?:\/(convert|resend|approve|publish|pdf|share|revoke|invoice))?$/);
- if(!publicMatch&&(!m||['members','clients','projects','work-orders','budgets'].includes(m[1])&&!m[2]))return false;
+ const m=url.pathname.match(/^\/api\/agency\/(leads|inventory|plans|activity|dashboard|settings|exchange-rates|members|clients|projects|work-orders|budgets)(?:\/(\d+))?(?:\/(convert|resend|approve|publish|pdf|share|revoke|invoice|batch))?$/);
+ if(!publicMatch&&(!m||['members','clients','projects','work-orders','budgets'].includes(m[1])&&!m[2]&&m[3]!=='batch'))return false;
  let c,transaction=false,grantedNotify=null;
  try{
   const user=publicMatch?null:await session(req);if(!publicMatch&&!user)fail('No autenticado',401);
@@ -76,7 +93,8 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation,sen
    if(current.role==='owner'&&(!active||role!=='owner')){const n=await c.query("select count(*)::int as count from organization_members where organization_id=$1 and role='owner' and active=true",[org]);if(n.rows[0].count<=1)fail('Debe quedar al menos un propietario activo');}
    await c.query('update organization_members set role=$1,active=$2 where user_id=$3 and organization_id=$4',[role,active,key,org]);await c.query('delete from sessions where user_id=$1 and organization_id=$2',[key,org]);result={ok:true};
    if(!current.active&&active&&typeof sendAccessGranted==='function')grantedNotify={email:current.email,organizationName:user.organization_name,role};
-  }else if(kind==='clients'||kind==='projects'||kind==='work-orders'){
+  }else if(action==='batch'&&(kind==='clients'||kind==='projects')){result=await batchArchive(c,user,org,kind,await body(req));}
+  else if(kind==='clients'||kind==='projects'||kind==='work-orders'){
    const table={clients:'agency_clients',projects:'agency_projects','work-orders':'agency_work_orders'}[kind],old=await owned(c,table,key,org);
    if(req.method==='GET'){
     let identity={};
