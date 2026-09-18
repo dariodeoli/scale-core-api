@@ -295,10 +295,10 @@ async function pagayaCallback(db,req,cfg){
 }
 async function webhook(db,req,cfg){
  const event=await signedEvent(req,cfg),supported=['checkout.session.completed','checkout.session.async_payment_succeeded','customer.subscription.created','customer.subscription.updated','customer.subscription.deleted','invoice.paid','invoice.payment_succeeded','invoice.payment_failed'];
- if(!supported.includes(event.type))return {received:true,ignored:true};
+ if(!supported.includes(event.type))return {received:true,ignored:true,eventType:event.type};
  return transaction(db,async c=>{
   const inserted=(await c.query('insert into subscription_stripe_events(event_id,event_type,event_created) values($1,$2,$3) on conflict do nothing returning event_id',[event.id,event.type,event.created])).rows[0];
-  if(!inserted)return {received:true,duplicate:true};
+  if(!inserted)return {received:true,duplicate:true,eventType:event.type};
   const obj=event.data.object;let row,sub,eventInvoice=null;
   if(event.type.startsWith('checkout.')){
    const candidate=typeof obj.metadata?.attempt_id==='string'&&/^[0-9a-f-]{36}$/i.test(obj.metadata.attempt_id)?(await c.query('select * from subscription_checkout_attempts where id=$1',[obj.metadata.attempt_id])).rows[0]:null;
@@ -318,16 +318,21 @@ async function webhook(db,req,cfg){
   }
   await reconcile(c,cfg,row,sub,eventInvoice);
   await c.query('update subscription_stripe_events set organization_id=$1 where event_id=$2',[row.organization_id,event.id]);
-  return {received:true};
+  return {received:true,eventType:event.type,organizationId:row.organization_id};
  });
 }
 
-export async function subscriptionBilling({req,res,url,db,session,body,send}){
+export async function subscriptionBilling({req,res,url,db,session,body,send,sendPaymentFailed}){
  const path=url.pathname;if(!['/api/billing/subscription','/api/billing/checkout','/api/billing/portal','/api/billing/webhook','/api/billing/coupon-redeem',PAGAYA_CALLBACK_PATH].includes(path))return false;
  try{
   if(path==='/api/billing/webhook'){
    if(req.method!=='POST')fail('Método no permitido',405);
-   send(res,200,await webhook(db,req,configured()));return true;
+   const result=await webhook(db,req,configured());
+   if(result.eventType==='invoice.payment_failed'&&result.organizationId&&typeof sendPaymentFailed==='function'){
+    const owner=(await db.query(`select u.email,o.name as organization_name from organizations o join organization_members m on m.organization_id=o.id and m.role='owner' and m.active and m.removed_at is null join users u on u.id=m.user_id where o.id=$1 limit 1`,[result.organizationId])).rows[0];
+    if(owner?.email)await sendPaymentFailed(owner.email,owner.organization_name).catch(()=>false);
+   }
+   send(res,200,result);return true;
   }
   if(path===PAGAYA_CALLBACK_PATH){
    if(req.method!=='POST')fail('Método no permitido',405);

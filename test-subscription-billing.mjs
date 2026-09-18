@@ -16,9 +16,10 @@ const query=(sql,args)=>pg.query(sql,args);
 let tail=Promise.resolve();
 const db={query,connect:async()=>{let release;const prior=tail;tail=new Promise(resolve=>{release=resolve;});await prior;return {query,release};}};
 const DAY=86400000;
+const failedEmails=[];
 async function call(path,method='GET',payload={},user=null,req=null){
  let output;
- const handled=await subscriptionBilling({req:req||{method,headers:{}},res:{},url:new URL(`https://test.invalid${path}`),db,session:async()=>user,body:async()=>payload,send:(_,status,data)=>{output={status,data};}});
+ const handled=await subscriptionBilling({req:req||{method,headers:{}},res:{},url:new URL(`https://test.invalid${path}`),db,session:async()=>user,body:async()=>payload,send:(_,status,data)=>{output={status,data};},sendPaymentFailed:async(email,organizationName)=>{failedEmails.push({email,organizationName});return true;}});
  calls++;assert(handled);return output;
 }
 const state=(user,at=clock)=>subscriptionState(db,user,new Date(at));
@@ -247,6 +248,16 @@ try{
  assert.match(couponlessRedeem.data.message,/5 días gratis/);
  const runway=(await query('select paid_through_at,trial_ends_at from organization_subscriptions where organization_id=$1',[couponless.organization_id])).rows[0];
  assert.equal(new Date(runway.paid_through_at).getTime()-new Date(runway.trial_ends_at).getTime(),5*DAY,'free days extend the freshly opened trial runway');
+ // A failed invoice emails the owner exactly once per unique event.
+ const failedInvoice=invoice(binding.sub,{status:'open'});binding.sub.status='past_due';
+ const failedEvent=event('invoice.payment_failed',{...failedInvoice,amount_paid:0,amount_remaining:failedInvoice.amount_due,status:'open'});
+ const beforeFailed=failedEmails.length;
+ assert.equal((await deliver(failedEvent)).status,200);
+ assert.equal(failedEmails.length,beforeFailed+1,'a payment failure emails the owner');
+ assert.equal(failedEmails.at(-1).email,'subscription-owner@example.invalid');
+ assert.equal(failedEmails.at(-1).organizationName,'Fixture usd');
+ assert.equal((await deliver(failedEvent)).status,200,'a replayed failure event is deduplicated');
+ assert.equal(failedEmails.length,beforeFailed+1,'replayed events never email twice');
  console.log(`PASS: ${calls} billing handler cases; idempotent caller-transaction trial, 30-day/48h boundaries, legacy/demo exemptions, owner/tenant isolation, optional config, exact server prices, durable checkout retries, raw HMAC timestamps, duplicate/stale events, verified monthly USD/PYG invoice binding, immutable grace and paused portal. PGlite single connection + mocked Stripe only; no real concurrency or provider activation verified.`);
 }finally{
  Date.now=originalNow;globalThis.fetch=originalFetch;for(const [key,value] of Object.entries(originalEnv)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await pg.close();
