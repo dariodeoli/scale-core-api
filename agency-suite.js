@@ -15,7 +15,7 @@ import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {assertUniqueClientRuc} from './ruc-lookup.js';
 import {roleCan,roles} from './permissions.js';
 import {commercialProfile} from './commercial-lifecycle.js';
-const stages=['lead','contacted','proposal','negotiation','won','lost'];
+import {ensurePipelineStages,defaultLeadStage,wonLeadStage} from './pipeline-stages.js';
 const driveLinks=value=>{if(value===undefined)return undefined;const rows=Array.isArray(value)?value:String(value||'').split(/\r?\n/).filter(Boolean).map(url=>({url}));if(rows.length>10)fail('Podés agregar hasta 10 enlaces');return rows.map(row=>{const url=link(row.url);return url?{url,label:text(row.label||'',80)||'Archivo o carpeta'}:null}).filter(Boolean);};
 const workTypeValue=value=>{if(value===undefined||value===null||value==='')return null;return option(value,['video','reedicion','foto','produccion','entregable']);};
 const dueTimeValue=value=>{if(value===undefined||value===null||value==='')return null;if(!/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(String(value)))fail('Hora de entrega inválida');return String(value).slice(0,5);};
@@ -144,14 +144,25 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation,sen
   }else if(kind==='plans'||kind==='inventory'||kind==='leads'){
    const table={plans:'agency_plans',inventory:'agency_inventory',leads:'agency_leads'}[kind];
    if(req.method==='GET')result={records:(await c.query(`select r.* from ${table} r where organization_id=$1 and ${visibleRecord('r',kind)} order by id desc`,[org])).rows};
-   else if(kind==='leads'&&action==='convert'&&key&&req.method==='POST'){const lead=await owned(c,table,key,org);if(lead.client_id)result={clientId:lead.client_id};else{const client=(await c.query('insert into agency_clients(organization_id,name,email,phone,notes) values($1,$2,$3,$4,$5) returning id',[org,lead.name,lead.email,lead.phone,lead.notes])).rows[0];await c.query("update agency_leads set stage='won',probability=100,client_id=$1,updated_at=now() where id=$2",[client.id,key]);result={clientId:client.id};}}
+   else if(kind==='leads'&&action==='convert'&&key&&req.method==='POST'){const lead=await owned(c,table,key,org);if(lead.client_id)result={clientId:lead.client_id};else{const won=wonLeadStage(await ensurePipelineStages(c,org));const client=(await c.query('insert into agency_clients(organization_id,name,email,phone,notes) values($1,$2,$3,$4,$5) returning id',[org,lead.name,lead.email,lead.phone,lead.notes])).rows[0];await c.query('update agency_leads set stage=$1,probability=100,client_id=$2,updated_at=now() where id=$3',[won,client.id,key]);result={clientId:client.id};}}
    else if((req.method==='POST'&&!key)||(req.method==='PATCH'&&key&&!action)){
     const old=key?await owned(c,table,key,org):{},incoming=await body(req),b={...old,...incoming},name=text(b.name,160);if(name.length<2)fail('Ingresá el nombre');
     if(!key&&b.currency===undefined)b.currency=await companyCurrency(c,org);
     let columns,values;
     if(kind==='plans'){columns=['name','currency','items','notes','active'];values=[name,option(b.currency,currencies),JSON.stringify(items(b.items)),text(b.notes||''),b.active!==false];}
     if(kind==='inventory'){const custodian=optId(b.custodian_user_id);await member(c,custodian,org);const photo=Object.hasOwn(b,'photo_url')?await profilePhoto(b.photo_url):old.photo_url||null;columns=['name','category','serial_number','custodian_user_id','value','currency','status','acquired_on','notes','photo_url'];values=[name,text(b.category||'',80),serial(b.serial_number||''),custodian,amount(b.value||0),option(b.currency,currencies),option(b.status||'available',['available','in_use','maintenance','retired']),date(b.acquired_on),text(b.notes||''),photo];}
-    if(kind==='leads'){const stage=option(b.stage||'lead',stages),probability=stage==='won'?100:stage==='lost'?0:Number(b.probability??10);if(!Number.isInteger(probability)||probability<0||probability>100)fail('Probabilidad de 0 a 100');columns=['name','email','phone','stage','amount','currency','probability','notes'];values=[name,email(b.email),Object.hasOwn(incoming,'phone')?phone(b.phone):(b.phone??null),stage,amount(b.amount||0),option(b.currency,currencies),probability,text(b.notes||'')];}
+    if(kind==='leads'){
+     // Stages are editable per company: only an active stage of this tenant is
+     // accepted, while an untouched historical slug stays readable on PATCH.
+     const stageList=await ensurePipelineStages(c,org),stageProvided=Object.hasOwn(incoming,'stage');
+     const requested=old.stage&&!stageProvided?old.stage:(b.stage||defaultLeadStage(stageList));
+     const chosen=stageList.find(stage=>stage.slug===requested);
+     if(stageProvided&&(!chosen||!chosen.active))fail('Elegí una etapa activa de esta empresa');
+     if(!chosen&&!requested)fail('Creá al menos una etapa activa en el Pipeline');
+     const stageKind=chosen?.kind||(requested==='won'?'won':requested==='lost'?'lost':'open');
+     const probability=stageKind==='won'?100:stageKind==='lost'?0:Number(b.probability??10);if(!Number.isInteger(probability)||probability<0||probability>100)fail('Probabilidad de 0 a 100');
+     columns=['name','email','phone','stage','amount','currency','probability','notes'];values=[name,email(b.email),Object.hasOwn(incoming,'phone')?phone(b.phone):(b.phone??null),chosen?.slug||requested,amount(b.amount||0),option(b.currency,currencies),probability,text(b.notes||'')];
+    }
     const query=key?`update ${table} set ${columns.map((n,i)=>`${n}=$${i+1}`).join(',')} where id=$${values.length+1} returning *`:`insert into ${table}(${columns.join(',')},organization_id) values(${values.map((_,i)=>`$${i+1}`).join(',')},$${values.length+1}) returning *`;
     result={record:(await c.query(query,[...values,key||org])).rows[0]};status=key?200:201;
    }else fail('Método no permitido',405);

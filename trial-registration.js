@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import {startTrial} from './subscription-billing.js';
+import {ensurePipelineStages} from './pipeline-stages.js';
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 export function trialDetails(params){
  if(params.get('signup')!=='1')return null;
@@ -29,6 +30,7 @@ export async function registerTrial(c,profile,details){
  const org=(await c.query('insert into organizations(slug,name) values($1,$2) returning id',['agencia-'+crypto.randomUUID(),details.name])).rows[0];
  await c.query("select set_config('app.current_user',$1,true),set_config('app.current_organization',$2,true)",[String(user.id),String(org.id)]);
  await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);
+ await ensurePipelineStages(c,org.id);
  await c.query('insert into agency_settings(organization_id,default_currency) values($1,$2)',[org.id,details.currency]);
  const candidate=String(profile.name||'').trim().slice(0,120),name=candidate.length>=2?candidate:email.slice(0,120);
  await c.query('insert into agency_user_profiles(organization_id,user_id,full_name) values($1,$2,$3) on conflict(organization_id,user_id) do nothing',[org.id,user.id,name]);
