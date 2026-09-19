@@ -79,4 +79,6 @@ export const migrationOrder = [
   '20260917_identity_admin_photo.sql',
   '20260918_collaborator_role_and_project_archive.sql',
   '20260919_collaborator_role_member_checks.sql',
+  '20260919_pipeline_stages.sql',
+  '20260919_inventory_value_maintenance.sql',
 ];

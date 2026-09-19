@@ -29,6 +29,7 @@ import {projectAssignees} from './project-assignees.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {startMaintenance} from './maintenance.js';
 import {inventoryReservations} from './inventory-reservations.js';
+import {pipelineStages} from './pipeline-stages.js';
 import {studioReservations} from './studio-reservations.js';
 import {workChecklists} from './work-checklists.js';
 import {ensurePersonalIdentity,ensurePersonalIdentityInTransaction} from './identity-session.js';
@@ -192,6 +193,8 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260917_identity_admin_photo.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260918_collaborator_role_and_project_archive.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260919_collaborator_role_member_checks.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260919_pipeline_stages.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260919_inventory_value_maintenance.sql'),'utf8'));
     await applyPendingMigrations(migration, path.join(root,'migrations'), {firstRun: 'baseline'});
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
@@ -326,6 +329,7 @@ const server = http.createServer(async (req,res) => {
     if(await notifications({req,res,url,db,session,body,send}))return;
     if(await automationApi({req,res,url,db,session,body,send}))return;
     if(await studioReservations({req,res,url,db,session,body,send}))return;
+    if(await pipelineStages({req,res,url,db,session,body,send}))return;
     if(await suite({req,res,url,db,session,body,send,sendInvitation,sendAccessGranted}))return;
     if (await operations({req,res,url,db,session,body,send,sendInvitation})) return;
     if (url.pathname === '/' && req.method === 'GET') {

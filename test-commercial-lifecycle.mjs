@@ -7,7 +7,7 @@ import {suite} from './agency-suite.js';
 const pg=new PGlite();
 const read=name=>fs.readFile(new URL(name,import.meta.url),'utf8');
 await pg.exec(await read('./schema.sql'));
-for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_currencies.sql','20260910_client_lifecycle.sql','20260914_client_commercial_lifecycle.sql'])await pg.exec(await read(`./migrations/${name}`));
+for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_currencies.sql','20260910_client_lifecycle.sql','20260914_client_commercial_lifecycle.sql','20260919_pipeline_stages.sql'])await pg.exec(await read(`./migrations/${name}`));
 await pg.exec(await read('./migrations/20260914_client_commercial_lifecycle.sql'));
 const query=(sql,values)=>pg.query(sql,values),db={query,connect:async()=>({query,release(){}})};
 const insert=async(sql,values)=>(await query(sql+' returning id',values)).rows[0].id;

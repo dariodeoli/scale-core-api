@@ -125,7 +125,7 @@ async function emptyOperations(org){
  // business tables, including future modules, with only onboarding exceptions.
  const tables=await rows("select table_name from information_schema.columns where table_schema='public' and column_name='organization_id' and table_name in(select tablename from pg_tables where schemaname='public') order by table_name");
  // Database audit rows for onboarding are expected; they are not copied work.
- const allowed=new Set(['organization_members','agency_settings','agency_user_profiles','os_trial_registrations','organization_subscriptions','sessions','oauth_handoffs','agency_operation_audit','agency_reporting_coverage']);
+ const allowed=new Set(['organization_members','agency_settings','agency_user_profiles','agency_pipeline_stages','os_trial_registrations','organization_subscriptions','sessions','oauth_handoffs','agency_operation_audit','agency_reporting_coverage']);
  const coverage=await rows('select c.history_since,o.created_at from agency_reporting_coverage c join organizations o on o.id=c.organization_id where c.organization_id=$1',[org]);
  assert.equal(coverage.length,1,'new agency starts one reporting coverage marker');
  assert(+coverage[0].history_since>= +coverage[0].created_at,'onboarding cannot invent prior reporting coverage');

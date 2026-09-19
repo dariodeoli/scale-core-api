@@ -16,6 +16,7 @@ import {attributeActors} from './actor-identity.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {startTrial,subscriptionState} from './subscription-billing.js';
 import {throttle} from './password-access.js';
+import {ensurePipelineStages} from './pipeline-stages.js';
 
 const memberRoles=['owner','admin','management','finance','sales','production','editor','viewer','collaborator'];
 
@@ -43,7 +44,7 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       const b=await body(req),name=typeof b.name==='string'?b.name.trim():'',slug=typeof b.slug==='string'?b.slug.trim().toLowerCase():'';
       if(name.length<2||name.length>160||!/^\w[\w-]{2,59}$/.test(slug))return send(res,400,{error:'Nombre y código de empresa inválidos'});
       if(b.billingCurrency!==undefined&&!['USD','PYG'].includes(b.billingCurrency))return send(res,400,{error:'Elegí USD o PYG para la suscripción'});
-      const c=await db.connect();try{await c.query('begin');const org=(await c.query('insert into organizations(name,slug) values($1,$2) returning *',[name,slug])).rows[0];await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);await startTrial(c,org.id,b.billingCurrency||'USD');const trial=(await c.query('select trial_ends_at from organization_subscriptions where organization_id=$1',[org.id])).rows[0];await c.query('commit');if(typeof sendTrialEmail==='function')await sendTrialEmail(user.email,b.name,trial?.trial_ends_at??null).catch(()=>false);return send(res,201,{organization:org});}catch(e){await c.query('rollback');return send(res,e.code==='23505'?409:500,{error:e.code==='23505'?'Ese código ya está utilizado':'No se pudo crear la empresa'});}finally{c.release();}
+      const c=await db.connect();try{await c.query('begin');const org=(await c.query('insert into organizations(name,slug) values($1,$2) returning *',[name,slug])).rows[0];await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);await ensurePipelineStages(c,org.id);await startTrial(c,org.id,b.billingCurrency||'USD');const trial=(await c.query('select trial_ends_at from organization_subscriptions where organization_id=$1',[org.id])).rows[0];await c.query('commit');if(typeof sendTrialEmail==='function')await sendTrialEmail(user.email,b.name,trial?.trial_ends_at??null).catch(()=>false);return send(res,201,{organization:org});}catch(e){await c.query('rollback');return send(res,e.code==='23505'?409:500,{error:e.code==='23505'?'Ese código ya está utilizado':'No se pudo crear la empresa'});}finally{c.release();}
     }
     if (url.pathname === '/api/auth/switch-organization' && req.method === 'POST') {
       const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'}); const {organizationId}=await body(req);

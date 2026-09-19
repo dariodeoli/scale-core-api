@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import {seedDemoReports} from './demo-reports.js';
 import {demoClients,demoStaff,demoPhone,demoPortrait} from './demo-identities.js';
+import {ensurePipelineStages} from './pipeline-stages.js';
 const templateSlug='scale-demo-controles-20260908';
 // A real agency owner can open a personal fixture without membership in the shared template.
 export async function privateDemoEntry(c,userId){
@@ -29,6 +30,7 @@ export async function demoOrganization(c,{userId,sourceId,demoKey}){
 export async function seedPrivateDemo(c,org,userId){
  // Demo dates and report month cutoffs use the same calendar; transaction-local.
  await c.query("select set_config('TimeZone','America/Asuncion',true)");
+ await ensurePipelineStages(c,org);
  await c.query("insert into agency_settings(organization_id,legal_name,tax_id,address,phone,onboarding_completed) values($1,'Agencia Horizonte E.A.S.','80000000-0','Av. Mariscal López 120 · Asunción',$2,true) on conflict do nothing",[org,demoPhone(0)]);
  // Tenant-local demo identity only: never overwrite the visitor's real profile.
  await c.query("insert into agency_user_profiles(organization_id,user_id,full_name,photo_url) select $1,id,'Sebastián Benítez',$3 from users where id=$2 and is_demo_guest on conflict do nothing",[org,userId,demoPortrait('sebastian')]);
