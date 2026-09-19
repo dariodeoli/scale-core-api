@@ -69,6 +69,7 @@ assert.equal((await call(`inventory/${photoItem.id}`,'PATCH',{photo_url:''})).re
 assert.equal((await call(`inventory/${photoItem.id}`,'PATCH',{photo_url:'javascript:alert(1)'})).status,400,'non-HTTPS photo sources are rejected');
 assert.equal((await call(`inventory/${card}`,'PATCH',{name:'Memoria SD'})).record.currency,'EUR');
 assert.equal((await call(`inventory/${card}`,'PATCH',{inventory_code:'INV-REASSIGNED'})).status,409,'A physical asset code cannot be reassigned');
+assert.equal((await call(`inventory/${card}`,'PATCH',{serial_number:'  sn-12 34_x '})).record.serial_number,'SN1234X','seriales se guardan normalizados (mayúsculas, sin separadores)');
 assert.equal(new Date((await call(`inventory/${card}`,'PATCH',{name:'Memoria SD'})).record.location_changed_at).toISOString(),new Date(item.location_changed_at).toISOString(),'an unchanged location keeps the original timestamp');
 const moved=await call(`inventory/${card}`,'PATCH',{storage_shelf:'Estante C'});
 assert.equal(moved.status,200);assert(moved.record.location_changed_at>item.location_changed_at,'moving to another shelf updates the location timestamp');

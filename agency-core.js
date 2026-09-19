@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import {currencies} from './currencies.js';
+import {email as validEmail} from './suite-validation.js';
 import {normalizeUrgency} from './urgency.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {roleCan} from './permissions.js';
@@ -190,8 +191,9 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
     }
     if (url.pathname === '/api/agency/members' && req.method === 'POST') {
       const user = await session(req); if (!user) return send(res,401,{error:'No autenticado'}); if (!roleCan(user,'members.manage')) return send(res,403,{error:'Sin permiso'});
-      const {email='',password='',role='viewer'} = await body(req); const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
-      if (!/^\S+@\S+\.\S+$/.test(normalizedEmail) || (password && (typeof password !== 'string' || password.length < 8)) || !memberRoles.includes(role) || (role === 'owner' && user.role !== 'owner')) return send(res,400,{error:'Datos de invitación inválidos'});
+      const {email='',password='',role='viewer'} = await body(req);
+      let normalizedEmail='';try{normalizedEmail=validEmail(email)||'';}catch{return send(res,400,{error:'Datos de invitación inválidos'});}
+      if (!normalizedEmail || (password && (typeof password !== 'string' || password.length < 8)) || !memberRoles.includes(role) || (role === 'owner' && user.role !== 'owner')) return send(res,400,{error:'Datos de invitación inválidos'});
       const client = await db.connect();
       try {
         await client.query('begin');
@@ -281,7 +283,7 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       return send(res,201,{account:r.rows[0]});
     }
     if (url.pathname === '/api/agency/custodians' && req.method === 'GET') {
-      const user=await session(req); if(!roleCan(user,'custodians.view')) return send(res,403,{error:'Sin permiso'});
+      const user=await session(req); if(!roleCan(user,'accounts.manage')) return send(res,403,{error:'Sin permiso'});
       const r=await db.query('select u.id,u.email,m.role from organization_members m join users u on u.id=m.user_id where m.organization_id=$1 and m.active=true order by u.email',[user.organization_id]);
       return send(res,200,{members:r.rows});
     }
