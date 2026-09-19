@@ -23,6 +23,12 @@ const invoice=(await sql("insert into agency_invoices(organization_id,client_id,
 const account=(await sql("insert into bank_accounts(organization_id,name,account_type,balance) values($1,'Cash','cash',1000) returning id",[org])).rows[0].id;
 const wrongAccount=(await sql("insert into bank_accounts(organization_id,name,account_type,balance) values($1,'Other','cash',1000) returning id",[other])).rows[0].id;
 async function call(path,method='GET',payload={},as=user){let response;await operations({req:{method,socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL(`https://test${path}`),db:{connect:async()=>({query:sql,release(){}})},session:async()=>as,body:async()=>payload,send:(_,status,data)=>response={status,...data}});return response;}
+const {agencyCore}=await import('./agency-core.js');
+async function coreCall(path,as=user){let response;const handled=await agencyCore({req:{method:'GET',socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test'+path),db:{query:sql,connect:async()=>({query:sql,release(){}})},session:async()=>as,body:async()=>({}),send:(_,status,data)=>response={status,...data}});assert.equal(handled,true,`${path} is handled by agency-core`);return response;}
+// Custodians stay behind accounts.manage: finance reads them for treasury, nobody else.
+assert.equal((await coreCall('/api/agency/custodians')).status,200,'owner reads custodians');
+for(const role of ['admin','finance'])assert.equal((await coreCall('/api/agency/custodians',{...user,role})).status,200,`${role} reads custodians for treasury`);
+for(const role of ['management','sales','production','editor','viewer','collaborator'])assert.equal((await coreCall('/api/agency/custodians',{...user,role})).status,403,`custodians stay behind accounts.manage for ${role}`);
 const person={full_name:'QA Person',email:'qa@example.invalid',compensation_type:'fixed',compensation_amount:100,currency:'PYG',payment_day:5,started_on:'2026-09-01'};
 let r=await call('/api/agency/collaborators','POST',person);assert.equal(r.status,201);const pid=r.collaborator.id;
 r=await call(`/api/agency/collaborators/${pid}`,'PATCH',{...person,job_title:'Editor'});assert.equal(r.collaborator.job_title,'Editor');

@@ -18,7 +18,7 @@ export const CAPABILITIES=[
  {id:'checklists.edit',label:'Checklists',description:'Editar checklists de piezas.',roles:['owner','admin','management','production','editor','collaborator']},
  {id:'commercial.manage',label:'Pipeline comercial',description:'Oportunidades y seguimiento comercial.',roles:['owner','admin','management','finance','sales','collaborator']},
  {id:'budgets.manage',label:'Presupuestos y planes',description:'Presupuestos, planes reutilizables y cotización.',roles:['owner','admin','management','finance','sales','production','collaborator']},
- {id:'commercial-terms.manage',label:'Términos comerciales',description:'Plan contratado, monto, comisión y factura por cliente.',roles:['owner','admin','management','sales','finance']},
+ {id:'commercial-terms.manage',label:'Términos comerciales',description:'Plan contratado, monto, comisión y factura por cliente.',roles:['owner','admin','management','sales']},
  {id:'billing.view',label:'Cobranza y facturas',description:'Ver mora, facturas y cobros.',roles:['owner','admin','management','finance','sales']},
  {id:'finance.view',label:'Saldos y previsión',description:'Saldos, dashboard financiero y previsión mensual.',roles:['owner','admin','finance']},
  {id:'accounts.manage',label:'Cuentas y custodios',description:'Cuentas bancarias y custodios.',roles:['owner','admin','finance']},

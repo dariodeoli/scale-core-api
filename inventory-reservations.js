@@ -1,6 +1,6 @@
 import {attributeActors} from './actor-identity.js';
 import {roleCan} from './permissions.js';
-import {fail,text,amount,date,option} from './suite-validation.js';
+import {fail,text,amount,date,option,serial} from './suite-validation.js';
 import {profilePhoto} from './media-policy.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {currencies} from './currencies.js';
@@ -236,7 +236,7 @@ async function saveItem(c,user,org,key,payload){
  }
  if(key&&Object.hasOwn(payload,'inventory_code')&&text(payload.inventory_code,60)!==old.inventory_code)fail('El código de inventario es estable y no se puede cambiar',409);
  const code=key?old.inventory_code:text(merged.inventory_code||'',60);
- const values=[name,category.name,text(merged.serial_number||'',120),custodian,amount(merged.value??0),option(merged.currency===undefined?await companyCurrency(c,org):merged.currency,currencies),status,date(merged.acquired_on),text(merged.notes||''),category.id,location.id,shelf,storageRow,code,photo,org];
+  const values=[name,category.name,serial(merged.serial_number||''),custodian,amount(merged.value??0),option(merged.currency===undefined?await companyCurrency(c,org):merged.currency,currencies),status,date(merged.acquired_on),text(merged.notes||''),category.id,location.id,shelf,storageRow,code,photo,org];
  const result=key?await c.query(`update agency_inventory set name=$1,category=$2,serial_number=$3,custodian_user_id=$4,value=$5,currency=$6,status=$7,acquired_on=$8,notes=$9,category_id=$10,storage_location_id=$11,storage_shelf=$12,storage_row=$13,inventory_code=$14,photo_url=$15${locationChanged?',location_changed_at=now()':''} where organization_id=$16 and id=$17 returning *`,[...values,key]):await c.query('insert into agency_inventory(name,category,serial_number,custodian_user_id,value,currency,status,acquired_on,notes,category_id,storage_location_id,storage_shelf,storage_row,inventory_code,photo_url,organization_id,location_changed_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now()) returning *',values);
  const saved=inventoryPayload(result.rows[0]);
  await traceInventory(c,org,[String(saved.id)],key?'inventory.updated':'inventory.created',user.id,null,{inventory_code:saved.inventory_code,name:saved.name,status:saved.status});

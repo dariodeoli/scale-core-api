@@ -1,10 +1,9 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
-const commonPasswords=new Set(['passwordpassword','password123456','qwertyuiop123','123456789012','adminadminadmin','scaleos123456']);
+const commonPasswords=new Set(['12345678','123456789','123456789012','password','password1','password123456','passwordpassword','qwertyuiop123','adminadminadmin','scaleos123456','contrasena','contraseña']);
 export function validatePassword(value,email=''){
- if(typeof value!=='string'||value.length<12||value.length>128)throw Object.assign(Error('Usá una contraseña de 12 a 128 caracteres.'),{status:400});
- if(/\s/.test(value)||!/[a-z]/.test(value)||!/[A-Z]/.test(value)||!/[0-9]/.test(value)||!/[^A-Za-z0-9\s]/.test(value))throw Object.assign(Error('La contraseña debe incluir mayúscula, minúscula, número y símbolo, sin espacios.'),{status:400});
+ if(typeof value!=='string'||value.length<8||value.length>128)throw Object.assign(Error('Usá una contraseña de 8 a 128 caracteres.'),{status:400});
  const normalized=value.toLowerCase(),local=String(email).split('@')[0].toLowerCase();
  if(commonPasswords.has(normalized)||(local.length>=4&&normalized.includes(local)))throw Object.assign(Error('Elegí una contraseña menos predecible.'),{status:400});
  return true;

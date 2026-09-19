@@ -14,7 +14,7 @@ export async function patchUrgency(c,user,kind,record,payload){
  if(!Object.hasOwn(payload,'urgency'))return;
  const table={projects:'agency_projects','work-orders':'agency_work_orders'}[kind];
  if(!table)fail('Este registro no admite urgencia');
- const roles=['owner','admin','management','production','colaborador',...(kind==='work-orders'?['editor']:[])];
+ const roles=['owner','admin','management','production','collaborator',...(kind==='work-orders'?['editor']:[])];
  if(!user||!roleCan(user,'work-orders.edit')||String(record.organization_id)!==String(user.organization_id))fail('Sin permiso para cambiar la urgencia',403);
  const member=(await c.query(`select m.role from organization_members m join organizations o on o.id=m.organization_id
   where m.user_id=$1 and m.organization_id=$2 and m.active and m.removed_at is null and o.active for share of m,o`,[user.id,user.organization_id])).rows[0];
