@@ -30,6 +30,7 @@ const storageLocationMigration=await fs.readFile(new URL('./migrations/20260914_
 const locationPipelineMigration=await fs.readFile(new URL('./migrations/20260915_inventory_location_pipeline.sql',import.meta.url),'utf8');await pg.exec(locationPipelineMigration);await pg.exec(locationPipelineMigration);
 const photosMigration=await fs.readFile(new URL('./migrations/20260915_inventory_photos.sql',import.meta.url),'utf8');await pg.exec(photosMigration);await pg.exec(photosMigration);
 const categoryIconsMigration=await fs.readFile(new URL('./migrations/20260915_inventory_category_icons.sql',import.meta.url),'utf8');await pg.exec(categoryIconsMigration);await pg.exec(categoryIconsMigration);
+const valueMaintenanceMigration=await fs.readFile(new URL('./migrations/20260919_inventory_value_maintenance.sql',import.meta.url),'utf8');await pg.exec(valueMaintenanceMigration);await pg.exec(valueMaintenanceMigration);
 assert((await query('select category_id from agency_inventory where id=$1',[legacy])).rows[0].category_id);
 await query("insert into agency_settings(organization_id,default_currency) values($1,'EUR')",[org]);
 // PGlite has one connection. Queue leased transactions, as a size-1 pg Pool does.

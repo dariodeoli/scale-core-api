@@ -65,13 +65,24 @@ async function reservation(c,org,key){
 }
 function ownReservation(user,row){if(user.role==='viewer')fail('Tu rol es de solo lectura',403);if(!roleCan(user,'inventory.manage')&&String(row.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
 
-async function catalog(c,org){
- return (await c.query(`select i.*,cat.name as category_name,cat.active as category_active,cat.icon as category_icon,loc.name as storage_location_name,loc.active as storage_location_active,
+// Linear depreciation and current value are computed on read from the stored
+// purchase inputs; no parallel value history is written.
+const depotComputed=`case when i.purchase_value is null then null
+  when i.depreciation_method='linear' and i.useful_life_months>0 and i.purchase_date is not null
+   then round(i.purchase_value-least(round((i.purchase_value-coalesce(i.residual_value,0))*least(el.months,i.useful_life_months)/i.useful_life_months,2),i.purchase_value-coalesce(i.residual_value,0)),2)
+  else i.purchase_value end as current_value,
+ case when i.purchase_value is null then null
+  when i.depreciation_method='linear' and i.useful_life_months>0 and i.purchase_date is not null
+   then least(round((i.purchase_value-coalesce(i.residual_value,0))*least(el.months,i.useful_life_months)/i.useful_life_months,2),i.purchase_value-coalesce(i.residual_value,0))
+  else 0.00 end as accumulated_depreciation,
+ case when i.purchase_value is not null and i.depreciation_method='linear' and i.useful_life_months>0
+  then round((i.purchase_value-coalesce(i.residual_value,0))/i.useful_life_months,2) else null end as monthly_depreciation`;
+const inventorySelect=`select i.*,cat.name as category_name,cat.active as category_active,cat.icon as category_icon,loc.name as storage_location_name,loc.active as storage_location_active,
   live.id as active_reservation_id,live.title as production_name,p.name as project_name,
   live.custodian_user_id as current_custodian_user_id,coalesce(nullif(up.full_name,''),u.email) as current_custodian_name,
   live.return_user_id,coalesce(nullif(rp.full_name,''),ru.email) as return_user_name,live.ends_at as expected_return_at,
   case when live.id is not null then 'checked_out' when i.status='in_use' then 'legacy_in_use' else 'storage' end as location_type,
-  coalesce(nullif(vp.full_name,''),vu.email) as last_verifier_name,vp.photo_url as last_verifier_photo_url
+  coalesce(nullif(vp.full_name,''),vu.email) as last_verifier_name,vp.photo_url as last_verifier_photo_url,${depotComputed}
   from agency_inventory i left join agency_inventory_categories cat on cat.id=i.category_id and cat.organization_id=i.organization_id
   left join agency_inventory_storage_locations loc on loc.id=i.storage_location_id and loc.organization_id=i.organization_id
   left join agency_inventory_reservation_items ri on ri.inventory_id=i.id and ri.organization_id=i.organization_id and ri.status='checked_out'
@@ -83,7 +94,51 @@ async function catalog(c,org){
   left join agency_user_profiles rp on rp.user_id=ru.id and rp.organization_id=i.organization_id
   left join users vu on vu.id=i.last_verified_by_user_id
   left join agency_user_profiles vp on vp.user_id=vu.id and vp.organization_id=i.organization_id
-  where i.organization_id=$1 and ${visibleRecord('i','inventory')} order by i.name,i.id`,[org])).rows.map(inventoryPayload);
+  left join lateral (select greatest((extract(year from age(current_date,i.purchase_date))*12+extract(month from age(current_date,i.purchase_date)))::int,0) as months) el on i.purchase_date is not null
+  where i.organization_id=$1`;
+async function catalog(c,org){
+ return (await c.query(`${inventorySelect} and ${visibleRecord('i','inventory')} order by i.name,i.id`,[org])).rows.map(inventoryPayload);
+}
+async function inventoryRecord(c,org,key){
+ const row=(await c.query(`${inventorySelect} and i.id=$2`,[org,key])).rows[0];
+ return row?inventoryPayload(row):null;
+}
+async function maintenanceHistory(c,org,key=null){
+ return (await c.query(`select m.*,i.inventory_code,i.name as inventory_name,
+  coalesce(nullif(p.full_name,''),u.email) as responsible_name,p.photo_url as responsible_photo_url,
+  coalesce(nullif(vp.full_name,''),vu.email) as voided_by_name
+  from agency_inventory_maintenance m join agency_inventory i on i.id=m.inventory_id and i.organization_id=m.organization_id
+  left join users u on u.id=m.responsible_user_id left join agency_user_profiles p on p.user_id=u.id and p.organization_id=m.organization_id
+  left join users vu on vu.id=m.voided_by_user_id left join agency_user_profiles vp on vp.user_id=vu.id and vp.organization_id=m.organization_id
+  where m.organization_id=$1 and ($2::bigint is null or m.inventory_id=$2)
+  order by m.maintenance_date desc,m.id desc limit 100`,[org,key])).rows;
+}
+async function saveMaintenance(c,user,org,key,payload){
+ const old=key?(await c.query('select * from agency_inventory_maintenance where id=$1 and organization_id=$2 for update',[key,org])).rows[0]:null;
+ if(key&&!old)fail('Mantenimiento no encontrado',404);
+ if(old?.voided_at)fail('Este mantenimiento ya fue anulado',409);
+ const b=payload;
+ const inventoryId=identifier(Object.hasOwn(b,'inventory_id')?b.inventory_id:old?.inventory_id);
+ const item=(await equipment(c,org,[inventoryId]))[0];
+ const when=date(Object.hasOwn(b,'maintenance_date')?b.maintenance_date:old?.maintenance_date);
+ if(!when)fail('Indicá la fecha del mantenimiento');
+ const kind=text(b.kind??old?.kind,80);if(kind.length<2)fail('Indicá el tipo de mantenimiento');
+ const description=text(b.description??old?.description??'',2000);
+ const cost=amount(b.cost??old?.cost??0);
+ const currency=option(b.currency===undefined?old?.currency??await companyCurrency(c,org):b.currency,currencies);
+ const responsible=Object.hasOwn(b,'responsible_user_id')?optionalId(b.responsible_user_id):old?.responsible_user_id??null;
+ if(responsible)await activeMembers(c,org,[responsible]);
+ const row=old
+  ?(await c.query('update agency_inventory_maintenance set maintenance_date=$1,kind=$2,description=$3,cost=$4,currency=$5,responsible_user_id=$6,updated_at=now() where id=$7 and organization_id=$8 returning *',[when,kind,description,cost,currency,responsible,key,org])).rows[0]
+  :(await c.query('insert into agency_inventory_maintenance(organization_id,inventory_id,maintenance_date,kind,description,cost,currency,responsible_user_id,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *',[org,item.id,when,kind,description,cost,currency,responsible,user.id])).rows[0];
+ return row;
+}
+async function voidMaintenance(c,user,org,key){
+ const row=(await c.query('select * from agency_inventory_maintenance where id=$1 and organization_id=$2 for update',[key,org])).rows[0];
+ if(!row)fail('Mantenimiento no encontrado',404);
+ if(row.voided_at)fail('Este mantenimiento ya fue anulado',409);
+ await c.query('update agency_inventory_maintenance set voided_at=now(),voided_by_user_id=$1,updated_at=now() where id=$2 and organization_id=$3',[user.id,key,org]);
+ return {ok:true};
 }
 async function listReservations(c,org,from,to,key=null){
  return (await c.query(`select r.*,p.name as project_name,
@@ -236,9 +291,19 @@ async function saveItem(c,user,org,key,payload){
  }
  if(key&&Object.hasOwn(payload,'inventory_code')&&text(payload.inventory_code,60)!==old.inventory_code)fail('El código de inventario es estable y no se puede cambiar',409);
  const code=key?old.inventory_code:text(merged.inventory_code||'',60);
-  const values=[name,category.name,serial(merged.serial_number||''),custodian,amount(merged.value??0),option(merged.currency===undefined?await companyCurrency(c,org):merged.currency,currencies),status,date(merged.acquired_on),text(merged.notes||''),category.id,location.id,shelf,storageRow,code,photo,org];
- const result=key?await c.query(`update agency_inventory set name=$1,category=$2,serial_number=$3,custodian_user_id=$4,value=$5,currency=$6,status=$7,acquired_on=$8,notes=$9,category_id=$10,storage_location_id=$11,storage_shelf=$12,storage_row=$13,inventory_code=$14,photo_url=$15${locationChanged?',location_changed_at=now()':''} where organization_id=$16 and id=$17 returning *`,[...values,key]):await c.query('insert into agency_inventory(name,category,serial_number,custodian_user_id,value,currency,status,acquired_on,notes,category_id,storage_location_id,storage_shelf,storage_row,inventory_code,photo_url,organization_id,location_changed_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now()) returning *',values);
- const saved=inventoryPayload(result.rows[0]);
+ const purchaseValue=Object.hasOwn(payload,'purchase_value')?(payload.purchase_value===null||payload.purchase_value===''?null:amount(payload.purchase_value)):(old.purchase_value===undefined||old.purchase_value===null?null:Number(old.purchase_value));
+ const purchaseDate=Object.hasOwn(payload,'purchase_date')?date(payload.purchase_date):date(old.purchase_date);
+ const depreciationMethod=option(payload.depreciation_method===undefined?old.depreciation_method||'none':payload.depreciation_method,['none','linear']);
+ const lifeInput=Object.hasOwn(payload,'useful_life_months')?payload.useful_life_months:old.useful_life_months??null;
+ const usefulLife=lifeInput===null||lifeInput===undefined||lifeInput===''?null:Number(lifeInput);
+ if(usefulLife!==null&&(!Number.isInteger(usefulLife)||usefulLife<1||usefulLife>600))fail('La vida útil debe estar entre 1 y 600 meses');
+ const residual=Object.hasOwn(payload,'residual_value')?(payload.residual_value===null||payload.residual_value===''?0:amount(payload.residual_value)):(old.residual_value===undefined?0:Number(old.residual_value||0));
+ if(purchaseValue===null&&residual>0)fail('Cargá primero el valor de compra');
+ if(purchaseValue!==null&&Math.round(residual*100)>Math.round(purchaseValue*100))fail('El valor residual no puede superar el valor de compra');
+ if(depreciationMethod==='linear'&&(purchaseValue===null||!purchaseDate||usefulLife===null))fail('Para depreciación lineal indicá valor de compra, fecha y vida útil');
+ const values=[name,category.name,serial(merged.serial_number||''),custodian,amount(merged.value??0),option(merged.currency===undefined?await companyCurrency(c,org):merged.currency,currencies),status,date(merged.acquired_on),text(merged.notes||''),category.id,location.id,shelf,storageRow,code,photo,purchaseValue,purchaseDate,depreciationMethod,usefulLife,residual,org];
+ const result=key?await c.query(`update agency_inventory set name=$1,category=$2,serial_number=$3,custodian_user_id=$4,value=$5,currency=$6,status=$7,acquired_on=$8,notes=$9,category_id=$10,storage_location_id=$11,storage_shelf=$12,storage_row=$13,inventory_code=$14,photo_url=$15,purchase_value=$16,purchase_date=$17,depreciation_method=$18,useful_life_months=$19,residual_value=$20${locationChanged?',location_changed_at=now()':''} where organization_id=$21 and id=$22 returning *`,[...values,key]):await c.query('insert into agency_inventory(name,category,serial_number,custodian_user_id,value,currency,status,acquired_on,notes,category_id,storage_location_id,storage_shelf,storage_row,inventory_code,photo_url,purchase_value,purchase_date,depreciation_method,useful_life_months,residual_value,organization_id,location_changed_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,now()) returning *',values);
+ const saved=(await inventoryRecord(c,org,String(result.rows[0].id)))||inventoryPayload(result.rows[0]);
  await traceInventory(c,org,[String(saved.id)],key?'inventory.updated':'inventory.created',user.id,null,{inventory_code:saved.inventory_code,name:saved.name,status:saved.status});
  if(key&&locationChanged)await traceInventory(c,org,[String(saved.id)],'location.changed',user.id,null,{inventory_code:saved.inventory_code,from_shelf:old.storage_shelf||null,to_shelf:shelf,storage_location_id:location.id});
  return saved;
@@ -267,7 +332,7 @@ async function verifyItem(c,user,org,key,payload){
  const verified=(await c.query('update agency_inventory set last_verified_at=now(),last_verified_by_user_id=$1,last_verification_result=$2,last_verification_differences=$3,last_verified_counted_quantity=$4 where id=$5 and organization_id=$6 returning *',[user.id,result,differences,counted,key,org])).rows[0];
  const verification=(await c.query('insert into agency_inventory_verifications(organization_id,inventory_id,verified_by_user_id,result,counted_quantity,differences,note,adjusted,before_state,after_state) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb) returning *',[org,key,user.id,result,counted,differences,note,adjusted,JSON.stringify(item),JSON.stringify({...after,...verified})])).rows[0];
  await traceInventory(c,org,[key],'stock.verified',user.id,null,{inventory_code:item.inventory_code,result,counted_quantity:counted,differences,note,adjusted});
- return {record:inventoryPayload(verified),verification};
+ return {record:await inventoryRecord(c,org,key)||inventoryPayload(verified),verification};
 }
 
 async function batchItems(c,user,org,payload){
@@ -316,7 +381,7 @@ async function traceHistory(c,org,key){
 }
 
 export async function inventoryReservations({req,res,url,db,session,body,send}){
- const route=url.pathname.match(/^\/api\/agency\/(inventory|inventory-categories|inventory-locations|inventory-reservations|inventory-context)(?:\/(\d+))?(?:\/(checkout|return|check-out|check-in|cancel|restore|verify|batch))?$/);
+ const route=url.pathname.match(/^\/api\/agency\/(inventory|inventory-categories|inventory-locations|inventory-maintenance|inventory-reservations|inventory-context)(?:\/(\d+))?(?:\/(checkout|return|check-out|check-in|cancel|restore|verify|batch))?$/);
  if(!route)return false;
  let c,transaction=false;
  try{
@@ -366,8 +431,16 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
     if((await c.query('select 1 from agency_inventory where organization_id=$1 and storage_location_id=$2 limit 1',[org,key])).rows.length)fail('El lugar está en uso por equipos. Archiválo en lugar de eliminarlo.',409);
     await c.query('delete from agency_inventory_storage_locations where id=$1 and organization_id=$2',[key,org]);result={ok:true};
    }else fail('Método no permitido',405);
+  }else if(kind==='inventory-maintenance'&&!action){
+   if(req.method==='GET'){
+    const inventoryId=url.searchParams.get('inventory_id');
+    result={maintenance:await maintenanceHistory(c,org,inventoryId?identifier(inventoryId):null)};
+   }else if(req.method==='POST'&&!key||req.method==='PATCH'&&key){
+    result={maintenance:await saveMaintenance(c,user,org,key,await body(req))};status=key?200:201;
+   }else if(req.method==='DELETE'&&key){result=await voidMaintenance(c,user,org,key);}
+   else fail('Método no permitido',405);
   }else if(kind==='inventory'){
-   if(req.method==='GET'&&!action){const records=await catalog(c,org);if(key){const record=records.find(r=>String(r.id)===key);if(!record)fail('Equipo no encontrado',404);result={record,verifications:await verificationHistory(c,org,key),trace:await traceHistory(c,org,key)};}else result={records};}
+   if(req.method==='GET'&&!action){const records=await catalog(c,org);if(key){const record=records.find(r=>String(r.id)===key);if(!record)fail('Equipo no encontrado',404);result={record,verifications:await verificationHistory(c,org,key),trace:await traceHistory(c,org,key),maintenance:await maintenanceHistory(c,org,key)};}else result={records};}
    else if(!action&&(req.method==='POST'&&!key||req.method==='PATCH'&&key)){result={record:await saveItem(c,user,org,key,await body(req))};status=key?200:201;}
    else if(key&&req.method==='POST'&&action==='verify'){result=await verifyItem(c,user,org,key,await body(req));}
    else if(!key&&req.method==='POST'&&action==='batch'){result=await batchItems(c,user,org,await body(req));}
