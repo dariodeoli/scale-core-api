@@ -188,7 +188,7 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   sameOrigin(req);
   if(inviteAccept){
    if(req.method!=='POST')fail('Método no permitido',405);const b=await body(req),raw=token(b.token);if(!await throttle(db,'client-portal-accept:'+hash(raw),5))fail('Demasiados intentos',429);
-   if(typeof b.password!=='string'||b.password.length<12||b.password.length>128)fail('Usá una contraseña de 12 a 128 caracteres');
+   if(typeof b.password!=='string'||b.password.length<8||b.password.length>128)fail('Usá una contraseña de 8 a 128 caracteres');
    c=await db.connect();await c.query('begin');transaction=true;const invite=await validInvite(c,raw,{lock:true});
    let user=(await c.query('select * from client_portal_users where email_normalized=$1 for update',[invite.email_normalized])).rows[0];
    if(user){
