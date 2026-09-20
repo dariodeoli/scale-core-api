@@ -2,6 +2,8 @@ const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status
 export const roles=['owner','admin','management','finance','sales','production','editor','viewer','collaborator'];
 export const roleLabels={owner:'Dueño',admin:'Administrador',management:'Gerencia',finance:'Finanzas',sales:'Ventas',production:'Producción',editor:'Editor',viewer:'Solo lectura',collaborator:'Colaborador'};
 const all=[...roles];
+// Los roles del checklist viven en un solo lugar: ver y editar comparten audiencia.
+const checklistRoles=['owner','admin','management','production','editor','collaborator'];
 export const CAPABILITIES=[
  {id:'members.manage',label:'Equipo y accesos',description:'Personas, cargos, accesos, invitaciones y remuneraciones.',roles:['owner','admin','management']},
  {id:'settings.manage',label:'Configuración de la empresa',description:'Datos de la empresa, moneda y cotización.',roles:['owner','admin']},
@@ -15,7 +17,8 @@ export const CAPABILITIES=[
  {id:'work-orders.manage',label:'Gestionar piezas',description:'Crear piezas y acciones de producción.',roles:['owner','admin','management','production','collaborator']},
  {id:'work-orders.edit',label:'Editar y mover piezas',description:'Editar piezas y cambiar su estado.',roles:['owner','admin','management','production','editor','collaborator']},
  {id:'assignees.manage',label:'Responsables',description:'Asignar responsables a proyectos y piezas.',roles:['owner','admin','management','production','collaborator']},
- {id:'checklists.edit',label:'Checklists',description:'Editar checklists de piezas.',roles:['owner','admin','management','production','editor','collaborator']},
+ {id:'work-checklists.view',label:'Ver checklists',description:'Leer los checklists de las piezas.',roles:checklistRoles},
+ {id:'checklists.edit',label:'Checklists',description:'Editar checklists de piezas.',roles:checklistRoles},
  {id:'commercial.manage',label:'Pipeline comercial',description:'Oportunidades y seguimiento comercial.',roles:['owner','admin','management','finance','sales','collaborator']},
  {id:'budgets.manage',label:'Presupuestos y planes',description:'Presupuestos, planes reutilizables y cotización.',roles:['owner','admin','management','finance','sales','production','collaborator']},
  {id:'commercial-terms.manage',label:'Términos comerciales',description:'Plan contratado, monto, comisión y factura por cliente.',roles:['owner','admin','management','sales']},

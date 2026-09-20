@@ -55,7 +55,8 @@ async function studioReservation(connection,organization,id){
 function ownReservation(user,reservation){if(!roleCan(user,'studio.manage')&&String(reservation.created_by_user_id)!==String(user.id))fail('Solo podés gestionar tus propias reservas',403);}
 
 async function context(connection,organization,user){
- const canReserve=roleCan(user,'inventory.book');
+ // Decisión de producto (issue #18): reservar el estudio se gobierna con studio.manage.
+ const canReserve=roleCan(user,'studio.manage');
  return {user_id:String(user.id),role:user.role,time_zone:'America/Asuncion',can_manage:roleCan(user,'studio.manage'),can_reserve:canReserve,
   members:canReserve?(await connection.query(`select m.user_id::text as id,coalesce(nullif(p.full_name,''),u.email) as name,p.photo_url
    from organization_members m join users u on u.id=m.user_id left join agency_user_profiles p on p.user_id=m.user_id and p.organization_id=m.organization_id
@@ -114,7 +115,7 @@ export async function studioReservations({req,res,url,db,session,body,send}){
   const user=await session(req);if(!user)fail('No autenticado',401);
   const [,kind,rawId,action]=route,id=rawId?identifier(rawId):null,write=req.method!=='GET';
   if(!['GET','POST','PATCH'].includes(req.method))fail('Método no permitido',405);
-  const allowed=write?(kind==='studio-spaces'?'studio.manage':'inventory.book'):'inventory.view';
+  const allowed=write?'studio.manage':'inventory.view';
   if(!roleCan(user,allowed))fail('Tu rol no permite esta operación',403);
   connection=await db.connect();await connection.query('begin isolation level read committed');transaction=true;
   const organization=await authorize(connection,user,allowed,write);

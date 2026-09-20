@@ -29,7 +29,8 @@ export async function workChecklists({req, res, url, db, session, body, send}) {
   const edit = req.method === 'PATCH' && rawItem;
   const remove = req.method === 'DELETE' && rawItem;
   if (!read && !add && !edit && !remove) fail('Método no permitido', 405);
-  const allowed = read ? 'inventory.view' : 'checklists.edit';
+  // Lectura con capacidad propia (issue #18): revocar inventario no quita el checklist.
+ const allowed = read ? 'work-checklists.view' : 'checklists.edit';
   if (!roleCan(user,allowed)) fail('Tu rol no permite modificar el checklist', 403);
   const org = identifier(user.organization_id), order = identifier(rawOrder), person = identifier(user.id);
   c = await db.connect(); await c.query('begin'); tx = true;
