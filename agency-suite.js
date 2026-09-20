@@ -192,12 +192,17 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation,sen
     const currency=option(Object.hasOwn(b,'default_currency')?b.default_currency:previous.default_currency??'PYG',currencies);
     if(name.length<2)fail('Ingresá el nombre');
     await c.query('update organizations set name=$1 where id=$2',[name,org]);
-    await c.query('insert into agency_settings(organization_id,legal_name,tax_id,address,phone,onboarding_completed,default_currency) values($1,$2,$3,$4,$5,$6,$7) on conflict(organization_id) do update set legal_name=excluded.legal_name,tax_id=excluded.tax_id,address=excluded.address,phone=excluded.phone,onboarding_completed=excluded.onboarding_completed,default_currency=excluded.default_currency',[org,text(merged.legal_name||'',160),text(merged.tax_id||'',60),text(merged.address||'',300),Object.hasOwn(b,'phone')?phone(merged.phone):(merged.phone??null),merged.onboarding_completed===true,currency]);
+    await c.query('insert into agency_settings(organization_id,legal_name,tax_id,address,phone,onboarding_completed,default_currency) values($1,$2,$3,$4,$5,$6,$7) on conflict(organization_id) do update set legal_name=excluded.legal_name,tax_id=excluded.tax_id,address=excluded.address,phone=excluded.phone,onboarding_completed=excluded.onboarding_completed,default_currency=excluded.default_currency',[org,text(merged.legal_name||'',160),text(merged.tax_id||'',60),text(merged.address||'',400),Object.hasOwn(b,'phone')?phone(merged.phone):(merged.phone??null),merged.onboarding_completed===true,currency]);
     result={ok:true,default_currency:currency};
    }else fail('Método no permitido',405);
   }else if(kind==='exchange-rates'){
    if(req.method==='GET')result={records:(await c.query('select * from agency_exchange_rates where organization_id=$1 order by rate_date desc limit 90',[org])).rows};
-   else if(req.method==='POST'){const b=await body(req),rate=amount(b.usd_to_pyg),on=date(b.rate_date);if(!rate||!on)fail('Fecha y cotización requeridas');await c.query('insert into agency_exchange_rates values($1,$2,$3) on conflict(organization_id,rate_date) do update set usd_to_pyg=excluded.usd_to_pyg',[org,on,rate]);result={ok:true};}else fail('Método no permitido',405);
+   else if(req.method==='POST'){
+    const b=await body(req),on=date(b.rate_date),raw=Number(b.usd_to_pyg);
+    // Misma regla que la interfaz: entero entre G. 1.000 y G. 100.000 por USD.
+    if(!Number.isSafeInteger(raw)||raw<1000||raw>100000)fail('Ingresá una cotización entera entre G. 1.000 y G. 100.000 por USD.');
+    if(!on)fail('Fecha y cotización requeridas');
+    await c.query('insert into agency_exchange_rates values($1,$2,$3) on conflict(organization_id,rate_date) do update set usd_to_pyg=excluded.usd_to_pyg',[org,on,raw]);result={ok:true};}else fail('Método no permitido',405);
   }else fail('Método no permitido',405);
   if(kind==='work-orders')await enrichWorkOrderAssignees(c,org,result.record||result.workOrder);
   await c.query('commit');transaction=false;

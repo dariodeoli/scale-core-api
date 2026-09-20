@@ -45,6 +45,10 @@ assert.equal((await query('select full_name from user_personal_identities where 
 r=await request('/api/agency/productivity/profile',{cookie,method:'PATCH',payload:{full_name:'Mi identidad global',photo_url:'https://example.invalid/personal.png'}});assert.equal(r.status,200);
 r=await request('/api/auth/me',{cookie});assert.equal(JSON.parse(r.body).user.full_name,'Mi identidad global');assert.equal(JSON.parse(r.body).user.photo_url,'https://example.invalid/personal.png');
 r=await request('/api/auth/organizations',{cookie});assert.equal(JSON.parse(r.body).organizations.length,1);
+// Sin sesión, crear una empresa es 401 (no un 403 de permisos) y no escribe nada.
+const organizationsBeforeAnonymous=(await query('select count(*)::int as count from organizations')).rows[0].count;
+r=await request('/api/auth/organizations',{method:'POST',payload:{name:'Anonymous agency',slug:'anonymous-agency'}});assert.equal(r.status,401,'anonymous company creation is unauthorized');
+assert.equal((await query('select count(*)::int as count from organizations')).rows[0].count,organizationsBeforeAnonymous);
 r=await request('/api/auth/switch-organization',{cookie,method:'POST',payload:{organizationId:scale}});assert.equal(r.status,403);
 await query("insert into organization_members values($1,$2,'viewer',now())",[scale,uid]);
 await query("insert into agency_settings(organization_id,default_currency) values($1,'USD') on conflict(organization_id) do update set default_currency='USD'",[scale]);

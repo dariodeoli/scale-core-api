@@ -40,7 +40,8 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       return send(res,200,await setDefaultOrganization(db,user,await body(req)));
     }
     if(url.pathname==='/api/auth/organizations'&&req.method==='POST'){
-      const user=await session(req);if(!roleCan(user,'company.create'))return send(res,403,{error:'Solo administración puede crear una empresa'});
+      const user=await session(req);if(!user)return send(res,401,{error:'No autenticado'});
+      if(!roleCan(user,'company.create'))return send(res,403,{error:'Solo administración puede crear una empresa'});
       const b=await body(req),name=typeof b.name==='string'?b.name.trim():'',slug=typeof b.slug==='string'?b.slug.trim().toLowerCase():'';
       if(name.length<2||name.length>160||!/^\w[\w-]{2,59}$/.test(slug))return send(res,400,{error:'Nombre y código de empresa inválidos'});
       if(b.billingCurrency!==undefined&&!['USD','PYG'].includes(b.billingCurrency))return send(res,400,{error:'Elegí USD o PYG para la suscripción'});
