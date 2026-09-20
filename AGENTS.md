@@ -9,6 +9,16 @@
 - Handover: conventional commits por unidad de trabajo, sin atribución de IA; avisar con rama, `git log --oneline origin/main..HEAD`, qué hace cada commit, rutas tocadas y verificaciones.
 - Issues: cada pedido se trabaja desde un issue del backlog; citar `Refs #<n>` en commits y handover. El integrador cierra el issue solo verificando por contenido contra `main`.
 
+## Worktrees e implementadores (cómo actúa cada uno)
+- **Implementador (agente en worktree)**: trabaja SOLO en su rama dentro de su worktree; nunca toca `main` ni despliega. Rebase sobre `origin/main` antes de empezar; entrega por push a `origin/<su-rama>` con handover (rama, commits, rutas, verificaciones). Prohibido: mergear/pushear a main, resolver conflictos sobre main, borrar o arreglar refs.
+- **Integrador (sesión sobre main)**: único que mergea y pushea `main`, siempre con `MOBOS_INTEGRATOR=1`; integra una rama por vez, verifica el árbol mergeado y ante conflicto real **para y consulta**. El deploy de producción es exclusivo de Dario con el comando de release.
+- **Estado raro de git** (fetch que falla, refs rotas): parar y avisar; no reparar por cuenta propia.
+
+## Tests con base de datos
+- Con PGlite (sin instalación): `test-suite.mjs`, `test-operations.mjs`, `test-auth.mjs`, `test-global-identity.mjs`, `test-forecast.mjs`, `test-platform-admin.mjs` y compañía.
+- Con **Postgres real** (requieren binarios `initdb`/`pg_ctl`, p. ej. `brew install postgresql@16`): `node test-inventory-postgres.mjs` y `node test-treasury-concurrency.mjs`. Correrlos al tocar inventario, tesorería o concurrencia de saldos; ambos levantan su propio clúster temporal.
+- Al agregar una migración nueva, incluirla en las cadenas curadas de los fixtures (`scripts/migration-order.mjs` y las listas de `test-suite.mjs`/`test-auth.mjs`) para que los tests la carguen.
+
 ## Contratos de endpoints
 - Los endpoints de salary-overrides (GET/PATCH/DELETE por colaborador y mes) sostienen los ajustes mensuales por persona de la Previsión financiera y admiten importes con signo (extra o descuento). Mantener ese contrato; cualquier cambio requiere actualizar la previsión.
 
