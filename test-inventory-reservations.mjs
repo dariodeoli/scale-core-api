@@ -89,6 +89,9 @@ assert.equal((await call('inventory/batch','POST',{ids:[card],change:{}})).statu
 const oversizedBatch=await call('inventory/batch','POST',{ids:Array.from({length:51},(_,index)=>String(index+1)),change:{verify:true}});
 assert.equal(oversizedBatch.status,400);assert.match(oversizedBatch.error,/1 y 50/,'the batch cap is explicit for the UI');
 assert.equal((await call('inventory/batch','POST',{ids:[card],change:{verify:true}},viewer)).status,403,'batch actions require inventory.manage');
+assert.equal((await call('inventory-categories','POST',{name:'X'})).status,400,'a category name needs two characters or more');
+assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'X'})).status,400);
+assert.equal((await call(`inventory/${card}`)).record.category,'Memorias y almacenamiento','the rejected rename preserves the stored category');
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'Memorias'})).status,200);
 assert.equal((await call(`inventory/${card}`)).record.category,'Memorias');
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{active:false})).status,200);
@@ -304,6 +307,9 @@ assert.equal((await call(`inventory/${templated.id}`,'PATCH',{name:'Existing arc
 assert(!(await call('inventory-locations','GET',{}, {...owner,organization_id:other})).locations.some(row=>String(row.id)===String(placeId)),'tenant location list excludes another tenant’s templates');
 const listedLocations=(await call('inventory-locations','GET',{},management)).locations;assert(listedLocations.find(row=>String(row.id)===String(placeId)).item_count>=1,'place list returns usage count');
 assert(!listedLocations.some(row=>String(row.id)===String(otherPlace.location.id)),'place list is tenant scoped');
+assert.equal((await call('inventory-locations','POST',{name:'Z'},management)).status,400,'a place name needs two characters or more');
+assert.equal((await call(`inventory-locations/${placeId}`,'PATCH',{name:'Z'},management)).status,400);
+assert((await call('inventory-locations')).locations.find(row=>String(row.id)===String(placeId))?.name.length>=2,'the rejected rename keeps the stored place name');
 const unused=(await call('inventory-locations','POST',{name:'Temporary location'},management)).location;
 assert.equal((await call(`inventory-locations/${unused.id}`,'DELETE',{},management)).status,200,'unreferenced place can be deleted');
 let templateReturn=(await call('inventory-reservations','POST',{...reservationPayload([created.id]),...currentRange},owner)).reservation;
