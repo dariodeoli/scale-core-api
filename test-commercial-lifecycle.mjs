@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {commercialLifecycle} from './commercial-lifecycle.js';
+import {reports} from './reports.js';
 import {suite} from './agency-suite.js';
 
 const pg=new PGlite();
@@ -92,10 +93,23 @@ const reportRow=projected.commercial.amendments[0];
 assert.equal(reportRow.planName,'Plan reporting','the plan name fills the ficha amendment when the snapshot is absent');
 assert.equal(reportRow.monthlyPrice,'900000','recurring amount fills the ficha price when the lifecycle price is absent');
 assert.equal(reportRow.effectiveOn,'2026-01-10','starts_on fills the effective date for reporting terms');
+// La ficha (terms PATCH) respeta el ciclo: su edición cierra el término vigente y
+// anexa el nuevo, así que la versión optimista del ciclo avanza con ella.
+const fichaPlan=await insert("insert into agency_plans(organization_id,name,currency,items) values($1,'Plan ficha','PYG','[]'::jsonb)",[organization]);
+const fichaEdit=await call(`/api/agency/clients/${uiClient}/commercial-terms`,{method:'PATCH',handler:reports,payload:{planId:String(fichaPlan),recurringAmount:'900000',currency:'PYG',startsOn:'2026-09-01',endsOn:null,invoiceRequired:true,commissionRecipientId:null,commissionMode:'none',commissionValue:null}});
+assert.equal(fichaEdit.status,200,'the ficha edits the current cycle term as an amendment');
+const afterFicha=await call(uiPath);
+assert.equal(afterFicha.commercial.amendments.length,3,'the ficha edit appends to the cycle history');
+assert.notEqual(afterFicha.commercial.version,second.commercial.version,'the cycle version advances with the ficha amendment');
+assert.deepEqual({plan:afterFicha.commercial.amendments[2].planName,price:afterFicha.commercial.amendments[2].monthlyPrice,on:afterFicha.commercial.amendments[2].effectiveOn},{plan:'Plan ficha',price:'900000',on:'2026-09-01'},'the appended term carries the ficha contract');
+const fichaRows=(await query('select effective_until::text as effective_until,version,plan_name,monthly_price::text as monthly_price from agency_client_commercial_terms where organization_id=$1 and client_id=$2 order by coalesce(effective_from,starts_on),id',[organization,uiClient])).rows;
+assert.deepEqual({until:fichaRows[1].effective_until,version:fichaRows[1].version,plan:fichaRows[1].plan_name,price:fichaRows[1].monthly_price},{until:'2026-08-31',version:2,plan:'Contenido mensual',price:'1500000.00'},'the ficha closes the cycle term the day before and bumps its version, keeping the snapshot');
+assert.equal(fichaRows[2].effective_until,null,'the appended term stays open');
+assert.equal((await call(`${uiPath}/amendments`,{method:'POST',payload:{...uiPayload,expectedVersion:second.commercial.version}})).status,409,'a lifecycle amendment based on the pre-ficha version is stale');
 await query("insert into agency_archived_records(organization_id,kind,record_id,removed_by) values($1,'clients',$2,$3)",[organization,uiClient,ownerId]);
 const archivedFicha=await call(uiPath);
 assert.equal(archivedFicha.commercial.archived,true);
 assert.equal((await call(`${uiPath}/amendments`,{method:'POST',payload:{...uiPayload,expectedVersion:archivedFicha.commercial.version}})).status,409,'archived clients never accept new amendments');
 assert.equal((await call(`/api/agency/clients/${otherClient}/commercial-lifecycle`)).status,404,'another tenant client is never addressable');
 await pg.close();
-console.log('PASS: commercial terms are tenant-scoped and immutable, amendments are optimistic and close the prior term, LTV subtracts reversals without currency conversion, Control Center separates contracted billing from forecast permissions, and the client ficha contract (camelCase history, role gates, archived read-only, reporting projection) is served end to end.');
+console.log('PASS: commercial terms are tenant-scoped and immutable, amendments are optimistic and close the prior term, LTV subtracts reversals without currency conversion, Control Center separates contracted billing from forecast permissions, and the client ficha contract (camelCase history, role gates, archived read-only, reporting projection) is served end to end, and a ficha terms edit amends the cycle as an append-only versioned term.');
