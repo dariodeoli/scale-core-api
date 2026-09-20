@@ -7,6 +7,7 @@ import {passwordAccess} from './password-access.js';
 import {collaboratorAccess} from './collaborator-access.js';
 import {budgetDocument} from './budget-document.js';
 import {civilDate,zoneDate,zoneToday} from './business-time.js';
+process.env.INVITE_LINK_SECRET??='test-invite-secret-fixture-32-chars-long';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
@@ -151,6 +152,9 @@ assert.equal(civilDate(new Date('2020-01-01T00:00:00Z')),'2020-01-01','UTC midni
 assert.equal(civilDate(new Date(2020,0,1)),'2020-01-01','local midnight dates keep their civil day');
 assert.equal(civilDate('2026-09-20'),'2026-09-20');
 assert.equal(civilDate(null),null);
+// users.role ya no nace con rol administrativo (issue #23).
+assert.equal((await query("insert into users(email,password_hash) values('role-default-fixture@example.invalid','unused') returning role")).rows[0].role,'viewer','el default de users.role no es administrativo');
+assert.equal((await query("select column_default from information_schema.columns where table_name='users' and column_name='role'")).rows[0].column_default,"'viewer'::text",'schema y migración dejan el mismo default');
 const budgetSource=await fs.readFile(new URL('./budget-document.js',import.meta.url),'utf8');
 assert.match(budgetSource,/const validUntil=civilDate\(b\.valid_until\)/,'budget validity reads the stored civil date');
 assert.match(budgetSource,/validUntil>=zoneToday\(\)/,'budget validity uses the company day');

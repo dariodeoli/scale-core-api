@@ -1,13 +1,21 @@
+import {fail} from './suite-validation.js';
 import crypto from 'node:crypto';
 import {roleCan,roles} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 // Fuente única de roles: la lista canónica vive en permissions.js.
 export const accessRoles=roles;
-const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
-const inviteKey=crypto.createHash('sha256').update(process.env.INVITE_LINK_SECRET||process.env.GOOGLE_CLIENT_SECRET||'scale-os-invite-key').digest();
-const seal=v=>{const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',inviteKey,iv),data=Buffer.concat([cipher.update(v,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),data]).toString('base64url');};
-const unseal=v=>{try{const raw=Buffer.from(v,'base64url'),dec=crypto.createDecipheriv('aes-256-gcm',inviteKey,raw.subarray(0,12));dec.setAuthTag(raw.subarray(12,28));return Buffer.concat([dec.update(raw.subarray(28)),dec.final()]).toString('utf8');}catch{return null;}};
+// Secreto propio de los enlaces de invitación: ni GOOGLE_CLIENT_SECRET (rotarlo
+// rompería los URLs guardados) ni una constante del repo. La clave se resuelve
+// en cada uso para que el servidor arranque y falle la request con un mensaje
+// claro si falta configurarla.
+const inviteKey=()=>{
+ const secret=process.env.INVITE_LINK_SECRET||'';
+ if(secret.length<32)fail('Configurá INVITE_LINK_SECRET (mínimo 32 caracteres) para emitir y leer enlaces de invitación.',500);
+ return crypto.createHash('sha256').update(secret).digest();
+};
+const seal=v=>{const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',inviteKey(),iv),data=Buffer.concat([cipher.update(v,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),data]).toString('base64url');};
+const unseal=v=>{const key=inviteKey();try{const raw=Buffer.from(v,'base64url'),dec=crypto.createDecipheriv('aes-256-gcm',key,raw.subarray(0,12));dec.setAuthTag(raw.subarray(12,28));return Buffer.concat([dec.update(raw.subarray(28)),dec.final()]).toString('utf8');}catch{return null;}};
 // Effective UI state only: never rewrite decisions or revoke an approved membership.
 // Validity is computed by PostgreSQL's clock in each caller, not browser time.
 export function accessRequestState(row){
@@ -31,7 +39,7 @@ export async function claimInvite(c,linkId,profile){
  where l.id=$1 and l.revoked_at is null and l.used_at is null and l.expires_at>now() and o.active=true and o.demo_owner_user_id is null for update of l`,[linkId])).rows[0];
  if(!l)fail('Este enlace ya no está disponible',410);
  const email=String(profile.email||'').trim().toLowerCase();if(!/^\S+@\S+\.\S+$/.test(email)||email.length>254)fail('Correo inválido');
- const u=(await c.query("insert into users(email,password_hash) values($1,'!invite-google-only') on conflict(email) do update set email=excluded.email returning id,is_demo_guest",[email])).rows[0];
+ const u=(await c.query("insert into users(email,password_hash,role) values($1,'!invite-google-only','viewer') on conflict(email) do update set email=excluded.email returning id,is_demo_guest",[email])).rows[0];
  if(u.is_demo_guest)fail('Usá una cuenta de Google real',403);
  const existing=(await c.query('select active,removed_at from organization_members where organization_id=$1 and user_id=$2',[l.organization_id,u.id])).rows[0];
  // A link never changes the role or reactivates a previously removed/suspended member.
