@@ -18,14 +18,16 @@
 - **La rama no se recrea por pedido**: antes de cada tarea `git fetch origin --prune && git rebase origin/main`; después de una integración la rama se reposiciona sobre `origin/main` y sigue viva.
 - **Transversales con dueño**: la validación compartida (`suite-validation.js`), permisos (`permissions.js`) y migraciones se coordinan por issue con el slot que designe el integrador (Plataforma para auth/permisos) para no pisarse.
 
-## Flujo de pedidos (integrador → slots)
-- Dario pasa el pedido al integrador; el integrador abre el issue, elige el slot y arranca la sesión del agente con el brief (slot, issue, alcance, criterio, rama, checks, handover).
-- El slot trabaja front (scale-os) y/o API con la misma rama de slot; nunca mergea ni despliega. El integrador verifica por contenido, mergea (API antes que front) y despliega.
-- Sin orquestadores intermedios: la escala se resuelve sumando slots.
+## Flujo de pedidos (Dario → orquestador → integrador/slots)
+- Dario le pasa todo al orquestador; el orquestador abre el issue, elige el slot y arranca la sesión del agente con el brief (slot, issue, alcance, criterio, rama, checks, handover). El orquestador no mergea ni despliega.
+- El slot trabaja front (scale-os) y/o API con la misma rama de slot; nunca mergea ni despliega.
+- El integrador es una sesión dedicada sobre los checkouts principales: único autorizado a mergear, verificar por contenido, pushear con `MOBOS_INTEGRATOR=1` y desplegar con pedido explícito.
+- La escala se resuelve sumando slots o agentes de campaña.
 
 ## Worktrees e implementadores (cómo actúa cada uno)
 - **Implementador (agente en worktree)**: trabaja SOLO en su rama de slot dentro de su worktree; nunca toca `main` ni despliega. Rebase sobre `origin/main` antes de empezar; entrega por push a `origin/<su-rama>` con handover (rama, commits, rutas, verificaciones). Prohibido: mergear/pushear a main, resolver conflictos sobre main, borrar o arreglar refs.
-- **Integrador (sesión sobre main)**: único que mergea y pushea `main`, siempre con `MOBOS_INTEGRATOR=1`; integra una rama por vez, verifica el árbol mergeado y ante conflicto real **para y consulta**. El deploy de producción es exclusivo de Dario con el comando de release.
+- **Orquestador (sesión de coordinación)**: único interlocutor de Dario; abre issues, elige slots, arranca agentes y ordena al integrador. No mergea, no pushea y no despliega.
+- **Integrador (sesión sobre los checkouts principales)**: único que mergea y pushea `main`, siempre con `MOBOS_INTEGRATOR=1`; integra una rama por vez, verifica el árbol mergeado y ante conflicto real **para y consulta**. El deploy de producción es exclusivo de Dario con el comando de release.
 - **Estado raro de git** (fetch que falla, refs rotas): parar y avisar; no reparar por cuenta propia.
 
 ## Tests con base de datos
