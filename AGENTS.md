@@ -14,7 +14,7 @@
 - **SOS-OPS (Operaciones)**: producción, proyectos, estudio, inventario (reservas, verificación, valor y depreciación).
 - **SOS-FIN (Finanzas)**: finanzas, mora/cobranza, previsión, informes y comisiones.
 - **SOS-PLT (Plataforma)**: auth/registro, equipo y accesos, configuración/papelera, superadmin, portal del cliente, automatización y correos.
-- Cada slot tiene una **rama persistente con el mismo nombre que en scale-os** (`SOS-COM`/`SOS-OPS`/`SOS-FIN`/`SOS-PLT`) y su worktree en `~/.herdr/worktrees/scale-core-api/<slot>`.
+- Cada slot tiene una **rama persistente con el mismo nombre que en scale-os** (`SOS-COM`/`SOS-OPS`/`SOS-FIN`/`SOS-PLT`) y su worktree en `~/.herdr/worktrees/scale-core-api/<slot>`; `SOS-DSN` (Diseño) es solo frontend y trabaja en scale-os.
 - **La rama no se recrea por pedido**: antes de cada tarea `git fetch origin --prune && git rebase origin/main`; después de una integración la rama se reposiciona sobre `origin/main` y sigue viva.
 - **Transversales con dueño**: la validación compartida (`suite-validation.js`), permisos (`permissions.js`) y migraciones se coordinan por issue con el slot que designe el integrador (Plataforma para auth/permisos) para no pisarse.
 
