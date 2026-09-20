@@ -365,7 +365,7 @@ export async function subscriptionBilling({req,res,url,db,session,body,send,send
     if(!sub){
      // Coupons also work before any trial or payment: the granted period opens
      // the subscription runway for companies that never enrolled.
-     await c.query(`insert into organization_subscriptions(organization_id,currency,binding_token) values($1,'USD',$2) on conflict(organization_id) do nothing`,[user.organization_id,randomUUID()]);
+     await c.query(`insert into organization_subscriptions(organization_id,currency,binding_token) values($1,$2,$3) on conflict(organization_id) do nothing`,[user.organization_id,user.default_currency??'PYG',randomUUID()]);
      sub=(await c.query('select due_at,paid_through_at from organization_subscriptions where organization_id=$1 for update',[user.organization_id])).rows[0];
     }
     if(coupon.discount_type==='days'){

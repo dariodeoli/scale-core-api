@@ -37,6 +37,15 @@ async function mutation(db,work){
  if(typeof db.connect!=='function')return work(db);
  const client=await db.connect();try{await client.query('begin');const result=await work(client);await client.query('commit');return result;}catch(error){await client.query('rollback');throw error;}finally{client.release();}
 }
+// Reintento seguro: la misma Idempotency-Key (header o cuerpo) identifica la misma
+// operación. Sin clave el contrato queda igual que antes de este endurecimiento.
+function idempotencyKey(input,req){
+ const raw=(req.headers||{})['idempotency-key']??input?.idempotencyKey;
+ if(raw===undefined||raw===null||raw==='')return null;
+ const key=String(raw).trim();
+ if(!/^[A-Za-z0-9._:-]{8,120}$/.test(key))fail('La clave de idempotencia debe tener entre 8 y 120 caracteres (letras, números, . _ : -).');
+ return key;
+}
 function page(url){return {limit:limit(url.searchParams.get('limit')),offset:integer(url.searchParams.get('offset'))};}
 function search(url){return (url.searchParams.get('q')||'').trim().slice(0,100);}
 function couponConfiguration(input,current=null){
@@ -89,13 +98,20 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    const input=await body(req),days=integer(input?.days??0,-1);
    if(days<1||days>3650)fail('Los días deben ser un entero entre 1 y 3650.');
    const reasonText=queryText(input?.reason||'');if(reasonText.length<3)fail('Indicá un motivo de al menos 3 caracteres.');
+   const idempotency=idempotencyKey(input,req);
    const result=await mutation(db,async client=>{
     const id=Number(extendPath[1]);
-    const org=(await client.query(`select id,name from organizations where id=$1 and ${realOrganization('organizations')} for update`,[id])).rows[0];
+    const org=(await client.query(`select o.id,o.name,coalesce((select s.default_currency from agency_settings s where s.organization_id=o.id),'PYG') as default_currency from organizations o where o.id=$1 and ${realOrganization('o')} for update`,[id])).rows[0];
     if(!org)fail('Agencia no encontrada o protegida.',404);
-    // Manual payments work even before any trial: open the runway row first.
-    await client.query(`insert into organization_subscriptions(organization_id,currency,binding_token) values($1,'USD',$2) on conflict(organization_id) do nothing`,[id,crypto.randomUUID()]);
+    // Manual payments work even before any trial: open the runway row first,
+    // con la moneda de la empresa (antes quedaba fija en USD).
+    await client.query(`insert into organization_subscriptions(organization_id,currency,binding_token) values($1,$2,$3) on conflict(organization_id) do nothing`,[id,org.default_currency,crypto.randomUUID()]);
     const sub=(await client.query('select due_at,paid_through_at from organization_subscriptions where organization_id=$1 for update',[id])).rows[0];
+    // La clave se busca después de tomar el lock: un reintento (o una carrera)
+    // devuelve el estado actual sin volver a sumar días.
+    if(idempotency&&(await client.query(`select 1 from platform_audit_log where actor_user_id=$1 and action='subscription.manual_extend' and metadata->>'idempotencyKey'=$2 limit 1`,[user.id,idempotency])).rows.length){
+     return {...await inspectInternalSubscription(client,id),idempotent_replay:true};
+    }
     const base=new Date(Math.max(Date.now(),sub.paid_through_at?new Date(sub.paid_through_at).getTime():new Date(sub.due_at).getTime()));
     base.setDate(base.getDate()+days);
     const due=new Date(Math.max(base.getTime(),new Date(sub.due_at).getTime()));
@@ -105,7 +121,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
     internalBase.setDate(internalBase.getDate()+days);
     await client.query(`insert into platform_subscription_states(organization_id,state,reason,expires_at,updated_by_user_id)
      values($1,'active',$2,$3,$4) on conflict(organization_id) do update set state='active',reason=excluded.reason,expires_at=excluded.expires_at,updated_by_user_id=excluded.updated_by_user_id,updated_at=now()`,[id,reasonText,internalBase.toISOString(),user.id]);
-    await audit(client,user,'subscription.manual_extend','organization_subscription',id,{days,reason:reasonText});
+    await audit(client,user,'subscription.manual_extend','organization_subscription',id,{days,reason:reasonText,...(idempotency?{idempotencyKey:idempotency}:{})});
     return inspectInternalSubscription(client,id);
    });
    send(res,200,result);return true;
