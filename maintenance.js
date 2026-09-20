@@ -45,12 +45,25 @@ export function maintenanceSettings(env = process.env) {
    usageDays: integer(env.USAGE_RETENTION_DAYS, 90, 30, 3650, 'USAGE_DAYS'),
    sessionsDays: integer(env.SESSIONS_RETENTION_DAYS, 7, 1, 3650, 'SESSIONS_DAYS'),
   retentionBatch: integer(env.PRESENCE_CLEANUP_BATCH_SIZE, 1000, 1, 10000, 'RETENTION_BATCH'),
+  protectedOrgIds: protectedOrgs(env.DEMO_CLEANUP_PROTECTED_ORG_IDS),
   intervalMs: integer(env.MAINTENANCE_INTERVAL_MS, 3600000, 60000, 86400000, 'INTERVAL'),
   runTimeoutMs: integer(env.MAINTENANCE_TIMEOUT_MS, 30000, 1000, 60000, 'TIMEOUT'),
  };
 }
+// Protección por configuración (nunca por el id de un fixture del entorno): la
+// lista de organizaciones que el operador no quiere que este job toque jamás.
+function protectedOrgs(value) {
+ const raw = value === undefined || value === null ? '' : String(value).trim();
+ if (!raw) return [];
+ const ids = raw.split(',').map(part => part.trim()).filter(Boolean).map(part => {
+  const id = Number(part);
+  if (!Number.isSafeInteger(id) || id < 1) throw failure('INVALID_DEMO_PROTECTED_ORGS');
+  return id;
+ });
+ return [...new Set(ids)];
+}
 // Two distinct creation paths exist: private sessions and public anonymous demos.
-const eligible = `o.id<>22 and o.slug ~ $2 and o.demo_owner_user_id is not null
+const eligible = settings => `${settings.protectedOrgIds.length ? `o.id not in (${settings.protectedOrgIds.join(',')}) and ` : ''}o.slug ~ $2 and o.demo_owner_user_id is not null
  and o.demo_expires_at is not null and isfinite(o.demo_expires_at)
  and o.demo_expires_at>o.created_at
  and o.demo_expires_at<now()-$1::int*interval '1 hour'
@@ -122,7 +135,7 @@ async function deletionPlan(c, org, maxRows) {
 }
 async function purgeDemo(c, org, settings, dryRun) {
  const plan = await deletionPlan(c, org, settings.maxDemoRows);
- const stillEligible = (await c.query(`select o.id from organizations o where ${eligible} and o.id=$3`,
+ const stillEligible = (await c.query(`select o.id from organizations o where ${eligible(settings)} and o.id=$3`,
   [settings.graceHours, '^demo-session-' + uuid + '$', org])).rows.length;
  if (!stillEligible) throw failure('DEMO_CHANGED');
  for (const [table, trigger] of switches) {
@@ -207,14 +220,14 @@ export async function runMaintenance(db, {dryRun = true, demoDryRun = true, veri
   if (!schemaLocked) { await raw.query('rollback'); return {dryRun, demoDryRun: dryRun || demoDryRun, skipped: 'busy'}; }
   await c.query("select set_config('app.current_user','system:expired-demo-cleanup',true),set_config('app.current_ip','maintenance-worker',true)");
   const args = [settings.graceHours, '^demo-session-' + uuid + '$'];
-  const candidates = (await c.query(`select o.id from organizations o where ${eligible}
+  const candidates = (await c.query(`select o.id from organizations o where ${eligible(settings)}
    order by o.demo_expires_at,o.id limit $3 for update of o skip locked`, [...args, settings.maxDemos])).rows;
   const demos = [];
   for (const {id} of candidates) {
    await c.query('savepoint demo_cleanup');
    try {
     // Recheck under locks; extending expiration must never race deletion.
-    const valid = (await c.query(`select o.id from organizations o where ${eligible} and o.id=$3`, [...args, id])).rows.length;
+    const valid = (await c.query(`select o.id from organizations o where ${eligible(settings)} and o.id=$3`, [...args, id])).rows.length;
     if (valid) demos.push(await purgeDemo(c, id, settings, dryRun || demoDryRun));
     await c.query('release savepoint demo_cleanup');
    } catch (error) {
