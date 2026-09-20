@@ -7,7 +7,7 @@ import {roleCan} from './permissions.js';
 import sharp from 'sharp';
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_client_payment_status.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_client_invoice_flags.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_client_payment_status.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260914_role_permissions.sql','20260915_optional_commission_terms.sql','20260915_client_invoice_flags.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 for(const file of ['20260910_productivity.sql','20260910_profile_identity.sql','20260912_comment_mentions.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 for(const file of ['20260910_currencies.sql','20260910_company_currency.sql','20260914_salary_forecast.sql','20260915_salary_override_signed.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 await identitySchema(pg);
@@ -52,7 +52,7 @@ assert.equal(Number((await sql('select balance from bank_accounts where id=$1',[
 assert.equal((await call('/api/agency/commissions')).commissions[0].status,'paid');
 assert.equal((await call('/api/agency/payouts')).payouts.length,2);
 // Monthly commission settlement by collaborator.
-assert.equal((await call('/api/agency/commissions/monthly','GET',{}, {...user,role:'viewer'})).status,403,'monthly commissions stay behind finance.view');
+assert.equal((await call('/api/agency/commissions/monthly','GET',{}, {...user,role:'viewer'})).status,403,'monthly commissions follow commissions.manage');
 assert.equal((await call('/api/agency/commissions/monthly?month=2026-13','GET')).status,400,'monthly commissions validate the month format');
 assert.equal((await call('/api/agency/commissions/monthly?month=2026-08','GET',{}, {...user,role:'finance'})).status,200);
 const settlePerson=(await call('/api/agency/collaborators','POST',{full_name:'Monthly settle',email:'settle@example.invalid',compensation_type:'fixed',compensation_amount:0,currency:'PYG',started_on:'2026-07-01'})).collaborator;
@@ -173,4 +173,71 @@ await sql("insert into agency_archived_records(organization_id,kind,record_id) v
 const archived=await call('/api/agency/team');assert.ok(!archived.collaborators.some(p=>String(p.id)===String(minimal.id)));assert.ok(archived.archivedProfiles.some(p=>String(p.id)===String(minimal.id)));
 assert.equal((await call('/api/agency/collaborators','POST',{full_name:'Duplicate archived',email:'new@example.invalid'})).status,409);
 assert.equal((await sql('select balance from bank_accounts where id=$1',[account])).rows[0].balance,beforeTeam);
+const commissionWrite={beneficiary_name:'Gate referral',kind:'referral',basis:'collected',percentage:10,amount:0,currency:'PYG',invoice_id:invoice,collaborator_id:pid};
+// Issue #14: los helpers de validación se importan de suite-validation.js; no
+// vuelven a definirse copias locales con límites o mensajes propios.
+const operationsSource=await fs.readFile(new URL('./operations.js',import.meta.url),'utf8');
+assert.match(operationsSource,/import \{fail,text,id,optId,option,amount,date,email\} from '\.\/suite-validation\.js';/,'operations.js imports every shared validator');
+for(const helper of ['text','id','optId','option','date','email'])assert(!new RegExp(`^(const|function)\\s+${helper}\\b`,'m').test(operationsSource),`operations.js does not redefine ${helper}`);
+assert.match(operationsSource,/const money=\(value,zero=false\)=>\{const n=amount\(value\);if\(!zero&&n===0\)fail\('Importe inválido'\);return n;\};/,'the module amount delegates to the shared amount and only adds the zero rule');
+
+// Validación compartida (suite-validation): mismos límites y mensajes que las
+// copias que tenía operations.js, incluida la regla del módulo sobre el cero.
+const invalidAmount=await call('/api/agency/commissions','POST',{...commissionWrite,basis:'fixed',amount:-1});
+assert.equal(invalidAmount.status,400);assert.equal(invalidAmount.error,'Importe inválido');
+const invalidDate=await call('/api/agency/payouts','POST',{collaborator_id:pid,account_id:account,amount:10,reference:'QA',paid_on:'2026-13-01'});
+assert.equal(invalidDate.status,400);assert.equal(invalidDate.error,'Fecha inválida');
+const invalidId=await call('/api/agency/payouts','POST',{collaborator_id:pid,account_id:'abc',amount:10,reference:'QA',paid_on:'2026-09-08'});
+assert.equal(invalidId.status,400);assert.equal(invalidId.error,'Identificador inválido');
+const invalidOption=await call('/api/agency/commissions','POST',{...commissionWrite,kind:'otro'});
+assert.equal(invalidOption.status,400);assert.equal(invalidOption.error,'Opción inválida');
+const invalidText=await call('/api/agency/commissions','POST',{...commissionWrite,notes:'x'.repeat(2001)});
+assert.equal(invalidText.status,400);assert.equal(invalidText.error,'Texto inválido');
+const invalidEmail=await call('/api/agency/collaborators','POST',{full_name:'Correo compartido',email:'no-email'});
+assert.equal(invalidEmail.status,400);assert.equal(invalidEmail.error,'Correo inválido','the shared email message replaces the module copy');
+const zeroCommission=await call('/api/agency/commissions','POST',{...commissionWrite,basis:'fixed',amount:0});
+assert.equal(zeroCommission.status,400);assert.equal(zeroCommission.error,'La comisión debe ser mayor a cero');
+const zeroPayout=await call('/api/agency/payouts','POST',{collaborator_id:pid,account_id:account,amount:0,reference:'QA',paid_on:'2026-09-08'});
+assert.equal(zeroPayout.status,400);assert.equal(zeroPayout.error,'Importe inválido','a zero payout stays invalid: shared amount plus the module rule');
+
+// Comisiones y referidos: el gate sigue a commissions.manage (el toggle del panel),
+// no a finance.view. Un gerente de comisiones sin finance.view opera el módulo y
+// finance.view sola no lo abre.
+const {rolePermissions}=await import('./permissions.js');
+const capabilityUser=async role=>{const rows=(await sql('select capability,allowed from agency_role_permissions where organization_id=$1 and role=$2',[org,role])).rows;return {...user,role,...(rows.length?{capabilities:Object.fromEntries(rows.map(row=>[row.capability,row.allowed]))}:{})};};
+async function permissionCall(method,payload){let response;const handled=await rolePermissions({req:{method,socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test/api/agency/permissions'),db:{query:sql,connect:async()=>({query:sql,release(){}})},session:async()=>user,body:async()=>payload,send:(_,status,data)=>response={status,...data}});assert.equal(handled,true);return response;}
+const managerWithout=await capabilityUser('management');
+assert.equal((await call('/api/agency/commissions','GET',{},managerWithout)).status,403,'management does not manage commissions by default');
+assert.equal((await call('/api/agency/commissions/monthly?month=2026-08','GET',{},managerWithout)).status,403);
+assert.equal((await call('/api/agency/commissions','POST',commissionWrite,managerWithout)).status,403);
+assert.equal((await call('/api/agency/referral-discounts','GET',{},managerWithout)).status,403);
+const financeViewOnly={...user,role:'management',capabilities:{'finance.view':true}};
+assert.equal((await call('/api/agency/commissions','GET',{},financeViewOnly)).status,403,'finance.view alone does not open commissions');
+assert.equal((await call('/api/agency/commissions/monthly?month=2026-08','GET',{},financeViewOnly)).status,403,'finance.view alone does not open the monthly settlement');
+assert.equal((await call('/api/agency/referral-discounts','GET',{},financeViewOnly)).status,403,'finance.view alone does not open referrals');
+assert.equal((await call('/api/agency/payouts','GET',{},financeViewOnly)).status,200,'payouts remain behind finance.view by design');
+assert.equal((await permissionCall('PATCH',{capability:'commissions.manage',role:'management',allowed:true})).status,200);
+const managerWith=await capabilityUser('management');
+assert.equal((await call('/api/agency/commissions','GET',{},managerWith)).status,200,'the granted capability opens the commissions list');
+assert.equal((await call('/api/agency/commissions/monthly?month=2026-08','GET',{},managerWith)).status,200,'the monthly settlement works without finance.view');
+const granted=await call('/api/agency/commissions','POST',commissionWrite,managerWith);assert.equal(granted.status,201);
+assert.equal((await call(`/api/agency/commissions/${granted.commission.id}`,'PATCH',{status:'approved'},managerWith)).status,200);
+assert.equal((await call('/api/agency/referral-discounts','GET',{},managerWith)).status,200);
+assert.equal((await call('/api/agency/payouts','GET',{},managerWith)).status,403,'commissions.manage does not open treasury payouts');
+assert.equal((await permissionCall('PATCH',{capability:'commissions.manage',role:'finance',allowed:false})).status,200);
+const financeRevoked=await capabilityUser('finance');
+assert.equal((await call('/api/agency/commissions','GET',{},financeRevoked)).status,403,'a revoked override closes commissions for finance');
+assert.equal((await call('/api/agency/commissions/monthly?month=2026-08','GET',{},financeRevoked)).status,403);
+assert.equal((await call('/api/agency/referral-discounts','GET',{},financeRevoked)).status,403);
+assert.equal((await call('/api/agency/payouts','GET',{},financeRevoked)).status,200,'finance keeps its treasury endpoints after the revocation');
+const panelGranted=await permissionCall('GET');
+const panelRow=panelGranted.capabilities.find(capability=>capability.id==='commissions.manage');
+assert.deepEqual(panelRow.defaults,['owner','admin','finance'],'the panel exposes commissions.manage with its default roles');
+assert.equal(panelRow.overrides.management,true,'the panel reflects the granted override');
+assert.equal(panelRow.overrides.finance,false,'and the revoked one');
+assert.equal((await permissionCall('PATCH',{capability:'commissions.manage',role:'finance',allowed:null})).status,200);
+assert.equal((await call('/api/agency/commissions','GET',{},await capabilityUser('finance'))).status,200,'removing the override restores the finance default');
+assert.equal((await permissionCall('PATCH',{capability:'commissions.manage',role:'management',allowed:null})).status,200);
+assert.equal((await call('/api/agency/commissions','GET',{},await capabilityUser('management'))).status,403,'and management returns to its default without the capability');
+assert.equal((await permissionCall('GET')).capabilities.find(capability=>capability.id==='commissions.manage').overrides.management,undefined,'the panel clears the override');
 await pg.close();console.log('PASS: collaborators, comments, commissions, payouts, tenant isolation, profile photos, unified directory, permission boundaries, archived profiles, duplicate prevention and audit');

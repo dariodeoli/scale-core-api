@@ -1,4 +1,4 @@
-import {fail} from './suite-validation.js';
+import {fail,text,id,optId,option,amount,date,email} from './suite-validation.js';
 import {currencies} from './currencies.js';
 import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
@@ -8,15 +8,12 @@ import { profilePhoto } from './media-policy.js';
 import {visibleRecord,assertRecordAvailable} from './record-lifecycle.js';
 import {saveCommentMentions} from './comment-mentions.js';
 
-const text = (value, max=2000) => typeof value==='string' && value.length<=max ? value.trim() : fail('Texto inválido');
-const identifier = value => /^\d+$/.test(String(value)) && Number(value)>0 ? String(value) : fail('Identificador inválido');
-const optionalId = value => value===null || value===undefined || value==='' ? null : identifier(value);
-function money(value, zero=false) { const n=Number(value); if(!Number.isFinite(n)||n<0||(!zero&&n===0)||n>999999999999) fail('Importe inválido'); return Math.round(n*100)/100; }
+// El importe del módulo delega en `amount` (límite, signo y redondeo compartidos)
+// y solo agrega la regla de negocio: el cero no es un importe válido salvo que el
+// campo lo admita explícitamente (compensación y comisión fija).
+const money=(value,zero=false)=>{const n=amount(value);if(!zero&&n===0)fail('Importe inválido');return n;};
 function monthlySalary(value) { const raw=typeof value==='string'?value.trim():value;if((typeof raw!=='number'&&typeof raw!=='string')||(typeof raw==='string'&&!/^\d+$/.test(raw)))fail('El salario mensual debe ser un importe entero válido');const n=Number(raw);if(!Number.isSafeInteger(n)||n<=0||n>999999999999)fail('El salario mensual debe ser un importe entero válido');return n; }
 function salaryOverrideAmount(value) { const raw=typeof value==='string'?value.trim():value;if((typeof raw!=='number'&&typeof raw!=='string')||(typeof raw==='string'&&!/^-?\d+$/.test(raw)))fail('El ajuste del mes debe ser un importe entero distinto de cero');const n=Number(raw);if(!Number.isSafeInteger(n)||n===0||Math.abs(n)>999999999999)fail('El ajuste del mes debe ser un importe entero distinto de cero');return n; }
-function date(value) { if(!value) return null; const parsed=new Date(value); if(!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==value) fail('Fecha inválida'); return value; }
-const option = (value, choices) => choices.includes(value) ? value : fail('Opción inválida');
-const email = value => !value ? null : /^\S+@\S+\.\S+$/.test(value) ? text(value,254).toLowerCase() : fail('Email inválido');
 async function belongs(c,table,id,org) { if(!id)return;const row=(await c.query(`select * from ${table} where id=$1 and organization_id=$2`,[id,org])).rows[0];if(!row)fail('Registro no encontrado',404);await assertRecordAvailable(c,table,row); }
 export async function operations({req,res,url,db,session,body,send,sendInvitation=async()=>false}) {
  const teamRoute=url.pathname==='/api/agency/team';
@@ -31,7 +28,10 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
  if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!salaryOverrideMatch&&!commissionMatch&&!commissionMonthlyRoute&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
  const user=await session(req);
  if(!user) {send(res,401,{error:'No autenticado'});return true;}
- const allowed=teamRoute&&req.method==='GET' ? true : commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? roleCan(user,'members.manage') : collaboratorMatch ? roleCan(user,'members.manage')||roleCan(user,'finance.view') : roleCan(user,'finance.view');
+ // Comisiones y referidos siguen a `commissions.manage` (el toggle del panel);
+ // `/payouts` también paga honorarios del equipo y queda en finance.view.
+ const commissionsRoute=commissionMatch||commissionMonthlyRoute||discountMatch;
+ const allowed=teamRoute&&req.method==='GET' ? true : commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? roleCan(user,'members.manage') : collaboratorMatch ? roleCan(user,'members.manage')||roleCan(user,'finance.view') : commissionsRoute ? roleCan(user,'commissions.manage') : roleCan(user,'finance.view');
  if(!allowed) {send(res,403,{error:'Tu rol no permite esta operación'});return true;}
  const c=await db.connect();
  try {
@@ -66,12 +66,12 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
    else if(req.method==='POST'||(req.method==='PATCH'&&discountMatch[1])) {
     const b=await body(req);let existing,invoiceId;
     if(discountMatch[1]){existing=(await c.query('select * from agency_referral_discounts where id=$1 and organization_id=$2 for update',[discountMatch[1],org])).rows[0];if(!existing||existing.status!=='applied')fail('Descuento no disponible para revertir',409);invoiceId=existing.invoice_id;}
-    else invoiceId=identifier(b.invoice_id);
+    else invoiceId=id(b.invoice_id);
     const i=(await c.query('select * from agency_invoices where id=$1 and organization_id=$2 for update',[invoiceId,org])).rows[0];if(!i)fail('Factura no encontrada',404);if(i.status==='cancelled')fail('Factura cancelada');
-    const amount=existing?Number(existing.amount):money(b.amount);const total=Math.round((Number(i.total)+(existing?amount:-amount))*100)/100;
+    const discountAmount=existing?Number(existing.amount):money(b.amount);const total=Math.round((Number(i.total)+(existing?discountAmount:-discountAmount))*100)/100;
     if(total<Number(i.paid_amount)||total<0)fail('El descuento supera el saldo pendiente');
     if(existing)result={discount:(await c.query("update agency_referral_discounts set status='reversed' where id=$1 and organization_id=$2 returning *",[existing.id,org])).rows[0]};
-    else{const referrer=text(b.referrer,120),reason=text(b.reason,500);if(!referrer||!reason)fail('Indicá quién refirió y el motivo');result={discount:(await c.query('insert into agency_referral_discounts(organization_id,invoice_id,referrer,amount,reason,created_by_user_id) values($1,$2,$3,$4,$5,$6) returning *',[org,invoiceId,referrer,amount,reason,user.id])).rows[0]};status=201;}
+    else{const referrer=text(b.referrer,120),reason=text(b.reason,500);if(!referrer||!reason)fail('Indicá quién refirió y el motivo');result={discount:(await c.query('insert into agency_referral_discounts(organization_id,invoice_id,referrer,amount,reason,created_by_user_id) values($1,$2,$3,$4,$5,$6) returning *',[org,invoiceId,referrer,discountAmount,reason,user.id])).rows[0]};status=201;}
     await c.query("update agency_invoices set total=$1,status=case when paid_amount >= $1 then 'paid' when paid_amount>0 then 'partial' else 'issued' end,updated_at=now() where id=$2 and organization_id=$3",[total,invoiceId,org]);
    }else fail('Método no permitido',405);
   } else if(commentMatch) {
@@ -97,10 +97,10 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     const month=forecastMonth(url.searchParams.get('month'));
     result={month,override:(await c.query('select amount::text as amount,note from agency_salary_month_overrides where organization_id=$1 and collaborator_id=$2 and month=$3::date',[org,collaborator.id,`${month}-01`])).rows[0]||null};
    } else if(req.method==='PATCH'){
-    const b=await body(req),month=forecastMonth(b.month),amount=salaryOverrideAmount(b.amount);
+    const b=await body(req),month=forecastMonth(b.month),overrideAmount=salaryOverrideAmount(b.amount);
     result={month,override:(await c.query(`insert into agency_salary_month_overrides(organization_id,collaborator_id,month,amount,note)
      values($1,$2,$3::date,$4,$5) on conflict(organization_id,collaborator_id,month) do update set amount=excluded.amount,note=excluded.note,updated_at=now()
-     returning amount::text as amount,note`,[org,collaborator.id,`${month}-01`,amount,text(b.note||'',1000)||null])).rows[0]};
+     returning amount::text as amount,note`,[org,collaborator.id,`${month}-01`,overrideAmount,text(b.note||'',1000)||null])).rows[0]};
    } else if(req.method==='DELETE'){
     const month=forecastMonth(url.searchParams.get('month'));
     await c.query('delete from agency_salary_month_overrides where organization_id=$1 and collaborator_id=$2 and month=$3::date',[org,collaborator.id,`${month}-01`]);result={month,override:null};
@@ -114,7 +114,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     if(!collaboratorMatch[1]&&b.currency===undefined)b.currency=await companyCurrency(c,org);
     const name=text(b.full_name,120);if(name.length<2) fail('Ingresá el nombre');
     for(const key of ['started_on','ended_on'])if(b[key] instanceof Date)b[key]=b[key].toISOString().slice(0,10);
-    const contact=email(b.email);let uid=optionalId(b.user_id);
+    const contact=email(b.email);let uid=optId(b.user_id);
     if(!collaboratorMatch[1]&&contact){
      await c.query('select id from organizations where id=$1 for update',[org]);
      if((await c.query('select id from agency_collaborators where organization_id=$1 and lower(trim(email))=$2',[org,contact])).rows.length)fail('Esta persona ya tiene un perfil en la empresa. Buscalo en Equipo o restauralo desde Papelera.',409);
@@ -122,7 +122,7 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
     if(uid&&String(uid)!==String(previous.user_id||'')&&!roleCan(user,'members.manage'))fail('Solo administración puede vincular accesos',403);
     if(uid&&!(await c.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[org,uid])).rows.length) fail('El acceso debe pertenecer a esta empresa');
     if(uid&&contact){const linked=(await c.query('select email from users where id=$1',[uid])).rows[0];if(linked.email!==contact){if(incoming.user_id)fail('El acceso debe coincidir con el correo de contacto');uid=null;}}
-    const jobId=optionalId(b.job_role_id);let jobTitle=text(b.job_title||'',120);
+    const jobId=optId(b.job_role_id);let jobTitle=text(b.job_title||'',120);
     if(Object.hasOwn(incoming,'job_role_id')&&!jobId)jobTitle='';
     if(jobId){const j=(await c.query('select * from agency_job_roles where id=$1 and organization_id=$2',[jobId,org])).rows[0];if(!j||(!j.active&&String(jobId)!==String(previous.job_role_id)))fail('Elegí un cargo activo de esta empresa');jobTitle=j.name;}
     const photo=Object.hasOwn(incoming,'photo_url') ? await profilePhoto(incoming.photo_url) : previous.photo_url || null;
@@ -195,14 +195,14 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
   } else if(commissionMatch) {
    if(req.method==='GET') result={commissions:(await c.query('select x.*,i.number as invoice_number,c.full_name as collaborator_name from agency_commissions x left join agency_invoices i on i.id=x.invoice_id left join agency_collaborators c on c.id=x.collaborator_id where x.organization_id=$1 order by x.created_at desc',[org])).rows};
    else if(req.method==='POST') {
-    const b=await body(req), invoice=optionalId(b.invoice_id),collaborator=optionalId(b.collaborator_id),basis=option(b.basis,['fixed','invoiced','collected']);
+    const b=await body(req), invoice=optId(b.invoice_id),collaborator=optId(b.collaborator_id),basis=option(b.basis,['fixed','invoiced','collected']);
     await belongs(c,'agency_collaborators',collaborator,org);await belongs(c,'agency_invoices',invoice,org);
-    let base=null,percent=null,amount=money(b.amount,true),currency=invoice?null:option(b.currency===undefined?await companyCurrency(c,org):b.currency,currencies);
+    let base=null,percent=null,commissionAmount=money(b.amount,true),currency=invoice?null:option(b.currency===undefined?await companyCurrency(c,org):b.currency,currencies);
     if(invoice) {const i=(await c.query('select * from agency_invoices where id=$1 and organization_id=$2 for update',[invoice,org])).rows[0];currency=i.currency;base=Number(basis==='collected'?i.paid_amount:i.total);if(i.status==='cancelled') fail('Factura cancelada');}
-    if(basis!=='fixed') {if(!invoice) fail('Elegí una factura para calcular el porcentaje');percent=money(b.percentage);if(percent>100) fail('Porcentaje máximo: 100');amount=Math.round(base*percent)/100;}
-    if(amount<=0) fail('La comisión debe ser mayor a cero');
+    if(basis!=='fixed') {if(!invoice) fail('Elegí una factura para calcular el porcentaje');percent=money(b.percentage);if(percent>100) fail('Porcentaje máximo: 100');commissionAmount=Math.round(base*percent)/100;}
+    if(commissionAmount<=0) fail('La comisión debe ser mayor a cero');
     const name=text(b.beneficiary_name,120);if(!name) fail('Ingresá el beneficiario');
-    result={commission:(await c.query('insert into agency_commissions(organization_id,invoice_id,collaborator_id,kind,beneficiary_name,percentage,amount,currency,due_on,notes,basis,base_amount) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *',[org,invoice,collaborator,option(b.kind,['sales','referral']),name,percent,amount,currency,date(b.due_on),text(b.notes||''),basis,base])).rows[0]};status=201;
+    result={commission:(await c.query('insert into agency_commissions(organization_id,invoice_id,collaborator_id,kind,beneficiary_name,percentage,amount,currency,due_on,notes,basis,base_amount) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *',[org,invoice,collaborator,option(b.kind,['sales','referral']),name,percent,commissionAmount,currency,date(b.due_on),text(b.notes||''),basis,base])).rows[0]};status=201;
    } else if(req.method==='PATCH'&&commissionMatch[1]) {
     const b=await body(req), next=option(b.status,['approved','cancelled']);
     const row=(await c.query("update agency_commissions set status=$1 where id=$2 and organization_id=$3 and status in ('pending','approved') returning *",[next,commissionMatch[1],org])).rows[0];if(!row) fail('La comisión no está disponible para cambiar de estado',409);result={commission:row};
@@ -210,15 +210,15 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
   } else if(payoutRoute) {
    if(req.method==='GET') result={payouts:(await c.query('select p.*,a.name as account_name,a.currency,c.full_name as collaborator_name,x.beneficiary_name,u.email as created_by_email from agency_payouts p join bank_accounts a on a.id=p.account_id left join agency_collaborators c on c.id=p.collaborator_id left join agency_commissions x on x.id=p.commission_id left join users u on u.id=p.created_by_user_id where p.organization_id=$1 order by p.paid_on desc,p.id desc',[org])).rows};
    else if(req.method==='POST') {
-    const b=await body(req),commission=optionalId(b.commission_id),collaborator=optionalId(b.collaborator_id),account=identifier(b.account_id);
+    const b=await body(req),commission=optId(b.commission_id),collaborator=optId(b.collaborator_id),account=id(b.account_id);
     if(Boolean(commission)===Boolean(collaborator)) fail('Elegí una comisión o un colaborador');
-    let amount=money(b.amount),currency;
-    if(commission) {const x=(await c.query('select * from agency_commissions where id=$1 and organization_id=$2 for update',[commission,org])).rows[0];if(!x) fail('Comisión no encontrada',404);if(x.status!=='approved') fail('La comisión debe estar aprobada y sin pagar',409);amount=Number(x.amount);currency=x.currency;}
+    let payoutAmount=money(b.amount),currency;
+    if(commission) {const x=(await c.query('select * from agency_commissions where id=$1 and organization_id=$2 for update',[commission,org])).rows[0];if(!x) fail('Comisión no encontrada',404);if(x.status!=='approved') fail('La comisión debe estar aprobada y sin pagar',409);payoutAmount=Number(x.amount);currency=x.currency;}
     else {const x=(await c.query('select * from agency_collaborators where id=$1 and organization_id=$2',[collaborator,org])).rows[0];if(!x) fail('Colaborador no encontrado',404);currency=x.currency;}
-    const a=(await c.query('select * from bank_accounts where id=$1 and organization_id=$2 and active=true for update',[account,org])).rows[0];if(!a||a.currency!==currency) fail('La cuenta debe estar activa y usar la misma moneda');if(Number(a.balance)<amount) fail('Saldo insuficiente');
+    const a=(await c.query('select * from bank_accounts where id=$1 and organization_id=$2 and active=true for update',[account,org])).rows[0];if(!a||a.currency!==currency) fail('La cuenta debe estar activa y usar la misma moneda');if(Number(a.balance)<payoutAmount) fail('Saldo insuficiente');
     const reference=text(b.reference,180),paid=date(b.paid_on);if(!reference||!paid) fail('Indicá fecha y referencia del pago');
-    result={payout:(await c.query('insert into agency_payouts(organization_id,collaborator_id,commission_id,account_id,amount,paid_on,reference,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[org,collaborator,commission,account,amount,paid,reference,user.id])).rows[0]};
-    await c.query('update bank_accounts set balance=balance-$1,updated_at=now() where id=$2 and organization_id=$3',[amount,account,org]);
+    result={payout:(await c.query('insert into agency_payouts(organization_id,collaborator_id,commission_id,account_id,amount,paid_on,reference,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[org,collaborator,commission,account,payoutAmount,paid,reference,user.id])).rows[0]};
+    await c.query('update bank_accounts set balance=balance-$1,updated_at=now() where id=$2 and organization_id=$3',[payoutAmount,account,org]);
     if(commission) await c.query("update agency_commissions set status='paid',paid_on=$1 where id=$2 and organization_id=$3",[paid,commission,org]);status=201;
    } else fail('Método no permitido',405);
   }
