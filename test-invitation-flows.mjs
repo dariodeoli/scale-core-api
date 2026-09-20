@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import test from 'node:test';
 import {PGlite} from '@electric-sql/pglite';
 import {claimInvite,inviteLinks,resolveInvite} from './invite-links.js';
+process.env.INVITE_LINK_SECRET??='test-invite-secret-fixture-32-chars-long';
 
 const migrations=[
  '20260908_treasury_ledger.sql','20260908_google_oauth.sql','20260908_people_commissions_comments.sql',
