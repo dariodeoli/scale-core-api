@@ -1,9 +1,8 @@
 import crypto from 'node:crypto';
-import {inspectInternalSubscription,updateInternalSubscription} from './platform-subscription-service.js';
+import {inspectInternalSubscription,updateInternalSubscription,realOrganization} from './platform-subscription-service.js';
 import {optionalUpdate} from './account-security.js';
 
 const currencies=['USD','PYG'];
-const realOrganization=alias=>`${alias}.demo_owner_user_id is null and ${alias}.demo_source_id is null and ${alias}.deleted_at is null and lower(${alias}.slug) not in ('scale-demo-controles-20260908','agenciaprueba','agencia-prueba') and lower(${alias}.name)<>'agenciaprueba'`;
 const realUser=alias=>`not ${alias}.is_demo_guest and ${alias}.deleted_at is null and ${alias}.email not ilike '%@demo.example.invalid' and ${alias}.email not ilike '%@scale-demo.example.invalid'`;
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 // `Number.isInteger(1e21)` es true pero Postgres no acepta ese bigint: se exige safe integer.

@@ -60,6 +60,11 @@ assert.equal((await call('/api/platform/agencies/10/subscription',{actor:{id:1,e
 const inspected=await call('/api/platform/agencies/10/subscription');assert.equal(inspected.status,200);assert.equal(inspected.data.subscription.currency,'USD');assert.equal(inspected.data.subscription.internal_state,null);
 const updated=await call('/api/platform/agencies/10/subscription',{method:'PATCH',payload:{state:'suspended',reason:'Security review',expires_at:null}});assert.equal(updated.status,200);assert.equal(updated.data.subscription.internal_state,'suspended');assert.equal(updated.data.subscription.internal_reason,'Security review');
 assert.equal((await call('/api/platform/agencies/10/subscription',{method:'PATCH',payload:{state:'active',reason:'x'}})).status,400,'a short reason cannot grant access');
+// Una agencia eliminada o de prueba no es administrable por id, igual que en el listado.
+await pg.query("update organizations set deleted_at=now(),active=false where id=10");
+assert.equal((await call('/api/platform/agencies/10/subscription')).status,404,'a deleted agency cannot be inspected by id');
+assert.equal((await call('/api/platform/agencies/10/subscription',{method:'PATCH',payload:{state:'active',reason:'Reactivar sin auditoría'}})).status,409,'a deleted agency cannot receive an internal state');
+await pg.query('update organizations set deleted_at=null,active=true where id=10');
 let coupon=await call('/api/platform/coupons',{method:'POST',payload:{code:'SCALE10',discount_type:'percent',discount_value:10,currency:null,max_redemptions:25,lifetime_eligible:true}});assert.equal(coupon.status,201);assert.equal(coupon.data.coupon.code,'SCALE10');assert.equal(coupon.data.coupon.lifetime_eligible,true);
 coupon=await call('/api/platform/coupons/'+coupon.data.coupon.id,{method:'PATCH',payload:{active:false}});assert.equal(coupon.status,200);assert.equal(coupon.data.coupon.active,false);
 assert.equal((await call('/api/platform/coupons')).data.coupons[0].lifetime_eligible,true,'coupon listing preserves lifetime eligibility');
