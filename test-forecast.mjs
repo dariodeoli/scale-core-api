@@ -35,10 +35,11 @@ let sent=0,number=0;
 async function call(path,method='GET',payload={},as=user) {
  let result;
  const args={req:{method,socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test'+path),db,session:async()=>as,body:async()=>payload,send:(_,status,data)=>{result={status,...data};},sendInvitation:async()=>{sent++;return true;}};
-  const handler=path.startsWith('/api/agency/forecast')?financialForecast:/^\/api\/agency\/(collaborators|commissions)/.test(path)?operations:/^\/api\/agency\/(reports|clients\/\d+\/(reporting|commercial-terms)|planned-expenses)/.test(path)?reports:path.startsWith('/api/agency/expenses')?financeControls:suite;
+  const handler=path.startsWith('/api/agency/forecast')?financialForecast:/^\/api\/agency\/(collaborators|commissions)/.test(path)?operations:/^\/api\/agency\/(reports|clients\/\d+\/(reporting|commercial-terms)|planned-expenses)/.test(path)?reports:/^\/api\/agency\/(expenses|payments|transfers|reconciliation)/.test(path)?financeControls:suite;
  assert.equal(await handler(args),true);
  return result;
 }
+const asuncionDay=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Asuncion',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 async function budget({currency='USD',total=20,status='accepted',accepted='2026-09-10T12:00:00Z',organization=org,customer=client}={}) {
  return (await query('insert into agency_budgets(organization_id,client_id,number,title,currency,total,status,accepted_at) values($1,$2,$3,$4,$5,$6,$7,$8) returning id',[organization,customer,`Q-${++number}`,'Forecast fixture',currency,total,status,accepted])).rows[0].id;
 }
@@ -301,13 +302,17 @@ const octoberExpense=await call('/api/agency/expenses','POST',{...realExpensePay
 assert.equal(octoberExpense.status,201);
 const listed=await call(realExpensesPath,'GET',{},financeUser);
 assert.equal(listed.month,'2026-09');assert.equal(listed.expenses.length,2,'the selected month lists only its expenses');
+assert.equal(listed.expenses.every(expense=>typeof expense.paid_on==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(expense.paid_on)),true,'date columns travel as YYYY-MM-DD text, never as a midnight instant (node-pg parses date to a local Date)');
+assert.equal(created.expense.paid_on,'2026-09-12','the POST receipt keeps the date the client sent, as text');
 assert.equal(listed.expenses[0].account_name,'Gastos PYG');
 assert.equal(listed.expenses.every(expense=>expense.created_by_email==='forecast-finance@example.invalid'),true,'the list carries the author email');
 assert.equal((await call('/api/agency/expenses?month=2026-13','GET',{},financeUser)).status,400,'invalid months are rejected');
 assert.equal((await call('/api/agency/expenses?month=2026-10','GET',{},financeUser)).expenses.some(expense=>String(expense.id)===String(octoberExpense.expense.id)),true,'each month lists its own expenses');
 assert.equal((await call(`/api/agency/expenses/${created.expense.id}`,'DELETE',{reason:'xx'},financeUser)).status,400,'reversals need a reason');
+const dayBeforeReversal=asuncionDay();
 const reversed=await call(`/api/agency/expenses/${created.expense.id}`,'DELETE',{reason:'Gasto registrado por error'},financeUser);
 assert.equal(reversed.status,201);assert.equal(String(reversed.reversal.expense_id),String(created.expense.id));
+assert.equal([dayBeforeReversal,asuncionDay()].includes(reversed.reversal.reversed_on),true,'a reversal without a client date defaults to the Asunción calendar day (never the container UTC day)');
 assert.equal((await query('select balance from bank_accounts where id=$1',[expenseAccount])).rows[0].balance,'99710.00','the reversal credits the account back');
 const reversedMovement=(await query("select * from agency_cash_movements where movement_type='expense_reversal' and movement_id=$1",[reversed.reversal.id])).rows[0];
 assert.equal(Number(reversedMovement.amount),1500,'the reversal appears as a positive cash movement');
@@ -325,5 +330,23 @@ await pg.exec(await fs.readFile(new URL('./migrations/20260915_expenses.sql',imp
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_expenses.sql',import.meta.url),'utf8'));
 assert.equal((await query('select balance from bank_accounts where id=$1',[expenseAccount])).rows[0].balance,'99960.00','migration replay never rewrites balances');
 assert.equal((await query("select count(*)::int as n from agency_cash_movements where movement_type in ('expense','expense_reversal')")).rows[0].n,6,'the cash movement view keeps expense receipts after replay');
+// Finance-controls date contract: payments, transfers, statement lines and cash
+// movements carry their date columns as YYYY-MM-DD text, so the agency UI never
+// renders them one day earlier in Asunción.
+const dateOnly=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value);
+const paymentsList=await call('/api/agency/payments','GET',{},financeUser);
+assert.equal(paymentsList.payments.length>=1,true,'the payment list is visible to finance');
+assert.equal(paymentsList.payments.every(row=>dateOnly(row.received_on)),true,'payments carry received_on as YYYY-MM-DD text');
+const transferSource=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Traspaso origen','bank','PYG',5000) returning id",[org])).rows[0].id;
+const transferTarget=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Traspaso destino','bank','PYG',0) returning id",[org])).rows[0].id;
+const transfer=await call('/api/agency/transfers','POST',{fromAccountId:String(transferSource),toAccountId:String(transferTarget),amount:'100',receivedAmount:'100',transferredOn:'2026-09-15',reference:'Traspaso fixture'},financeUser);
+assert.equal(transfer.status,201);assert.equal(transfer.transfer.transferred_on,'2026-09-15','the transfer receipt carries the date as text');
+assert.equal((await call('/api/agency/transfers','GET',{},financeUser)).transfers.every(row=>dateOnly(row.transferred_on)),true,'transfers carry transferred_on as YYYY-MM-DD text');
+assert.equal((await call('/api/agency/reconciliation','POST',{accountId:String(transferSource),lines:[{external_id:'EXT-1',booked_on:'2026-09-18',amount:'100',reference:'Traspaso fixture'}]},financeUser)).status,201);
+const statement=await call(`/api/agency/reconciliation?accountId=${transferSource}`,'GET',{},financeUser);
+assert.equal(statement.lines.some(line=>dateOnly(line.booked_on)),true,'statement lines carry booked_on as YYYY-MM-DD text');
+assert.equal(statement.movements.every(movement=>dateOnly(movement.booked_on)),true,'cash movements carry booked_on as YYYY-MM-DD text');
+// Each finance resource is gated by its own matrix capability.
+for(const [resource,payload] of [['payments',{invoiceId:String(paidInvoice),accountId:String(paymentAccount),amount:'10'}]])assert.equal((await call(`/api/agency/${resource}`,'POST',payload,{...user,role:'management'})).status,403,`${resource} rejects roles outside the capability`);
 await pg.close();
 console.log('PASS: forecast dates, timezone, fixed-salary authorization, signed salary overrides and per-person members, commercial-term role and integer validation, auditable planned-expense recurrence, revenue/payment segregation, leap/year boundaries, exact totals, zero, no pipeline, invoice/budget dedup, cancelled/draft/archive exclusion, role and tenant isolation; multi-month cash projection and estimated result per currency, contracted versus invoiced per client, six default currencies, partial settings, new versus existing records, real expenses with debits, cash movements, idempotent reversals and tenant isolation, no external writes');

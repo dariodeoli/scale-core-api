@@ -338,14 +338,19 @@ export async function subscriptionBilling({req,res,url,db,session,body,send,send
    if(req.method!=='POST')fail('Método no permitido',405);
    send(res,200,await pagayaCallback(db,req,configured()));return true;
   }
-  const user=await session(req);await actor(db,user,path!=='/api/billing/subscription');
+  const user=await session(req);
+  // Billing management stays owner-only (checkout/portal). Coupon redemption is
+  // the one billing action the agency panel deliberately exposes to owner and
+  // administrator, so it is validated below against both the session role and
+  // the fresh membership role instead of the owner-only actor gate.
+  const row=await actor(db,user,path!=='/api/billing/subscription'&&path!=='/api/billing/coupon-redeem');
   if(path==='/api/billing/subscription'){
    if(req.method!=='GET')fail('Método no permitido',405);
    send(res,200,await subscriptionState(db,user));return true;
   }
   if(path==='/api/billing/coupon-redeem'){
    if(req.method!=='POST')fail('Método no permitido',405);
-   if(!['owner','admin'].includes(user.role))fail('Solo el dueño o administración puede canjear cupones',403);
+   if(!['owner','admin'].includes(user.role)||!['owner','admin'].includes(row.member_role))fail('Solo el dueño o administración puede canjear cupones',403);
    const input=await body(req);const code=typeof input?.code==='string'?input.code.trim().toUpperCase():'';
    if(!/^[A-Z0-9_-]{3,40}$/.test(code))fail('Cupón inválido',400);
    let c=await db.connect();

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {reports,agencyReport,reportingPeriod} from './reports.js';
+import {capabilityDefault} from './permissions.js';
 import {recordLifecycle} from './record-lifecycle.js';
 import {suite} from './agency-suite.js';
 
@@ -39,7 +40,11 @@ for(const month of ['2024-00','2024-13','2024-2','2024-02-01','1899-12','9999-01
 for(const months of [0,25,-1,1.5,'01','1e1','12x',''])assert.throws(()=>reportingPeriod('2024-01',months,fixed));
 assert.equal(reportingPeriod('2024-02',24,fixed).months,24);
 assert.equal((await call('/api/agency/reports','GET',{},null)).status,401);
-for(const role of ['management','sales','production','editor','viewer'])assert.equal((await call('/api/agency/reports','GET',{}, {...user,role})).status,403);
+// Informes stays gated by the reports.view capability: owner, admin, finance and
+// sales today. The expectation is derived from the matrix so the suite cannot
+// drift again when the capability changes.
+assert.deepEqual(['owner','admin','finance','sales'].every(role=>capabilityDefault('reports.view',role)),true,'reports.view keeps its documented roles');
+for(const role of ['management','sales','production','editor','viewer'])assert.equal((await call('/api/agency/reports','GET',{}, {...user,role})).status,capabilityDefault('reports.view',role)?200:403,`reports.view decides the Informes session role ${role}`);
 for(const role of ['owner','admin','finance']){
  await query('update organization_members set role=$3 where organization_id=$1 and user_id=$2',[org,uid,role]);
  assert.equal((await call('/api/agency/reports?month=2024-02&months=1','GET',{}, {...user,role})).status,200);

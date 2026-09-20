@@ -239,7 +239,14 @@ try{
  const paidAfter=(await query('select paid_through_at from organization_subscriptions where organization_id=$1',[owner.organization_id])).rows[0].paid_through_at;
  assert.equal(new Date(paidAfter).getTime()-new Date(paidBefore).getTime(),10*DAY,'free days extend the paid period by exactly the granted days');
  assert.equal((await call('/api/billing/coupon-redeem','POST',{code:'DAYS10'},owner)).status,409,'a coupon redeems once per company');
- assert.equal((await call('/api/billing/coupon-redeem','POST',{code:'DAYS10'},actors[0])).status,403,'only owner or admin can redeem');
+ // The agency panel exposes coupon redemption to owner and administrator: both
+ // session role and current membership role must allow it.
+ await query("insert into platform_coupons(code,discount_type,discount_value,currency,created_by_user_id) values('ADMIN5','days',5,null,$1)",[uid]);
+ const adminRedeem=await call('/api/billing/coupon-redeem','POST',{code:'ADMIN5'},actors[0]);
+ assert.equal(adminRedeem.status,200,'an administrator redeems a coupon for the company');
+ assert.match(adminRedeem.data.message,/5 días gratis/);
+ for(const actor of actors.slice(1))assert.equal((await call('/api/billing/coupon-redeem','POST',{code:'ADMIN5'},actor)).status,403,`${actor.role} cannot redeem coupons`);
+ assert.equal((await call('/api/billing/coupon-redeem','POST',{code:'ADMIN5'},{...actors.at(-1),role:'admin'})).status,403,'a stale elevated session role cannot redeem without current membership permission');
  // Companies without any subscription row still open their runway with a coupon.
  const couponless=await tenant('couponless');
  await query("insert into platform_coupons(code,discount_type,discount_value,currency,created_by_user_id) values('DAYS5','days',5,null,$1)",[uid]);
