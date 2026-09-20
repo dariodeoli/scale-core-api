@@ -76,6 +76,19 @@ const salaryPygMember=salaryPygRow.members.find(member=>String(member.collaborat
 assert.deepEqual({name:salaryPygMember.name,type:salaryPygMember.compensation_type,base:salaryPygMember.base_amount,override:salaryPygMember.override_amount,currency:salaryPygMember.currency},{name:'Salario PYG',type:'fixed',base:1000,override:1250,currency:'PYG'},'members expose name, compensation and projected amounts');
 const salaryUsdMember=salaryUsdRow.members.find(member=>String(member.collaborator_id)===String(salaryUsd.collaborator.id));
 assert.deepEqual({name:salaryUsdMember.name,base:salaryUsdMember.base_amount,override:salaryUsdMember.override_amount},{name:'Salario USD',base:200,override:0});
+// salary.view decides the per-person amounts: with finance.view but without
+// salary.view the members keep identity and the row keeps the planning aggregate,
+// but every per-person salary/adjustment travels as null.
+const salaryHidden={...user,role:'management',capabilities:{'finance.view':true,'salary.view':false}};
+const hiddenPersonnel=(await call(path,'GET',{},salaryHidden)).personnel;
+const hiddenPyg=hiddenPersonnel.records.find(row=>row.currency==='PYG');
+assert.equal(hiddenPersonnel.records.every(row=>row.members.every(member=>member.base_amount===null&&member.override_amount===null)),true,'per-person salaries are null without salary.view');
+assert.equal(hiddenPyg.base_amount,1000,'the planning aggregate stays with finance.view');
+assert.equal(hiddenPyg.expected_end_of_month_expense,2250,'the planning expense stays with finance.view');
+assert.equal(hiddenPersonnel.included_headcount,2,'headcounts are not salary data');
+assert.deepEqual({name:hiddenPyg.members[0].name,type:hiddenPyg.members[0].compensation_type,currency:hiddenPyg.members[0].currency},{name:'Salario PYG',type:'fixed',currency:'PYG'},'identity and modality stay without salary.view');
+assert.equal((await call(path,'GET',{}, {...user,role:'management'})).status,403,'finance.view is still the endpoint gate');
+assert.equal((await call(path,'GET',{}, {...user,role:'management',capabilities:{'salary.view':true}})).status,403,'salary.view alone does not open the forecast');
 assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides`,'PATCH',{month:'2026-09',amount:'-500',note:'Descuento puntual'})).override.amount,'-500','signed discounts are accepted');
 assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides?month=2026-09`)).override.note,'Descuento puntual','GET roundtrips the signed override');
 const negativeRow=(await call(path)).personnel.records.find(row=>row.currency==='PYG');

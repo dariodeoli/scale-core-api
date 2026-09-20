@@ -118,7 +118,7 @@ assert.equal(byUser[String(owner)].counts.untyped,0);
 assert.equal(byUser[String(editor)].counts.untyped,1,'untyped order counted under its own category');
 assert.equal(byUser[String(editor)].counts.video,0,'second transition of the same order never double-counts');
 assert.equal(byUser[String(owner)].actor_name,'Dueño','actor identity resolved');
-assert.equal(team.records.length,0,'no declared records yet');
+assert.equal('records' in team,false,'the declared weekly surface is retired: only the automatic section is served');
 const own=await weekly({id:editor,organization_id:org,role:'editor'},'own');
 assert.equal(own.status,200);
 assert.equal(own.automatic.length,1,'own scope filters to the requesting collaborator');
