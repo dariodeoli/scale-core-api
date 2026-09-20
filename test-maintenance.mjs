@@ -127,13 +127,19 @@ const outsider = await insert("insert into users(email,password_hash) values('re
 await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'viewer')", [foreignMember, outsider]);
 assert.equal((await runMaintenance(db, {dryRun: false, env: {}})).demos.length, 0);
 for (const id of keep) assert.equal((await query('select id from organizations where id=$1', [id])).rows.length, 1);
-// Even a fully marked, expired organization 22 is categorically protected.
+// La protección ya no está hardcodeada: se configura por entorno (#23). El
+// fixture 22 es, sin lista, un demo elegible más; con la lista, nunca se toca.
 await query("update organizations set slug=$1,demo_owner_user_id=$2,demo_source_id=$3 where id=22", ['demo-session-' + randomUUID(), owner, template]);
 await query("insert into organization_members(organization_id,user_id,role) values(22,$1,'owner')", [owner]);
 await query("insert into agency_demo_sessions(demo_key,user_id,organization_id) values('protected-template',$1,22)", [owner]);
 await expired(22);
-assert.equal((await runMaintenance(db, {dryRun: false, env: {}})).demos.length, 0);
+const eligibleRun = await maintenance(db, {dryRun: true, demoDryRun: true, env: {}});
+assert.equal(eligibleRun.demos.filter(demo => demo.organizationId === 22).length, 1, 'sin protección configurada el demo elegible se evalúa');
+assert.equal(eligibleRun.demos.find(demo => demo.organizationId === 22).status, 'eligible');
+assert.equal((await runMaintenance(db, {dryRun: false, env: {DEMO_CLEANUP_PROTECTED_ORG_IDS: '22'}})).demos.length, 0, 'la organización protegida por entorno nunca se toca');
 assert.equal((await query('select id from organizations where id=22')).rows.length, 1);
+// Se desmarca para que el resto de la corrida no la considere un demo.
+await query("update organizations set slug='protected-other',demo_owner_user_id=null,demo_source_id=null,demo_expires_at=null where id=22");
 
 // Anonymous demos have no agency_demo_sessions row; their own independent markers apply.
 const guestUuid = randomUUID();
@@ -205,6 +211,9 @@ assert.equal((await query("select count(*)::int as n from destructive_action_pre
 assert.equal((await query("select count(*)::int as n from destructive_action_previews where token_hash='fresh-preview'")).rows[0].n, 1);
 await query('delete from destructive_auth_proofs');await query('delete from destructive_action_previews');
 assert.equal(maintenanceSettings({}).graceHours, 24);
+assert.deepEqual(maintenanceSettings({DEMO_CLEANUP_PROTECTED_ORG_IDS: '7, 22,7'}).protectedOrgIds, [7, 22], 'la lista de protección se normaliza y deduplica');
+assert.deepEqual(maintenanceSettings({DEMO_CLEANUP_PROTECTED_ORG_IDS: ''}).protectedOrgIds, [], 'sin configuración no hay organizaciones protegidas por id');
+assert.throws(() => maintenanceSettings({DEMO_CLEANUP_PROTECTED_ORG_IDS: '22,abc'}), /INVALID_DEMO_PROTECTED_ORGS/);
 for (const env of [{DEMO_CLEANUP_GRACE_HOURS: '0'}, {PRESENCE_RETENTION_DAYS: ''}, {USAGE_RETENTION_DAYS: 'NaN'}, {DEMO_CLEANUP_BATCH_SIZE: '500'}])
  assert.throws(() => maintenanceSettings(env), /INVALID/);
 // Enforced row cap and demo cap; dry runs cannot be accidentally enabled by strings.

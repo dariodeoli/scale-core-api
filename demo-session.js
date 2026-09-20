@@ -45,7 +45,7 @@ export async function seedPrivateDemo(c,org,userId){
   const [,mail,photo]=demoStaff[personIndex]||[];
   // Preserve internal no-login markers used by auth and bounded demo cleanup.
   const email=`persona-${org}-${personIndex}@demo.example.invalid`;
-  const person=(await c.query("insert into users(email,password_hash) values($1,'!fictional-demo-no-login') returning id",[email])).rows[0].id;
+  const person=(await c.query("insert into users(email,password_hash,role) values($1,'!fictional-demo-no-login','viewer') returning id",[email])).rows[0].id;
   await c.query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,person,role]);
   people.push(person);
   staff.push((await c.query("insert into agency_collaborators(organization_id,user_id,full_name,email,photo_url,job_title,compensation_amount,payment_day,started_on,notes) values($1,$2,$3,$4,$5,$6,$7,5,current_date-90,$8) returning id",[org,person,name,mail?`${mail}@horizonte.example`:null,personIndex<5?demoPortrait(photo):null,job,salary,`Honorarios mensuales. Coordinación de entregas en la reunión semanal. Contacto ilustrativo: ${demoPhone(++personIndex)} (no operativo).`])).rows[0].id);

@@ -36,7 +36,6 @@ export const CAPABILITIES=[
  {id:'salary.view',label:'Ver salarios',description:'Salarios y ajustes mensuales del equipo.',roles:['owner','admin','finance']},
 ];
 const byId=new Map(CAPABILITIES.map(capability=>[capability.id,capability]));
-export function capabilityDefault(capability,role){const definition=byId.get(capability);return Boolean(definition&&definition.roles.includes(role));}
 /** The owner always keeps every capability; overrides apply to the other roles. */
 export function roleCan(user,capability){
  if(!user)return false;
@@ -67,15 +66,27 @@ export async function rolePermissions({req,res,url,db,session,body,send}){
    if(capability!==null&&(typeof capability!=='string'||!byId.has(capability)))fail('Capacidad inválida');
    if(role!==null&&(typeof role!=='string'||!roles.includes(role)||role==='owner'))fail('Rol inválido');
    if(allowed!==null&&typeof allowed!=='boolean')fail('Valor de permiso inválido');
-   if(allowed===null){
-    if(capability===null)await db.query('delete from agency_role_permissions where organization_id=$1',[user.organization_id]);
-    else if(role===null)await db.query('delete from agency_role_permissions where organization_id=$1 and capability=$2',[user.organization_id,capability]);
-    else await db.query('delete from agency_role_permissions where organization_id=$1 and role=$2 and capability=$3',[user.organization_id,role,capability]);
-   }else{
-    if(capability===null)fail('Indicá la capacidad para aplicar un permiso');
-    if(role===null)fail('Indicá el rol para aplicar un permiso');
-    await db.query(`insert into agency_role_permissions(organization_id,role,capability,allowed,updated_by_user_id) values($1,$2,$3,$4,$5) on conflict(organization_id,role,capability) do update set allowed=excluded.allowed,updated_by_user_id=excluded.updated_by_user_id,updated_at=now()`,[user.organization_id,role,capability,allowed,user.id]);
-   }
+   // La UI promete auditar los cambios de permisos: el trigger compartido de
+   // agency_operation_audit los registra con actor, IP y antes/después. La
+   // transacción fija app.current_user/ip para que el actor sea real.
+   const client=typeof db.connect==='function'?await db.connect():null;
+   const runner=client||db;
+   try{
+    if(client){
+     await client.query('begin');
+     await client.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
+    }
+    if(allowed===null){
+     if(capability===null)await runner.query('delete from agency_role_permissions where organization_id=$1',[user.organization_id]);
+     else if(role===null)await runner.query('delete from agency_role_permissions where organization_id=$1 and capability=$2',[user.organization_id,capability]);
+     else await runner.query('delete from agency_role_permissions where organization_id=$1 and role=$2 and capability=$3',[user.organization_id,role,capability]);
+    }else{
+     if(capability===null)fail('Indicá la capacidad para aplicar un permiso');
+     if(role===null)fail('Indicá el rol para aplicar un permiso');
+     await runner.query(`insert into agency_role_permissions(organization_id,role,capability,allowed,updated_by_user_id) values($1,$2,$3,$4,$5) on conflict(organization_id,role,capability) do update set allowed=excluded.allowed,updated_by_user_id=excluded.updated_by_user_id,updated_at=now()`,[user.organization_id,role,capability,allowed,user.id]);
+    }
+    if(client)await client.query('commit');
+   }catch(error){if(client)await client.query('rollback');throw error;}finally{client?.release();}
    const rows=(await db.query('select role,capability,allowed,updated_at from agency_role_permissions where organization_id=$1 order by role,capability',[user.organization_id])).rows;
    send(res,200,{roles:roles.filter(role=>role!=='owner'),capabilities:permissionMatrix(rows)});return true;
   }

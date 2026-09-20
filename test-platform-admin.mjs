@@ -9,6 +9,7 @@ await pg.exec(`
  alter table users add column if not exists email_verified_at timestamptz,add column if not exists is_demo_guest boolean not null default false,add column if not exists google_photo_url text,add column if not exists google_full_name text,add column if not exists deleted_at timestamptz,add column if not exists anonymized_at timestamptz;
  alter table organizations add column if not exists demo_owner_user_id bigint,add column if not exists demo_source_id bigint,add column if not exists deleted_at timestamptz,add column if not exists deleted_by_user_id bigint;
  alter table organization_members add column if not exists active boolean not null default true,add column if not exists removed_at timestamptz;
+ create table if not exists agency_settings(organization_id bigint primary key,default_currency text);
  create table if not exists organization_subscriptions(organization_id bigint primary key,stripe_status text,currency text,trial_started_at timestamptz,trial_ends_at timestamptz,due_at timestamptz,paid_through_at timestamptz,binding_token uuid unique,updated_at timestamptz not null default now());
  insert into users(id,email,password_hash,email_verified_at,is_demo_guest) values(1,'owner@agency.example','unused',now(),false),(2,'platform@scale.example','unused',now(),false),(3,'member@agency.example','unused',now(),false),(4,'persona@demo.example.invalid','unused',now(),false),(5,'persona0@scale-demo.example.invalid','unused',now(),false),(6,'persona1@scale-demo.example.invalid','unused',now(),false),(7,'persona2@scale-demo.example.invalid','unused',now(),false),(8,'persona3@scale-demo.example.invalid','unused',now(),false),(9,'persona4@scale-demo.example.invalid','unused',now(),false),(10,'guest@agency.example','unused',now(),true);
  insert into organizations(id,name,slug,demo_owner_user_id,demo_source_id) values(10,'Agency One','agency-one',null,null),(20,'Agency Two','agency-two',null,null),(30,'Demo','scale-demo-controles-20260908',null,null),(40,'Private demo','private-demo',4,10),(50,'AgenciaPrueba','agencia-prueba',null,null);
@@ -21,6 +22,7 @@ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migra
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_platform_admin_roles.sql',import.meta.url),'utf8'));
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_platform_owner_admin.sql',import.meta.url),'utf8'));
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_coupon_free_days.sql',import.meta.url),'utf8'));
+await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260921_platform_extend_idempotency.sql',import.meta.url),'utf8'));
 // La forma coherente de los cupones también se exige en la base.
 await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260920_platform_coupon_shape.sql',import.meta.url),'utf8'));
 await pg.exec(`
@@ -37,8 +39,8 @@ await pg.exec(`
  `);
 await pg.query('insert into platform_administrators(user_id) values(2)');
 const db={query:(sql,values)=>pg.query(sql,values)};
-async function call(path,{method='GET',actor={id:2,email:'platform@scale.example'},payload={},bootstrapValue=''}={}){
- let answer;const handled=await platformAdmin({req:{method},res:{},url:new URL(path,'https://isolated.invalid'),db,session:async()=>actor,body:async()=>payload,bootstrapValue,send:(_res,status,data)=>{answer={status,data};}});
+async function call(path,{method='GET',actor={id:2,email:'platform@scale.example'},payload={},headers={},bootstrapValue=''}={}){
+ let answer;const handled=await platformAdmin({req:{method,headers},res:{},url:new URL(path,'https://isolated.invalid'),db,session:async()=>actor,body:async()=>payload,bootstrapValue,send:(_res,status,data)=>{answer={status,data};}});
  return {handled,...answer};
 }
 assert.equal(platformBootstrapEmail(' Platform@Scale.Example '),'platform@scale.example');
@@ -81,6 +83,24 @@ assert(extended.data.subscription.paid_through_at,'manual payments extend the pa
 assert.equal((await call('/api/platform/agencies/20/subscription/extend',{method:'POST',payload:{days:0,reason:'Nada'}})).status,400,'days must be a positive integer');
 assert.equal((await call('/api/platform/agencies/20/subscription/extend',{method:'POST',actor:{id:3,email:'member@agency.example'},payload:{days:7,reason:'Intento'}})).status,403,'only global admins register manual payments');
 assert.equal((await call('/api/platform/audit')).data.actions[0].action,'subscription.manual_extend','manual payments are audited');
+// Un reintento con la misma Idempotency-Key no vuelve a sumar días (issue #23).
+const retryKey='extend-retry-fixture-0001';
+const retried=await call('/api/platform/agencies/20/subscription/extend',{method:'POST',headers:{'idempotency-key':retryKey},payload:{days:7,reason:'Efectivo recibido'}});
+const replayed=await call('/api/platform/agencies/20/subscription/extend',{method:'POST',headers:{'idempotency-key':retryKey},payload:{days:7,reason:'Efectivo recibido'}});
+assert.equal(replayed.status,200);
+assert.equal(replayed.data.idempotent_replay,true,'a retry with the same key reports the replay');
+assert.equal(String(replayed.data.subscription.paid_through_at),String(retried.data.subscription.paid_through_at),'the retry never doubles the days');
+assert.equal(String(replayed.data.subscription.internal_expires_at),String(retried.data.subscription.internal_expires_at),'the internal runway is untouched on retry');
+const freshKey=await call('/api/platform/agencies/20/subscription/extend',{method:'POST',headers:{'idempotency-key':'extend-retry-fixture-0002'},payload:{days:7,reason:'Efectivo recibido'}});
+assert.equal(freshKey.data.idempotent_replay,undefined,'a new key applies the extension');
+assert.notEqual(String(freshKey.data.subscription.paid_through_at),String(retried.data.subscription.paid_through_at),'a new key does extend the runway');
+assert.equal((await call('/api/platform/agencies/20/subscription/extend',{method:'POST',payload:{days:7,reason:'Efectivo recibido',idempotencyKey:'short'}})).status,400,'invalid idempotency keys are rejected');
+// La suscripción manual abre el runway con la moneda de la empresa, no en USD fijo.
+await pg.query("insert into agency_settings(organization_id,default_currency) values(20,'PYG') on conflict(organization_id) do update set default_currency='PYG'");
+await pg.query('delete from organization_subscriptions where organization_id=20');
+const opened=await call('/api/platform/agencies/20/subscription/extend',{method:'POST',payload:{days:5,reason:'Efectivo en guaraníes'}});
+assert.equal(opened.status,200);
+assert.equal((await pg.query('select currency from organization_subscriptions where organization_id=20')).rows[0].currency,'PYG','the manual runway uses the company currency');
 await pg.query("insert into sessions(id,user_id,organization_id,expires_at) values('1',1,10,now()+interval '7 days')");
 const removedAgency=await call('/api/platform/agencies/10',{method:'DELETE'});
 assert.equal(removedAgency.status,200);assert.deepEqual(removedAgency.data.deleted,{agencyId:10,name:'Agency One',slug:'agency-one'},'an admin can delete a real agency');

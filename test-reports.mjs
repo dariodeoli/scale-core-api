@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {reports,agencyReport,reportingPeriod} from './reports.js';
-import {capabilityDefault} from './permissions.js';
+import {CAPABILITIES} from './permissions.js';
+// Mismo criterio que la matriz de capacidades, sin depender de un export muerto.
+const capabilityDefault=(capability,role)=>Boolean(CAPABILITIES.find(entry=>entry.id===capability)?.roles.includes(role));
 import {recordLifecycle} from './record-lifecycle.js';
 import {suite} from './agency-suite.js';
 

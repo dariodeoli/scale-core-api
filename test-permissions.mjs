@@ -4,11 +4,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {rolePermissions,CAPABILITIES,roleCan} from './permissions.js';
+import {migrationOrder} from './scripts/migration-order.mjs';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile('schema.sql','utf8'));
-await pg.exec(await fs.readFile('migrations/20260914_role_permissions.sql','utf8'));
-const query=(sql,args)=>pg.query(sql,args),db={query};
+// Cadena real hasta la auditoría de permisos (#23): el trigger compartido de
+// agency_operation_audit vive en operations_complete y depende de migraciones
+// anteriores, así que se aplica el prefijo curado.
+for(const file of migrationOrder){
+ await pg.exec(await fs.readFile(`migrations/${file}`,'utf8'));
+ if(file==='20260921_role_permissions_audit.sql')break;
+}
+const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
 const other=(await query("insert into organizations(slug,name) values('perm-other','Otra') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('perm-owner@example.invalid','unused') returning id")).rows[0].id;
@@ -57,6 +64,27 @@ assert.equal(patched.status,200);
 assert.equal(patched.capabilities.find(row=>row.id==='members.manage').overrides.management,false);
 assert.equal(roleCan({role:'management',capabilities:{'members.manage':false}},'members.manage'),false);
 assert.equal(roleCan({role:'management'},'members.manage'),true,'sin override rige el valor por defecto');
+
+// La UI promete que los cambios se auditan: el API registra actor y antes/después.
+const audited=(await query("select actor,ip,action,table_name,after_state,before_state from agency_operation_audit where table_name='agency_role_permissions' order by id desc limit 1")).rows[0];
+assert(audited,'un PATCH deja su fila de auditoría');
+assert.equal(audited.actor,String(uid),'la auditoría guarda el usuario que cambió el permiso');
+assert.equal(audited.ip,'127.0.0.1');
+assert.equal(audited.action,'INSERT','el primer override se audita como alta');
+assert.equal(audited.after_state.capability,'members.manage');
+assert.equal(audited.after_state.role,'management');
+assert.equal(audited.after_state.allowed,false);
+assert.equal(audited.before_state,null,'sin valor previo no se inventa un antes');
+await call('PATCH',{capability:'members.manage',role:'management',allowed:true});
+const updated=(await query("select action,before_state,after_state from agency_operation_audit where table_name='agency_role_permissions' order by id desc limit 1")).rows[0];
+assert.equal(updated.action,'UPDATE','un override existente se audita como edición');
+assert.equal(updated.before_state.allowed,false);
+assert.equal(updated.after_state.allowed,true);
+await call('PATCH',{capability:'members.manage',role:null,allowed:null});
+const removed=(await query("select action,before_state,after_state from agency_operation_audit where table_name='agency_role_permissions' order by id desc limit 2")).rows;
+assert.equal(removed[0].action,'DELETE','restablecer la capacidad se audita como baja');
+assert.equal(removed[0].before_state.capability,'members.manage');
+assert.equal(removed[0].after_state,null);
 
 // Restablecer una fila y todo.
 assert.equal((await call('PATCH',{capability:'members.manage',role:null,allowed:null})).status,200);

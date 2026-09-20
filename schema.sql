@@ -2,7 +2,7 @@ create table if not exists users (
   id bigserial primary key,
   email text unique not null,
   password_hash text not null,
-  role text not null default 'admin' check (role in ('admin','viewer')),
+  role text not null default 'viewer' check (role in ('admin','viewer')),
   created_at timestamptz not null default now()
 );
 alter table users add column if not exists deleted_at timestamptz;

@@ -1,3 +1,4 @@
+import {fail} from './suite-validation.js';
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import {claimInvite,resolveInvite} from './invite-links.js';
@@ -5,7 +6,6 @@ import {trialDetailsFromInput,registerTrial} from './trial-registration.js';
 import {throttle,validatePassword} from './password-access.js';
 
 const tokenHash=value=>crypto.createHash('sha256').update(value).digest('hex');
-const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const emailOf=value=>{
  const email=typeof value==='string'?value.trim().toLowerCase():'';
  if(!/^\S+@\S+\.\S+$/.test(email)||email.length>254)fail('Ingresá un correo válido.');
@@ -31,7 +31,7 @@ async function createUnverifiedUser(client,{email,password}){
  const existing=(await client.query('select id from users where email=$1 for update',[email])).rows[0];
  if(existing)fail('Ya existe una cuenta con este correo. Iniciá sesión o recuperá tu contraseña.',409);
  const passwordHash=await bcrypt.hash(password,12);
- return (await client.query('insert into users(email,password_hash) values($1,$2) returning id,email',[email,passwordHash])).rows[0];
+ return (await client.query('insert into users(email,password_hash,role) values($1,$2,$3) returning id,email',[email,passwordHash,'viewer'])).rows[0];
 }
 
 async function createOrRebindInviteUser(client,{email,password}){

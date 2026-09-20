@@ -19,7 +19,6 @@ try{
  clientOrigin=parsed.toString().replace(/\/$/,'');
 }catch{throw Error('CLIENT_PORTAL_ORIGIN debe ser un origen HTTPS permitido de Scale');}
 const clientOrigins=new Set(['https://app.scaleparaguay.com','https://cliente.scaleparaguay.com',new URL(clientOrigin).origin]);
-export const clientPortalOrigin=clientOrigin;
 export const clientPortalUrl=path=>`${clientOrigin}/${String(path).replace(/^\/+/, '')}`;
 
 const fail=(message,status=400,details={})=>{throw Object.assign(Error(message),{status},details);};

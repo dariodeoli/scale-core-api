@@ -4,6 +4,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {inviteLinks,resolveInvite,claimInvite} from './invite-links.js';
 import {publicExperience} from './public-experience.js';
 import {migrationOrder} from './scripts/migration-order.mjs';
+process.env.INVITE_LINK_SECRET??='test-invite-secret-fixture-32-chars-long';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const f of migrationOrder)await pg.exec(await fs.readFile('migrations/'+f,'utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_invite_links.sql','utf8'));await pg.exec(await fs.readFile('migrations/20260910_currencies.sql','utf8'));
@@ -19,6 +20,18 @@ const links='/api/agency/invite-links',requests='/api/agency/access-requests';
 assert.equal((await call(links,'POST',{role:'owner',mode:'single'},{...actor,role:'admin'})).status,403);
 assert.equal((await call(links,'POST',{role:'editor',mode:'single'},{...actor,role:'viewer'})).status,403);
 assert.equal((await call(links,'POST',{role:'editor',mode:'single'},{...actor,demo_owner_user_id:owner})).status,403);
+// El secreto de los enlaces es propio (issue #23): sin INVITE_LINK_SECRET no hay
+// fallback a GOOGLE_CLIENT_SECRET ni a una constante del repositorio.
+{
+ const saved=process.env.INVITE_LINK_SECRET;
+ delete process.env.INVITE_LINK_SECRET;
+ const missing=await call(links,'POST',{role:'editor',mode:'single'});
+ assert.equal(missing.status,500,'sin secreto configurado el enlace no se emite');
+ assert.match(String(missing.error),/INVITE_LINK_SECRET/,'el error nombra la variable a configurar');
+ process.env.INVITE_LINK_SECRET='corto';
+ assert.equal((await call(links,'POST',{role:'editor',mode:'single'})).status,500,'un secreto corto no se acepta');
+ process.env.INVITE_LINK_SECRET=saved;
+}
 async function make(mode='single',role='editor'){const r=await call(links,'POST',{role,mode});assert.equal(r.status,200);const token=new URL(r.url).searchParams.get('token');assert((await resolveInvite(db,token)).id);return {...r,token};}
 async function claim(link,email){await query('begin');try{const r=await claimInvite({query},link.id,{email,name:'Test Person',email_verified:true});await query('commit');return r;}catch(e){await query('rollback');throw e;}}
 const one=await make();const granted=await claim(one,'one@example.invalid');assert.equal((await query('select role from organization_members where user_id=$1',[granted.userId])).rows[0].role,'editor');

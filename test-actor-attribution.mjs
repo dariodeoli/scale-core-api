@@ -15,6 +15,7 @@ import {inventoryReservations} from './inventory-reservations.js';
 import {contentReview} from './content-review.js';
 import {recordLifecycle} from './record-lifecycle.js';
 import {migrationOrder} from './scripts/migration-order.mjs';
+process.env.INVITE_LINK_SECRET??='test-invite-secret-fixture-32-chars-long';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile('schema.sql','utf8'));

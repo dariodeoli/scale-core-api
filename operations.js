@@ -1,3 +1,4 @@
+import {fail} from './suite-validation.js';
 import {currencies} from './currencies.js';
 import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
@@ -7,7 +8,6 @@ import { profilePhoto } from './media-policy.js';
 import {visibleRecord,assertRecordAvailable} from './record-lifecycle.js';
 import {saveCommentMentions} from './comment-mentions.js';
 
-function fail(message, status=400) { throw Object.assign(new Error(message),{status}); }
 const text = (value, max=2000) => typeof value==='string' && value.length<=max ? value.trim() : fail('Texto inválido');
 const identifier = value => /^\d+$/.test(String(value)) && Number(value)>0 ? String(value) : fail('Identificador inválido');
 const optionalId = value => value===null || value===undefined || value==='' ? null : identifier(value);

@@ -19,7 +19,7 @@ export async function registerTrial(c,profile,details){
  const email=String(profile.email||'').trim().toLowerCase();
  if(profile.email_verified!==true||!/^\S+@\S+\.\S+$/.test(email))fail('Verificá tu correo con Google.',403);
  await c.query('select pg_advisory_xact_lock(hashtextextended($1,0))',['trial-registration:'+email]);
- const user=(await c.query("insert into users(email,password_hash) values($1,'!google-trial-no-password') on conflict(email) do update set email=excluded.email returning id,is_demo_guest",[email])).rows[0];
+ const user=(await c.query("insert into users(email,password_hash,role) values($1,'!google-trial-no-password','viewer') on conflict(email) do update set email=excluded.email returning id,is_demo_guest",[email])).rows[0];
  if(user.is_demo_guest)fail('Usá tu cuenta personal de Google, no una sesión de demostración.',403);
  const previous=(await c.query('select organization_id from os_trial_registrations where user_id=$1',[user.id])).rows[0];
  if(previous){

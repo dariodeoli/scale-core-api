@@ -1,4 +1,4 @@
-const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
+import {fail} from './suite-validation.js';
 import {roleCan} from './permissions.js';
 const publicPath='/api/public/live-visitors/heartbeat';
 const publicCountPath='/api/public/live-visitors/count';

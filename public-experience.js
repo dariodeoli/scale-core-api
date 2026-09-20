@@ -42,7 +42,7 @@ export async function publicExperience({req,res,url,db,session,body,send,cookie,
   // Fresh browser session, never copied from a real agency. No reusable demo password.
   c=await db.connect();await c.query('begin');
   const uid=crypto.randomUUID(),token=crypto.randomBytes(32).toString('hex');
-  const user=(await c.query("insert into users(email,password_hash,is_demo_guest) values($1,'!public-demo-no-login',true) returning id",['visitante-'+uid+'@demo.example.invalid'])).rows[0];
+  const user=(await c.query("insert into users(email,password_hash,is_demo_guest,role) values($1,'!public-demo-no-login',true,'viewer') returning id",['visitante-'+uid+'@demo.example.invalid'])).rows[0];
   const org=(await c.query("insert into organizations(slug,name,demo_owner_user_id,demo_expires_at) values($1,'Agencia Horizonte',$2,now()+interval '1 day') returning id",['demo-session-'+uid,user.id])).rows[0];
   await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip','public-demo',true)",[String(user.id)]);

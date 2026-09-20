@@ -33,7 +33,7 @@ async function google(url){
  }};
 }
 const context=vm.createContext({console,URL,URLSearchParams,Buffer,AbortSignal,TextEncoder,TextDecoder,fetch:google,
- process:{env:{GOOGLE_CLIENT_ID:'fixture',GOOGLE_CLIENT_SECRET:'fixture',STRIPE_BILLING_ENABLED:'false'}},
+ process:{env:{GOOGLE_CLIENT_ID:'fixture',GOOGLE_CLIENT_SECRET:'fixture',STRIPE_BILLING_ENABLED:'false',INVITE_LINK_SECRET:'test-invite-secret-fixture-32-chars-long'}},
  setTimeout,clearTimeout,setInterval(){throw Error('No background services');},clearInterval});
 const modules=new Map();
 async function load(spec,ref){

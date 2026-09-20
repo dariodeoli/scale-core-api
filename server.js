@@ -193,13 +193,16 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260919_inventory_value_maintenance.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260920_platform_coupon_shape.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260920_currency_widening.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260921_users_role_default.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260921_role_permissions_audit.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260921_platform_extend_idempotency.sql'),'utf8'));
     await applyPendingMigrations(migration, path.join(root,'migrations'), {firstRun: 'baseline'});
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}
   async function provisionOwner(email, password) {
     if (!email || !password) return;
     const hash = await bcrypt.hash(password, 12);
-    const user = await db.query('insert into users(email,password_hash,email_verified_at) values($1,$2,now()) on conflict(email) do update set email=excluded.email,email_verified_at=coalesce(users.email_verified_at,now()) returning id', [email, hash]);
+    const user = await db.query('insert into users(email,password_hash,email_verified_at,role) values($1,$2,now(),$3) on conflict(email) do update set email=excluded.email,email_verified_at=coalesce(users.email_verified_at,now()) returning id', [email, hash, 'viewer']);
     await db.query("insert into organization_members(organization_id,user_id,role) select id,$1,'owner' from organizations where slug='scale' on conflict(organization_id,user_id) do nothing", [user.rows[0].id]);
   }
   await provisionOwner(bootstrapEmail, bootstrapPassword);
@@ -211,7 +214,7 @@ async function init() {
 async function provisionOwnerForOrganization(email, password, slug) {
   if (!email || !password) return;
   const hash = await bcrypt.hash(password, 12);
-  const user = await db.query('insert into users(email,password_hash,email_verified_at) values($1,$2,now()) on conflict(email) do update set password_hash=excluded.password_hash,email_verified_at=coalesce(users.email_verified_at,now()) returning id', [email, hash]);
+  const user = await db.query('insert into users(email,password_hash,email_verified_at,role) values($1,$2,now(),$3) on conflict(email) do update set password_hash=excluded.password_hash,email_verified_at=coalesce(users.email_verified_at,now()) returning id', [email, hash, 'viewer']);
   await db.query("insert into organization_members(organization_id,user_id,role) select id,$1,'owner' from organizations where slug=$2 on conflict(organization_id,user_id) do update set role='owner'", [user.rows[0].id, slug]);
 }
 const sessionCache = new WeakMap();
