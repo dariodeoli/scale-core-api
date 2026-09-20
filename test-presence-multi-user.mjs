@@ -31,7 +31,7 @@ const serverSource=await fs.readFile(new URL('server.js',import.meta.url),'utf8'
 const denyNetwork=async()=>{networkAttempts++;throw Error('External network is forbidden in this test');};
 const originalFetch=globalThis.fetch;globalThis.fetch=denyNetwork;
 const context=vm.createContext({console,URL,URLSearchParams,Buffer,fetch:denyNetwork,
- process:{env:{}},setTimeout,clearTimeout,setInterval,clearInterval});
+ process:{env:{INVITE_LINK_SECRET:'test-invite-secret-fixture-32-chars-long'}},setTimeout,clearTimeout,setInterval,clearInterval});
 const serverModule=new vm.SourceTextModule(serverSource,{
  context,identifier:new URL('server.js',import.meta.url).href,
  initializeImportMeta(meta){meta.url=new URL('server.js',import.meta.url).href;}

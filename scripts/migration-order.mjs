@@ -83,4 +83,7 @@ export const migrationOrder = [
   '20260919_inventory_value_maintenance.sql',
   '20260920_platform_coupon_shape.sql',
   '20260920_currency_widening.sql',
+  '20260921_users_role_default.sql',
+  '20260921_role_permissions_audit.sql',
+  '20260921_platform_extend_idempotency.sql',
 ];

@@ -47,7 +47,7 @@ async function mockGoogle(url,options={}){
  forbiddenCalls++;throw Error('Forbidden non-Google fetch in isolated regression');
 }
 const context=vm.createContext({console,URL,URLSearchParams,Buffer,AbortSignal,TextEncoder,TextDecoder,
- fetch:mockGoogle,process:{env:{GOOGLE_CLIENT_ID:'fixture',GOOGLE_CLIENT_SECRET:'fixture',STRIPE_BILLING_ENABLED:'false'}},
+ fetch:mockGoogle,process:{env:{GOOGLE_CLIENT_ID:'fixture',GOOGLE_CLIENT_SECRET:'fixture',STRIPE_BILLING_ENABLED:'false',INVITE_LINK_SECRET:'test-invite-secret-fixture-32-chars-long'}},
  setTimeout,clearTimeout,setInterval(){throw Error('Background jobs are not allowed');},clearInterval});
 // Load local modules in the SAME isolated context: billing/email modules cannot
 // inherit the developer shell's provider keys or global fetch accidentally.
