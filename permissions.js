@@ -72,6 +72,7 @@ export async function rolePermissions({req,res,url,db,session,body,send}){
     else if(role===null)await db.query('delete from agency_role_permissions where organization_id=$1 and capability=$2',[user.organization_id,capability]);
     else await db.query('delete from agency_role_permissions where organization_id=$1 and role=$2 and capability=$3',[user.organization_id,role,capability]);
    }else{
+    if(capability===null)fail('Indicá la capacidad para aplicar un permiso');
     if(role===null)fail('Indicá el rol para aplicar un permiso');
     await db.query(`insert into agency_role_permissions(organization_id,role,capability,allowed,updated_by_user_id) values($1,$2,$3,$4,$5) on conflict(organization_id,role,capability) do update set allowed=excluded.allowed,updated_by_user_id=excluded.updated_by_user_id,updated_at=now()`,[user.organization_id,role,capability,allowed,user.id]);
    }

@@ -106,7 +106,9 @@ async function sendReset(email,token){return emailDelivery.send({to:email,messag
 async function sendVerification(email,token){return emailDelivery.send({to:email,message:verificationEmail({token,appUrl}),idempotencyKey:'verify-'+crypto.createHash('sha256').update(token).digest('hex')});}
 async function sendDestructiveEmailCode(email,code){return emailDelivery.send({to:email,message:destructiveReauthEmail({code}),idempotencyKey:'destructive-reauth-'+crypto.createHash('sha256').update(code).digest('hex')});}
 async function sendClientPortalReset(email,token){return emailDelivery.send({to:email,message:clientPortalResetEmail({token}),idempotencyKey:'client-portal-reset-'+crypto.createHash('sha256').update(token).digest('hex')});}
-async function sendClientPortalInvite(email,message){return emailDelivery.send({to:email,message,idempotencyKey:'client-portal-invite-'+crypto.createHash('sha256').update(email.toLowerCase()+message.subject).digest('hex')});}
+// La clave incluye el texto (que lleva el token del enlace): re-invitar al mismo
+// correo y cliente genera un token nuevo y, antes, reutilizaba la clave y no enviaba nada.
+async function sendClientPortalInvite(email,message){return emailDelivery.send({to:email,message,idempotencyKey:'client-portal-invite-'+crypto.createHash('sha256').update(email.toLowerCase()+message.text).digest('hex')});}
 async function runOptionalMigration(filename,client=db) {
   try {
     await client.query(await fs.readFile(path.join(root, 'migrations', filename), 'utf8'));
@@ -286,13 +288,15 @@ const server = http.createServer(async (req,res) => {
     if(url.pathname.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
     if(await subscriptionBilling({req,res,url,db,session,body,send,sendPaymentFailed}))return;
     if(await platformAdmin({req,res,url,db,session,body,send,bootstrapValue:initialPlatformAdminEmail}))return;
-    if(await rolePermissions({req,res,url,db,session,body,send}))return;
     // Billing is separate from membership: suspended owners retain billing,
     // logout and company switching, but no private operational reads/writes.
     if(url.pathname.startsWith('/api/agency/')||url.pathname==='/api/metrics'||url.pathname==='/api/hub/overview'||(url.pathname==='/api/auth/organizations'&&req.method==='POST')){
       const actor=await session(req);
       if(actor){const subscription=await requestSubscription(req,actor);if(!subscription.hasAccess)return send(res,402,{code:'SUBSCRIPTION_REQUIRED',error:'La suscripción está suspendida. El dueño puede regularizar el pago sin perder los datos.',subscription});}
     }
+    // La matriz de permisos es una lectura/escritura privada más: va después del
+    // corte por suscripción, como el resto de /api/agency/*.
+    if(await rolePermissions({req,res,url,db,session,body,send}))return;
     if(url.pathname==='/api/invitations/status'&&req.method==='GET'){
       const r=(await db.query(`select o.name as organization_name,u.email,l.role,r.status,l.revoked_at,l.used_at,l.expires_at>now() as link_valid,o.active as organization_active,exists(select 1 from organization_members m where m.organization_id=o.id and m.user_id=u.id and m.active=true and m.removed_at is null) as existing_member from sessions s join users u on u.id=s.user_id join organizations o on o.id=s.organization_id join agency_invite_links l on l.organization_id=o.id join agency_access_requests r on r.link_id=l.id and r.user_id=u.id where s.id=$1 and s.expires_at>now() order by r.created_at desc,r.id desc limit 1`,[parseCookies(req).scale_session||''])).rows[0];
       if(!r)return send(res,401,{error:'Ingresá con Google para ver tu solicitud'});
@@ -338,7 +342,10 @@ const server = http.createServer(async (req,res) => {
     }
     if (url.pathname === '/health') return send(res,databaseReady ? 200 : 503,{ok:databaseReady,database:databaseReady ? 'ready' : 'initializing',release});
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
-      const { email='', password='' } = await body(req); const e=email.trim().toLowerCase();
+      // Un cuerpo nulo o con tipos inesperados es entrada inválida (400), nunca 500.
+      const input=(await body(req))||{};
+      const e=(typeof input.email==='string'?input.email:'').trim().toLowerCase(),password=typeof input.password==='string'?input.password:'';
+      if(!e||!password)return send(res,400,{error:'Ingresá tu correo y contraseña'});
       if(!await throttle(db,'login:'+e,30))return send(res,429,{error:'Demasiados intentos. Esperá 15 minutos.'});
       const r=await db.query('select id,password_hash,email_verified_at,is_demo_guest from users where email=$1',[e]);
       if (!r.rows[0]||!r.rows[0].email_verified_at||r.rows[0].is_demo_guest||!(await bcrypt.compare(password,r.rows[0].password_hash))) return send(res,401,{error:'Credenciales inválidas'});
@@ -421,7 +428,8 @@ const server = http.createServer(async (req,res) => {
       if(saved.rows[0].client_portal_login){
         if(saved.rows[0].client_portal_invite_id){
           try{
-            const accepted=await acceptClientPortalGoogleInvite({db,inviteId:saved.rows[0].client_portal_invite_id,email,fullName:String(profile.name||email)});
+            // Un nombre de Google más largo que el límite del portal no puede romper la aceptación.
+            const accepted=await acceptClientPortalGoogleInvite({db,inviteId:saved.rows[0].client_portal_invite_id,email,fullName:String(profile.name||email).replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,120)});
             res.writeHead(302,{Location:clientPortalUrl('entregas'),'Set-Cookie':`__Host-scale_client_session=${accepted.rawSession}; Max-Age=604800; Path=/; HttpOnly; Secure; SameSite=Lax`});return res.end();
           }catch(error){return oauthFailure(error.status?error.message:'No se pudo aceptar la invitación del portal.');}
         }

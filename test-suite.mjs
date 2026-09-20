@@ -45,6 +45,12 @@ assert.equal((await call(`/api/agency/work-orders/${order}/approve`,'POST')).sta
 assert.equal((await call(`/api/agency/work-orders/${order}/approve`,'POST')).status,200);
 assert.equal((await call(`/api/agency/work-orders/${order}/publish`,'POST')).status,200);
 assert.equal((await call(`/api/agency/work-orders/${order}`,'PATCH',{status:'editing'}, {...user,role:'editor'})).workOrder.approval_step,0);
+// Editar un proyecto exige `projects.edit`: ni el defecto de otro rol ni una concesión
+// de `work-orders.manage` habilitan la edición (antes el gate usaba work-orders.manage).
+assert.equal((await call(`/api/agency/projects/${project}`,'PATCH',{name:'Sales denied'},{...user,role:'sales'})).status,403,'sales lacks projects.edit by default');
+assert.equal((await call(`/api/agency/projects/${project}`,'PATCH',{name:'Sales allowed'},{...user,role:'sales',capabilities:{'projects.edit':true}})).status,200,'the override grants the edit');
+assert.equal((await call(`/api/agency/projects/${project}`,'PATCH',{name:'Editor denied'},{...user,role:'editor',capabilities:{'work-orders.manage':true}})).status,403,'work-orders.manage never grants project edits');
+assert.equal((await call(`/api/agency/projects/${project}`,'PATCH',{name:'Editor allowed'},{...user,role:'editor',capabilities:{'projects.edit':true}})).status,200);
 assert.equal((await call('/api/agency/dashboard','GET',{}, {...user,role:'sales'})).status,403);
 assert.equal((await call(`/api/agency/members/${uid}`,'PATCH',{active:false})).status,400);
 assert.equal((await call(`/api/agency/members/${viewer}`,'PATCH',{active:false})).status,200);
