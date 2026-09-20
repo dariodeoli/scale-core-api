@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
-import {roleCan} from './permissions.js';
+import {roleCan,roles} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
-export const accessRoles=['owner','admin','management','finance','sales','production','editor','viewer','collaborator'];
+// Fuente única de roles: la lista canónica vive en permissions.js.
+export const accessRoles=roles;
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
 const inviteKey=crypto.createHash('sha256').update(process.env.INVITE_LINK_SECRET||process.env.GOOGLE_CLIENT_SECRET||'scale-os-invite-key').digest();
@@ -50,7 +51,11 @@ export async function claimInvite(c,linkId,profile){
  }
  const name=String(profile.name||email).slice(0,160);
  if(l.mode==='approval'){
-  await c.query('insert into agency_access_requests(link_id,user_id,full_name) values($1,$2,$3) on conflict(link_id,user_id) do nothing',[l.id,u.id,name]);
+  // Un conflicto solo se resuelve si la solicitud sigue pendiente: reclamar un
+  // enlace cuya solicitud ya fue rechazada (o aprobada) no puede informarse como
+  // pendiente, porque el dueño no vería nada para aprobar.
+  const request=(await c.query('insert into agency_access_requests(link_id,user_id,full_name) values($1,$2,$3) on conflict(link_id,user_id) do update set full_name=excluded.full_name where agency_access_requests.status=\'pending\' returning id',[l.id,u.id,name])).rows[0];
+  if(!request)fail('Esta solicitud ya fue atendida. Pedí un nuevo enlace al dueño.',409);
   return{pending:true,userId:u.id,organizationId:l.organization_id};
  }
  await c.query('insert into organization_members(organization_id,user_id,role,invite_link_id) values($1,$2,$3,$4)',[l.organization_id,u.id,l.role,l.id]);

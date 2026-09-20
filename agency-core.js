@@ -4,7 +4,7 @@ import {currencies} from './currencies.js';
 import {email as validEmail} from './suite-validation.js';
 import {normalizeUrgency} from './urgency.js';
 import {visibleRecord} from './record-lifecycle.js';
-import {roleCan} from './permissions.js';
+import {roleCan,roles} from './permissions.js';
 import {externalLink,profilePhoto} from './media-policy.js';
 import {email as normalizedEmail,phone as normalizedPhone} from './suite-validation.js';
 import {budgetSections} from './budget-sections.js';
@@ -18,7 +18,8 @@ import {startTrial,subscriptionState} from './subscription-billing.js';
 import {throttle} from './password-access.js';
 import {ensurePipelineStages} from './pipeline-stages.js';
 
-const memberRoles=['owner','admin','management','finance','sales','production','editor','viewer','collaborator'];
+// Fuente única de roles: la lista canónica vive en permissions.js.
+const memberRoles=roles;
 
 // Legacy operational endpoints extracted from the server entrypoint. Handlers
 // keep their original behavior and responses; the dispatcher returns true when
@@ -40,14 +41,20 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       return send(res,200,await setDefaultOrganization(db,user,await body(req)));
     }
     if(url.pathname==='/api/auth/organizations'&&req.method==='POST'){
-      const user=await session(req);if(!roleCan(user,'company.create'))return send(res,403,{error:'Solo administración puede crear una empresa'});
-      const b=await body(req),name=typeof b.name==='string'?b.name.trim():'',slug=typeof b.slug==='string'?b.slug.trim().toLowerCase():'';
-      if(name.length<2||name.length>160||!/^\w[\w-]{2,59}$/.test(slug))return send(res,400,{error:'Nombre y código de empresa inválidos'});
+      const user=await session(req);if(!user)return send(res,401,{error:'No autenticado'});
+      if(!roleCan(user,'company.create'))return send(res,403,{error:'Solo administración puede crear una empresa'});
+      const b=(await body(req))||{},name=typeof b.name==='string'?b.name.trim():'',slug=typeof b.slug==='string'?b.slug.trim().toLowerCase():'';
+      // Igual que el registro y la invitación: el nombre no admite controles ni NUL.
+      if(name.length<2||name.length>160||/[\u0000-\u001f\u007f]/.test(name)||!/^\w[\w-]{2,59}$/.test(slug))return send(res,400,{error:'Nombre y código de empresa inválidos'});
       if(b.billingCurrency!==undefined&&!['USD','PYG'].includes(b.billingCurrency))return send(res,400,{error:'Elegí USD o PYG para la suscripción'});
-      const c=await db.connect();try{await c.query('begin');const org=(await c.query('insert into organizations(name,slug) values($1,$2) returning *',[name,slug])).rows[0];await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);await ensurePipelineStages(c,org.id);await startTrial(c,org.id,b.billingCurrency||'USD');const trial=(await c.query('select trial_ends_at from organization_subscriptions where organization_id=$1',[org.id])).rows[0];await c.query('commit');if(typeof sendTrialEmail==='function')await sendTrialEmail(user.email,b.name,trial?.trial_ends_at??null).catch(()=>false);return send(res,201,{organization:org});}catch(e){await c.query('rollback');return send(res,e.code==='23505'?409:500,{error:e.code==='23505'?'Ese código ya está utilizado':'No se pudo crear la empresa'});}finally{c.release();}
+      const c=await db.connect();try{await c.query('begin');const org=(await c.query('insert into organizations(name,slug) values($1,$2) returning *',[name,slug])).rows[0];await c.query("insert into organization_members(organization_id,user_id,role) values($1,$2,'owner')",[org.id,user.id]);await ensurePipelineStages(c,org.id);await startTrial(c,org.id,b.billingCurrency||'USD');const trial=(await c.query('select trial_ends_at from organization_subscriptions where organization_id=$1',[org.id])).rows[0];await c.query('commit');if(typeof sendTrialEmail==='function')await sendTrialEmail(user.email,name,trial?.trial_ends_at??null).catch(()=>false);return send(res,201,{organization:org});}catch(e){await c.query('rollback');return send(res,e.code==='23505'?409:500,{error:e.code==='23505'?'Ese código ya está utilizado':'No se pudo crear la empresa'});}finally{c.release();}
     }
     if (url.pathname === '/api/auth/switch-organization' && req.method === 'POST') {
-      const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'}); const {organizationId}=await body(req);
+      const user=await session(req); if(!user) return send(res,401,{error:'No autenticado'});
+      // La empresa se valida antes de tocar la base: un id inválido es 400, no un 500 de Postgres.
+      const input=(await body(req))||{},raw=input.organizationId;
+      if(!['number','string'].includes(typeof raw)||typeof raw==='number'&&!Number.isSafeInteger(raw)||! /^[1-9]\d{0,18}$/.test(String(raw))||BigInt(raw)>9223372036854775807n)return send(res,400,{error:'Empresa inválida'});
+      const organizationId=String(raw);
       const c=await db.connect();
       try{
         await c.query('begin');
@@ -199,7 +206,11 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       try {
         await client.query('begin');
         await auditContext(client,user,req);
-        let account = await client.query('select id from users where email=$1',[normalizedEmail]);
+        // Un huésped del Demo no puede iniciar sesión: crearle una membresía real
+        // sería un acceso inutilizable. Se pide otro correo.
+        const priorAccount=(await client.query('select id,is_demo_guest from users where email=$1',[normalizedEmail])).rows[0];
+        if(priorAccount?.is_demo_guest){await client.query('rollback');return send(res,400,{error:'Ese correo pertenece a una cuenta de demostración. Invitá un correo real.'});}
+        let account = {rows:priorAccount?[priorAccount]:[]};
         if (!account.rows[0]) {
           const hash = await bcrypt.hash(password || id(),12);
           account = await client.query('insert into users(email,password_hash,role) values($1,$2,$3) returning id',[normalizedEmail,hash,role]);
@@ -279,7 +290,7 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       const {name='',accountType='bank',currency=user.default_currency??'PYG',institution=null,accountNumber=null,holderName=null,custodianUserId=null}=await body(req);
       if(typeof name !== 'string' || name.trim().length<2 || !['bank','cash','digital','investment'].includes(accountType) || !currencies.includes(currency)) return send(res,400,{error:'Cuenta inválida'});
       const custodianId=custodianUserId === null || custodianUserId === '' ? null : Number(custodianUserId);
-      if(custodianId !== null && (!Number.isInteger(custodianId) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,custodianId])).rows[0])) return send(res,400,{error:'Custodio inválido'});
+      if(custodianId !== null && (!Number.isInteger(custodianId) || !(await db.query('select 1 from organization_members where organization_id=$1 and user_id=$2 and active and removed_at is null',[user.organization_id,custodianId])).rows[0])) return send(res,400,{error:'Custodio inválido'});
       const r=await auditedQuery(user,req,'insert into bank_accounts(organization_id,name,account_type,currency,institution,account_number,holder_name,custodian_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,name.trim(),accountType,currency,typeof institution === 'string' ? institution.trim() || null : null,typeof accountNumber === 'string' ? accountNumber.trim() || null : null,typeof holderName === 'string' ? holderName.trim() || null : null,custodianId]);
       return send(res,201,{account:r.rows[0]});
     }
@@ -326,7 +337,7 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
         const valid=await c.query('select i.currency,i.total,i.paid_amount from agency_invoices i join bank_accounts a on a.id=$2 and a.organization_id=i.organization_id and a.currency=i.currency where i.id=$1 and i.organization_id=$3 for update of i',[Number(invoiceId),Number(accountId),user.organization_id]);
         if(!valid.rows[0]){await c.query('rollback');return send(res,404,{error:'Factura o cuenta no encontrada, o monedas distintas'});}
         if(paid > Number(valid.rows[0].total) - Number(valid.rows[0].paid_amount)){await c.query('rollback');return send(res,400,{error:'El cobro supera el saldo pendiente'});}
-        if(!Number.isInteger(receiver) || !(await c.query('select 1 from organization_members where organization_id=$1 and user_id=$2',[user.organization_id,receiver])).rows[0]){await c.query('rollback');return send(res,400,{error:'Persona que recibió el pago inválida'});}
+        if(!Number.isInteger(receiver) || !(await c.query('select 1 from organization_members where organization_id=$1 and user_id=$2 and active and removed_at is null',[user.organization_id,receiver])).rows[0]){await c.query('rollback');return send(res,400,{error:'Persona que recibió el pago inválida'});}
         const r=await c.query('insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference,received_by_user_id) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(invoiceId),Number(accountId),paid,receivedOn || new Date().toISOString().slice(0,10),reference || null,receiver]);
         await c.query('commit');
         await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'received_by_user_id'}]);

@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs';
 import {throttle,validatePassword} from './password-access.js';
 import {externalLink} from './media-policy.js';
 import {owned} from './suite-validation.js';
+import {visibleRecord} from './record-lifecycle.js';
 
 // Until the dedicated client subdomain is configured, the portal is served
 // through the authenticated app origin under /cliente.  Keeping the public
@@ -27,7 +28,6 @@ const token=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:f
 const id=value=>/^\d+$/.test(String(value))&&Number(value)>0?String(value):fail('Identificador inválido');
 const text=(value,max=2000)=>typeof value==='string'&&value.trim().length>0&&value.trim().length<=max?value.trim():fail('Texto inválido');
 const email=value=>{const normalized=typeof value==='string'?value.trim().toLowerCase():'';if(!/^\S+@\S+\.\S+$/.test(normalized)||normalized.length>254)fail('Correo inválido');return normalized;};
-const htmlEscape=value=>String(value).replace(/[&<>\"']/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[character]));
 const portalCookie=(value,maxAge)=>`__Host-scale_client_session=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
 const readCookie=req=>Object.fromEntries((req.headers?.cookie||'').split(';').filter(Boolean).map(value=>{const at=value.indexOf('=');return[value.slice(0,at).trim(),decodeURIComponent(value.slice(at+1))];}));
 const sameOrigin=req=>{const origin=req.headers?.origin;if(origin&&!clientOrigins.has(origin))fail('Origen no permitido',403);};
@@ -40,14 +40,18 @@ async function portalSession(db,req){
  return row;
 }
 async function scopedDelivery(c,userId,deliveryId){
+ // Las fechas de la entrega viajan como texto `YYYY-MM-DD`: un `date` serializado
+ // como timestamp hacía que el portal mostrara el día anterior y una hora inventada.
+ // Papelera: un cliente, proyecto u orden archivado deja de servir entregas al portal.
  const row=(await c.query(`select d.id,d.organization_id,d.work_order_id,d.title,d.summary,d.asset_name,d.asset_url,d.version,d.published_at,
-   w.status as work_order_status,w.due_date,w.due_time,p.name as project_name,cl.name as client_name
+   w.status as work_order_status,to_char(w.due_date,'YYYY-MM-DD') as due_date,w.due_time,p.name as project_name,cl.name as client_name
   from client_portal_deliveries d join agency_work_orders w on w.id=d.work_order_id and w.organization_id=d.organization_id
   join agency_projects p on p.id=w.project_id and p.organization_id=d.organization_id
   join agency_clients cl on cl.id=p.client_id and cl.organization_id=d.organization_id
   join organizations o on o.id=d.organization_id
   join client_portal_grants g on g.organization_id=d.organization_id and g.client_id=p.client_id and g.portal_user_id=$1 and g.active
-  where d.id=$2 and d.visible and d.asset_url is not null and cl.active and o.active and w.status in ('approved','published')`,[userId,id(deliveryId)])).rows[0];
+  where d.id=$2 and d.visible and d.asset_url is not null and cl.active and o.active and w.status in ('approved','published')
+   and ${visibleRecord('cl','clients')} and ${visibleRecord('p','projects')} and ${visibleRecord('w','work-orders')}`,[userId,id(deliveryId)])).rows[0];
  if(!row)fail('Entrega no encontrada',404);return row;
 }
 async function validInvite(c,raw,{lock=false}={}){
@@ -72,26 +76,27 @@ async function notifyPortalActivity(c,delivery,{label,body,dedupe}){
 }
 export function clientPortalResetEmail({token}){
  const resetUrl=`${clientOrigin}/recuperar?resetToken=${token}`;
- const safeUrl=htmlEscape(resetUrl);
+ // El shell escapa el href una sola vez; pre-escaparlo rompía cualquier URL con `&`.
  return {subject:'Restablecé tu contraseña del portal de cliente',text:`Recibimos una solicitud para restablecer la contraseña de tu Portal del Cliente de Scale OS. Abrí este enlace dentro de una hora: ${resetUrl}\n\nSi no lo solicitaste, podés ignorar este correo.`,html:emailShell({
   eyebrow:'Portal del cliente',
   title:'Restablecé tu contraseña',
   lead:'Recibimos una solicitud para tu Portal del Cliente de Scale OS. Este enlace vence en una hora; si no lo solicitaste, podés ignorar este correo.',
-  cta:{label:'Elegir una contraseña nueva',href:safeUrl},
+  cta:{label:'Elegir una contraseña nueva',href:resetUrl},
   footerNote:'Scale OS · Portal del cliente',
  })};
 }
 
 export function clientPortalInviteEmail({organizationName,clientName,url}){
- const org=String(organizationName||'tu agencia'),client=String(clientName||'el cliente');
- const safeUrl=htmlEscape(url);
+ // El asunto viaja a un encabezado: sin controles ni saltos de línea.
+ const clean=value=>String(value??'').replace(/[\u0000-\u001f\u007f\u2028\u2029]/g,' ').trim();
+ const org=clean(organizationName)||'tu agencia',client=clean(clientName)||'el cliente';
  const subject=`Te invitaron al portal de ${client} · Scale OS`.slice(0,160);
  const text=`Te invitaron a revisar las entregas de ${client} en el Portal del Cliente de ${org}.\n\nAbrí tu portal: ${url}\n\nEste enlace es personal y vence pronto. Si no lo esperabas, podés ignorarlo.\n\nScale OS · Portal del cliente`;
  return{subject,text,html:emailShell({
   eyebrow:'Portal del cliente',
   title:`Entregas de ${client}`,
   lead:`${org} te invita a revisar entregas desde tu portal privado. No necesitás una cuenta.`,
-  cta:{label:'Ver entregas',href:safeUrl},
+  cta:{label:'Ver entregas',href:url},
   footer:'Este enlace es personal y vence pronto. Si no lo esperabas, podés ignorarlo.',
   footerNote:'Scale OS · Portal del cliente',
  })};
@@ -168,6 +173,8 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
     const grant=(await c.query('update client_portal_grants set active=false,revoked_at=now(),revoked_by_user_id=$1 where id=$2 and organization_id=$3 and client_id=$4 and active returning id,portal_user_id',[employee.id,id(revokeGrant[2]),employee.organization_id,client.id])).rows[0];
     if(!grant)fail('Acceso no disponible',404);
     await c.query('delete from client_portal_sessions where portal_user_id=$1 and not exists(select 1 from client_portal_grants g where g.portal_user_id=$1 and g.organization_id=$2 and g.active)',[grant.portal_user_id,employee.organization_id]);
+    // Una invitación pendiente del mismo correo volvería a activar el acceso revocado.
+    await c.query('update client_portal_invites set revoked_at=now() where organization_id=$1 and client_id=$2 and accepted_at is null and revoked_at is null and email_normalized=(select email_normalized from client_portal_users where id=$3)',[employee.organization_id,client.id,grant.portal_user_id]);
     await c.query('commit');transaction=false;send(res,200,{ok:true});return true;
    }
    const order=await owned(c,'agency_work_orders',internalDelivery[1],employee.organization_id);
@@ -179,7 +186,10 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
    if(!['POST','PATCH'].includes(req.method))fail('Método no permitido',405);const b=await body(req);
    if(req.method==='PATCH'&&b.visible===false){await c.query('update client_portal_deliveries set visible=false,updated_at=now() where organization_id=$1 and work_order_id=$2',[employee.organization_id,order.id]);await c.query('commit');transaction=false;send(res,200,{ok:true});return true;}
    if(!['approved','published'].includes(order.status))fail('Sólo se pueden publicar entregables aprobados internamente',409);
-   const title=text(b.title||order.title,180),summary=typeof b.summary==='string'?b.summary.trim().slice(0,2000):'',assetName=text(b.assetName||'Abrir archivo',180),assetUrl=externalLink(b.assetUrl);
+   const title=text(b.title||order.title,180),summary=typeof b.summary==='string'?b.summary.trim().slice(0,2000):'',assetName=text(b.assetName||'Abrir archivo',180);
+   // Sin enlace HTTPS no se publica: era un 500 de columna no nula.
+   const previous=(await c.query('select asset_url from client_portal_deliveries where organization_id=$1 and work_order_id=$2',[employee.organization_id,order.id])).rows[0]?.asset_url||null;
+   const assetUrl=externalLink(b.assetUrl)||previous;if(!assetUrl)fail('Pegá un enlace HTTPS del archivo para publicar la entrega');
    const delivery=(await c.query(`insert into client_portal_deliveries(organization_id,work_order_id,visible,title,summary,asset_name,asset_url,published_by_user_id,published_at)
     values($1,$2,true,$3,$4,$5,$6,$7,now()) on conflict(organization_id,work_order_id) do update set visible=true,title=excluded.title,summary=excluded.summary,asset_name=excluded.asset_name,asset_url=excluded.asset_url,version=client_portal_deliveries.version+1,published_by_user_id=excluded.published_by_user_id,published_at=now(),updated_at=now() returning *`,[employee.organization_id,order.id,title,summary,assetName,assetUrl,employee.id])).rows[0];
    await c.query('commit');transaction=false;send(res,200,{delivery});return true;
@@ -234,9 +244,10 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
   const user=await portalSession(db,req);if(!user)fail('Ingresá al portal de cliente',401);
   if(logout){if(req.method!=='POST')fail('Método no permitido',405);await db.query('delete from client_portal_sessions where token_hash=$1',[user.token_hash]);send(res,200,{ok:true},{'Set-Cookie':portalCookie('',0)});return true;}
   if(me){if(req.method!=='GET')fail('Método no permitido',405);const client=(await db.query('select o.name as organization_name,c.name as client_name from client_portal_users u join organizations o on o.id=u.organization_id join agency_clients c on c.id=u.client_id and c.organization_id=u.organization_id where u.id=$1 and o.active and c.active',[user.id])).rows[0]||null;send(res,200,{user:{fullName:user.full_name,email:user.email},client});return true;}
-  if(deliveries){if(req.method!=='GET')fail('Método no permitido',405);const rows=(await db.query(`select distinct d.id,d.title,d.summary,d.asset_name,d.version,d.published_at,w.title as work_order_title,w.due_date,w.due_time,p.name as project_name,c.name as client_name
+  if(deliveries){if(req.method!=='GET')fail('Método no permitido',405);const rows=(await db.query(`select distinct d.id,d.title,d.summary,d.asset_name,d.version,d.published_at,w.title as work_order_title,to_char(w.due_date,'YYYY-MM-DD') as due_date,w.due_time,p.name as project_name,c.name as client_name
    from client_portal_deliveries d join agency_work_orders w on w.id=d.work_order_id and w.organization_id=d.organization_id join agency_projects p on p.id=w.project_id and p.organization_id=d.organization_id join agency_clients c on c.id=p.client_id and c.organization_id=d.organization_id join organizations o on o.id=d.organization_id join client_portal_grants g on g.organization_id=d.organization_id and g.client_id=p.client_id and g.portal_user_id=$1 and g.active
-   where d.visible and d.asset_url is not null and w.status in ('approved','published') and c.active and o.active order by d.published_at desc,d.id desc`,[user.id])).rows;send(res,200,{deliveries:rows});return true;}
+   where d.visible and d.asset_url is not null and w.status in ('approved','published') and c.active and o.active
+    and ${visibleRecord('c','clients')} and ${visibleRecord('p','projects')} and ${visibleRecord('w','work-orders')} order by d.published_at desc,d.id desc`,[user.id])).rows;send(res,200,{deliveries:rows});return true;}
   c=await db.connect();await c.query('begin');transaction=true;const delivery=await scopedDelivery(c,user.id,deliveryMatch[1]);
   if(!deliveryMatch[2]){
    if(req.method!=='GET')fail('Método no permitido',405);const comments=(await c.query('select c.id,c.body,c.created_at,u.full_name as author_name from client_portal_delivery_comments c join client_portal_users u on u.id=c.portal_user_id where c.delivery_id=$1 and c.organization_id=$2 order by c.created_at,c.id',[delivery.id,delivery.organization_id])).rows;
@@ -244,7 +255,8 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
    // Only named links explicitly marked visible are exposed; asset URLs are
    // already excluded above and the links table enforces HTTPS-only values.
    const links=(await c.query('select id,label,url from agency_work_order_links where organization_id=$1 and work_order_id=$2 and visible_to_client order by id',[delivery.organization_id,delivery.work_order_id])).rows;
-   const {asset_url,...publicDelivery}=delivery;
+   // El portal no necesita ids internos: se publican solo los campos del contrato.
+   const {asset_url,organization_id,work_order_id,...publicDelivery}=delivery;
    await c.query('commit');transaction=false;send(res,200,{delivery:publicDelivery,links,comments,decision});return true;
   }
   if(deliveryMatch[2]==='activity'){
@@ -266,9 +278,9 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
      from client_portal_delivery_downloads dl join client_portal_users u on u.id=dl.portal_user_id
      where dl.delivery_id=$1 and dl.organization_id=$2
      union all
-     select 'version', a.created_at, (a.after_state->>'version')::int, p.full_name, 'Nueva versión publicada'
+     select 'version', a.created_at, (a.after_state->>'version')::int, coalesce(nullif(trim(i.full_name),''),i.email), 'Nueva versión publicada'
      from agency_operation_audit a
-     left join agency_user_profiles p on p.organization_id=a.organization_id and p.user_id=(a.after_state->>'published_by_user_id')::bigint
+     left join organization_person_identity i on i.organization_id=a.organization_id and i.user_id=(a.after_state->>'published_by_user_id')::bigint
      where a.organization_id=$2 and a.table_name='client_portal_deliveries' and a.action='UPDATE'
       and coalesce((a.after_state->>'version')::int,0)>coalesce((a.before_state->>'version')::int,0)
       and (a.after_state->>'id')::bigint=$1
@@ -281,6 +293,8 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
    await c.query('commit');transaction=false;res.writeHead(302,{Location:delivery.asset_url,'Referrer-Policy':'no-referrer'});res.end();return true;
   }
   if(req.method!=='POST')fail('Método no permitido',405);const b=await body(req);
+  // Comentarios y decisiones son públicos en el portal: se limitan por cuenta.
+  if(!await throttle(db,'client-portal-message:'+user.id,20))fail('Demasiados mensajes seguidos. Esperá unos minutos.',429);
   if(deliveryMatch[2]==='comments'){
    const comment=(await c.query('insert into client_portal_delivery_comments(organization_id,delivery_id,portal_user_id,body) values($1,$2,$3,$4) returning id,body,created_at',[delivery.organization_id,delivery.id,user.id,text(b.body)])).rows[0];
    await notifyPortalActivity(c,delivery,{label:'Comentario del cliente en',body:comment.body,dedupe:`portal-comment-${delivery.id}-${comment.id}`});

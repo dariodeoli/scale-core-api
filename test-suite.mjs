@@ -45,6 +45,12 @@ assert.equal((await call(`/api/agency/work-orders/${order}/approve`,'POST')).sta
 assert.equal((await call(`/api/agency/work-orders/${order}/approve`,'POST')).status,200);
 assert.equal((await call(`/api/agency/work-orders/${order}/publish`,'POST')).status,200);
 assert.equal((await call(`/api/agency/work-orders/${order}`,'PATCH',{status:'editing'}, {...user,role:'editor'})).workOrder.approval_step,0);
+// Editar un proyecto exige `projects.edit`: ni el defecto de otro rol ni una concesión
+// de `work-orders.manage` habilitan la edición (antes el gate usaba work-orders.manage).
+assert.equal((await call(`/api/agency/projects/${project}`,'PATCH',{name:'Sales denied'},{...user,role:'sales'})).status,403,'sales lacks projects.edit by default');
+assert.equal((await call(`/api/agency/projects/${project}`,'PATCH',{name:'Sales allowed'},{...user,role:'sales',capabilities:{'projects.edit':true}})).status,200,'the override grants the edit');
+assert.equal((await call(`/api/agency/projects/${project}`,'PATCH',{name:'Editor denied'},{...user,role:'editor',capabilities:{'work-orders.manage':true}})).status,403,'work-orders.manage never grants project edits');
+assert.equal((await call(`/api/agency/projects/${project}`,'PATCH',{name:'Editor allowed'},{...user,role:'editor',capabilities:{'projects.edit':true}})).status,200);
 assert.equal((await call('/api/agency/dashboard','GET',{}, {...user,role:'sales'})).status,403);
 assert.equal((await call(`/api/agency/members/${uid}`,'PATCH',{active:false})).status,400);
 assert.equal((await call(`/api/agency/members/${viewer}`,'PATCH',{active:false})).status,200);
@@ -100,6 +106,14 @@ r=await call('/api/agency/inventory','POST',{name:'Camera',value:2000,currency:'
 assert.equal((await call('/api/agency/plans','POST',{name:'Plan',items:[{description:'Video',quantity:2,unitPrice:100}],currency:'USD'})).status,201);
 assert.equal((await call('/api/agency/plans','POST',{name:'Invalid',items:[]})).status,400);
 assert.equal((await call('/api/agency/exchange-rates','POST',{rate_date:'2026-09-08',usd_to_pyg:7500})).status,200);
+// La cotización revalida el mismo rango entero que la interfaz (G. 1.000 a G. 100.000).
+for(const rate of [999,100001,1234.5,'7500.5',-7500,0])assert.equal((await call('/api/agency/exchange-rates','POST',{rate_date:'2026-09-09',usd_to_pyg:rate})).status,400,`rate ${rate} is rejected`);
+assert.equal((await call('/api/agency/exchange-rates','POST',{rate_date:'2026-09-09',usd_to_pyg:1000})).status,200);
+assert.equal((await call('/api/agency/exchange-rates','POST',{rate_date:'2026-09-10',usd_to_pyg:100000})).status,200);
+assert.equal((await call('/api/agency/exchange-rates','POST',{rate_date:'2026-09-11',usd_to_pyg:'6000'})).status,200,'a numeric string inside the range stays accepted');
+// La dirección acepta el límite documentado por la interfaz (400) y rechaza más.
+assert.equal((await call('/api/agency/settings','PATCH',{address:'x'.repeat(400)})).status,200);
+assert.equal((await call('/api/agency/settings','PATCH',{address:'x'.repeat(401)})).status,400);
 assert.equal((await call('/api/agency/dashboard')).inventory[0].total,'2000.00');
 await query("insert into agency_user_profiles(organization_id,user_id,full_name,photo_url) values($1,$2,'Autor local','https://example.invalid/actor.png')",[org,uid]);
 const activity=await call('/api/agency/activity');assert.equal(activity.status,200);assert.ok(activity.records.length>=5);

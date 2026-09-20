@@ -76,6 +76,10 @@ const withPending=await make('approval','editor');await claim(withPending,'pendi
 assert.equal((await call(links+'/'+withPending.id+'?permanent=1','DELETE',{},actor)).status,409);
 const pendingReq=(await query('select id from agency_access_requests where link_id=$1',[withPending.id])).rows[0].id;
 assert.equal((await call(requests+'/'+pendingReq,'PATCH',{action:'reject'},actor)).status,200);
+// Reclamar un enlace de aprobación cuya solicitud ya fue rechazada no puede informarse
+// como pendiente: el dueño no vería nada por aprobar.
+await assert.rejects(()=>claim(withPending,'pending-del@example.invalid'),{status:409});
+assert.equal((await query("select status from agency_access_requests where link_id=$1",[withPending.id])).rows[0].status,'rejected');
 const removed=(await call(links+'/'+withPending.id+'?permanent=1','DELETE',{},actor));assert.equal(removed.deleted,true);
 assert.equal((await query('select count(*)::int as n from agency_invite_links where id=$1',[withPending.id])).rows[0].n,0);
 assert.equal((await query('select count(*)::int as n from agency_access_requests where link_id=$1',[withPending.id])).rows[0].n,0);

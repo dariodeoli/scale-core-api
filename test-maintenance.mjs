@@ -189,6 +189,21 @@ assert.equal(await count('agency_usage_sessions', real), 2);
 result = await runMaintenance(db, {dryRun: false, env: {PRESENCE_RETENTION_DAYS: '60', USAGE_RETENTION_DAYS: '30'}});
 assert.equal(result.presenceTabs, 0); assert.equal(result.usageSessions, 1);
 assert.equal(await count('agency_usage_sessions', real), 1);
+// Tablas efímeras: contadores de intentos y trámites de eliminación vencidos.
+await query("insert into auth_throttles(key,count,expires_at) values('expired-key',3,now()-interval '1 hour'),('live-key',1,now()+interval '1 hour')");
+await query(`insert into destructive_action_previews(token_hash,user_id,action,organization_id,state_hash,confirmation,payload,expires_at)
+ values('old-preview',$1,'organization.delete',$2,'h','Eliminar','{}',now()-interval '1 hour'),
+        ('blocked-preview',$1,'organization.delete',$2,'h','Eliminar','{}',now()-interval '1 hour'),
+        ('fresh-preview',$1,'organization.delete',$2,'h','Eliminar','{}',now()+interval '1 hour')`,[owner,real]);
+await query("insert into destructive_auth_proofs(token_hash,preview_token_hash,user_id,action,organization_id,method,expires_at) values('live-proof','blocked-preview',$1,'organization.delete',$2,'password',now()+interval '1 hour')",[owner,real]);
+result = await runMaintenance(db, {dryRun: false, env: {}});
+assert.equal(result.expiredThrottles, 1, 'only the expired throttle is reclaimed');
+assert.equal(result.expiredDestructiveFlows, 1, 'the expired preview without live children is reclaimed');
+assert.equal((await query("select count(*)::int as n from auth_throttles where key='live-key'")).rows[0].n, 1);
+assert.equal((await query("select count(*)::int as n from destructive_action_previews where token_hash='blocked-preview'")).rows[0].n, 1, 'a live child keeps its preview');
+assert.equal((await query("select count(*)::int as n from destructive_action_previews where token_hash='old-preview'")).rows[0].n, 0);
+assert.equal((await query("select count(*)::int as n from destructive_action_previews where token_hash='fresh-preview'")).rows[0].n, 1);
+await query('delete from destructive_auth_proofs');await query('delete from destructive_action_previews');
 assert.equal(maintenanceSettings({}).graceHours, 24);
 for (const env of [{DEMO_CLEANUP_GRACE_HOURS: '0'}, {PRESENCE_RETENTION_DAYS: ''}, {USAGE_RETENTION_DAYS: 'NaN'}, {DEMO_CLEANUP_BATCH_SIZE: '500'}])
  assert.throws(() => maintenanceSettings(env), /INVALID/);
