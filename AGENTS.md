@@ -9,8 +9,17 @@
 - Handover: conventional commits por unidad de trabajo, sin atribución de IA; avisar con rama, `git log --oneline origin/main..HEAD`, qué hace cada commit, rutas tocadas y verificaciones.
 - Issues: cada pedido se trabaja desde un issue del backlog; citar `Refs #<n>` en commits y handover. El integrador cierra el issue solo verificando por contenido contra `main`.
 
+## Slots de agente (4 worktrees + integrador)
+- **SOS-COM (Comercial)**: clientes, pipeline, presupuestos y planes.
+- **SOS-OPS (Operaciones)**: producción, proyectos, estudio, inventario (reservas, verificación, valor y depreciación).
+- **SOS-FIN (Finanzas)**: finanzas, mora/cobranza, previsión, informes y comisiones.
+- **SOS-PLT (Plataforma)**: auth/registro, equipo y accesos, configuración/papelera, superadmin, portal del cliente, automatización y correos.
+- Cada slot tiene una **rama persistente con el mismo nombre que en scale-os** (`SOS-COM`/`SOS-OPS`/`SOS-FIN`/`SOS-PLT`) y su worktree en `~/.herdr/worktrees/scale-core-api/<slot>`.
+- **La rama no se recrea por pedido**: antes de cada tarea `git fetch origin --prune && git rebase origin/main`; después de una integración la rama se reposiciona sobre `origin/main` y sigue viva.
+- **Transversales con dueño**: la validación compartida (`suite-validation.js`), permisos (`permissions.js`) y migraciones se coordinan por issue con el slot que designe el integrador (Plataforma para auth/permisos) para no pisarse.
+
 ## Worktrees e implementadores (cómo actúa cada uno)
-- **Implementador (agente en worktree)**: trabaja SOLO en su rama dentro de su worktree; nunca toca `main` ni despliega. Rebase sobre `origin/main` antes de empezar; entrega por push a `origin/<su-rama>` con handover (rama, commits, rutas, verificaciones). Prohibido: mergear/pushear a main, resolver conflictos sobre main, borrar o arreglar refs.
+- **Implementador (agente en worktree)**: trabaja SOLO en su rama de slot dentro de su worktree; nunca toca `main` ni despliega. Rebase sobre `origin/main` antes de empezar; entrega por push a `origin/<su-rama>` con handover (rama, commits, rutas, verificaciones). Prohibido: mergear/pushear a main, resolver conflictos sobre main, borrar o arreglar refs.
 - **Integrador (sesión sobre main)**: único que mergea y pushea `main`, siempre con `MOBOS_INTEGRATOR=1`; integra una rama por vez, verifica el árbol mergeado y ante conflicto real **para y consulta**. El deploy de producción es exclusivo de Dario con el comando de release.
 - **Estado raro de git** (fetch que falla, refs rotas): parar y avisar; no reparar por cuenta propia.
 
