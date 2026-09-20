@@ -12,7 +12,6 @@ import {clientColor,clientLogo} from './client-identity.js';
 import {assertUniqueClientRuc} from './ruc-lookup.js';
 import {loginOrganization,defaultOrganizationId,setDefaultOrganization} from './default-organization.js';
 import {privateDemoEntry,demoOrganization} from './demo-session.js';
-import {attributeActors} from './actor-identity.js';
 import {enrichWorkOrderAssignees} from './work-order-assignees.js';
 import {startTrial,subscriptionState} from './subscription-billing.js';
 import {throttle} from './password-access.js';
@@ -336,57 +335,11 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
       const r=await auditedQuery(user,req,'insert into agency_invoices(organization_id,client_id,number,total,currency,due_on,notes) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(clientId),number,amount,currency,dueOn || null,notes || null]);
       return send(res,201,{invoice:r.rows[0]});
     }
-    if (url.pathname === '/api/agency/payments' && req.method === 'GET') {
-      const user=await session(req); if(!roleCan(user,'billing.view')) return send(res,403,{error:'Sin permiso'});
-      const r=await db.query('select p.*,i.number as invoice_number,c.name as client_name,a.name as account_name,a.account_type,a.currency,u.email as received_by_email from agency_payments p join agency_invoices i on i.id=p.invoice_id join agency_clients c on c.id=i.client_id join bank_accounts a on a.id=p.account_id left join users u on u.id=p.received_by_user_id where p.organization_id=$1 order by p.received_on desc,p.id desc',[user.organization_id]);
-      await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'received_by_user_id',fallback:['received_by_email']}]);
-      return send(res,200,{payments:r.rows});
-    }
-    if (url.pathname === '/api/agency/payments' && req.method === 'POST') {
-      const user=await session(req); if(!roleCan(user,'payments.manage')) return send(res,403,{error:'Sin permiso'});
-      const {invoiceId,accountId,amount,receivedOn=null,reference=null,receivedByUserId=null}=await body(req); const paid=Number(amount);
-      if(!Number.isInteger(Number(invoiceId)) || !Number.isInteger(Number(accountId)) || !Number.isFinite(paid) || paid<=0) return send(res,400,{error:'Pago inválido'});
-      const receiver=receivedByUserId === null || receivedByUserId === '' ? Number(user.id) : Number(receivedByUserId);
-      const c=await db.connect();
-      try{
-        await c.query('begin');
-        await auditContext(c,user,req);
-        // Lock the invoice row so two concurrent payments cannot both pass the pending-balance check.
-        const valid=await c.query('select i.currency,i.total,i.paid_amount from agency_invoices i join bank_accounts a on a.id=$2 and a.organization_id=i.organization_id and a.currency=i.currency where i.id=$1 and i.organization_id=$3 for update of i',[Number(invoiceId),Number(accountId),user.organization_id]);
-        if(!valid.rows[0]){await c.query('rollback');return send(res,404,{error:'Factura o cuenta no encontrada, o monedas distintas'});}
-        if(paid > Number(valid.rows[0].total) - Number(valid.rows[0].paid_amount)){await c.query('rollback');return send(res,400,{error:'El cobro supera el saldo pendiente'});}
-        if(!Number.isInteger(receiver) || !(await c.query('select 1 from organization_members where organization_id=$1 and user_id=$2 and active and removed_at is null',[user.organization_id,receiver])).rows[0]){await c.query('rollback');return send(res,400,{error:'Persona que recibió el pago inválida'});}
-        const r=await c.query('insert into agency_payments(organization_id,invoice_id,account_id,amount,received_on,reference,received_by_user_id) values($1,$2,$3,$4,$5,$6,$7) returning *',[user.organization_id,Number(invoiceId),Number(accountId),paid,receivedOn || new Date().toISOString().slice(0,10),reference || null,receiver]);
-        await c.query('commit');
-        await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'received_by_user_id'}]);
-        return send(res,201,{payment:r.rows[0]});
-      }catch(error){await c.query('rollback');throw error;}finally{c.release();}
-    }
-    if (url.pathname === '/api/agency/transfers' && req.method === 'GET') {
-      const user=await session(req); if(!roleCan(user,'transfers.manage')) return send(res,403,{error:'Sin permiso'});
-      const r=await db.query('select t.*,f.name as from_account_name,d.name as to_account_name,u.email as created_by_email from account_transfers t join bank_accounts f on f.id=t.from_account_id join bank_accounts d on d.id=t.to_account_id left join users u on u.id=t.created_by_user_id where t.organization_id=$1 order by t.transferred_on desc,t.id desc',[user.organization_id]);
-      await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'created_by_user_id',fallback:['created_by_email']}]);
-      return send(res,200,{transfers:r.rows});
-    }
-    if (url.pathname === '/api/agency/transfers' && req.method === 'POST') {
-      const user=await session(req); if(!roleCan(user,'transfers.manage')) return send(res,403,{error:'Sin permiso'});
-      const {fromAccountId,toAccountId,amount,transferredOn=null,reference=null,notes=null}=await body(req); const transferAmount=Number(amount);
-      if(!Number.isInteger(Number(fromAccountId)) || !Number.isInteger(Number(toAccountId)) || Number(fromAccountId)===Number(toAccountId) || !Number.isFinite(transferAmount) || transferAmount<=0) return send(res,400,{error:'Transferencia inválida'});
-      const c=await db.connect();
-      try{
-        await c.query('begin');
-        await auditContext(c,user,req);
-        // Lock both account rows so concurrent transfers cannot both pass the balance check.
-        const accounts=await c.query('select id,currency,balance from bank_accounts where organization_id=$1 and id=any($2::bigint[]) order by id for update',[user.organization_id,[Number(fromAccountId),Number(toAccountId)]]);
-        if(accounts.rows.length!==2 || accounts.rows[0].currency!==accounts.rows[1].currency){await c.query('rollback');return send(res,400,{error:'Las cuentas deben existir y usar la misma moneda'});}
-        const source=accounts.rows.find(account=>Number(account.id)===Number(fromAccountId));
-        if(Number(source.balance)<transferAmount){await c.query('rollback');return send(res,400,{error:'Saldo insuficiente en la cuenta de origen'});}
-        const r=await c.query('insert into account_transfers(organization_id,from_account_id,to_account_id,amount,transferred_on,reference,notes,created_by_user_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *',[user.organization_id,Number(fromAccountId),Number(toAccountId),transferAmount,transferredOn || new Date().toISOString().slice(0,10),typeof reference === 'string' ? reference.trim() || null : null,typeof notes === 'string' ? notes.trim() || null : null,user.id]);
-        await c.query('commit');
-        await attributeActors(db,user.organization_id,[{rows:r.rows,userId:'created_by_user_id'}]);
-        return send(res,201,{transfer:r.rows[0]});
-      }catch(error){await c.query('rollback');throw error;}finally{c.release();}
-    }
+    // /api/agency/payments y /api/agency/transfers los sirve finance-controls.js,
+    // que corre antes que este módulo en server.js (issue #13). Las copias legacy
+    // (billing.view/payments.manage/transfers.manage con validación más débil) se
+    // retiraron: un reordenamiento del server no debe cambiar el comportamiento
+    // en silencio.
     const orderMatch = url.pathname.match(/^\/api\/agency\/work-orders\/(\d+)$/);
     if (orderMatch && req.method === 'PATCH') {
       const user = await session(req); if (!roleCan(user,'work-orders.edit')) return send(res,403,{error:'Sin permiso'});

@@ -31,7 +31,7 @@ function between(start,end){
 const routes=[
  betweenRoutes("    if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {","    if (url.pathname === '/api/agency/accounts' && req.method === 'GET') {"),
  betweenRoutes("    if (url.pathname === '/api/agency/accounts' && req.method === 'POST') {","    if (url.pathname === '/api/agency/custodians' && req.method === 'GET') {"),
- betweenRoutes("    if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {","    if (url.pathname === '/api/agency/payments' && req.method === 'GET') {")
+ betweenRoutes("    if (url.pathname === '/api/agency/invoices' && req.method === 'POST') {","    const orderMatch = url.pathname.match(/^\\/api\\/agency\\/work-orders\\/(\\d+)$/);")
 ].join('\n');
 const helpers=between('const send =','const cookie =')+between('const parseCookies =','const id =')+between('const sessionCache =','async function session(req) {')+between('async function session(req) {','function security(');
 const pg=new PGlite();
