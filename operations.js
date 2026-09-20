@@ -85,6 +85,11 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
    }
    else fail('Método no permitido',405);
   } else if(salaryOverrideMatch) {
+   // El ajuste mensual es dato salarial: verlo o cambiarlo exige salary.view,
+   // la misma capacidad que protege la ficha del colaborador (más abajo) y el
+   // enmascarado de lectura. Sin esto, un rol con finance.view sin salary.view
+   // editaba (y leía) salarios que la previsión le muestra en null.
+   if(!roleCan(user,'salary.view'))fail(req.method==='GET'?'Tu rol no permite ver salarios':'Tu rol no permite editar salarios',403);
    const collaborator=(await c.query('select * from agency_collaborators where id=$1 and organization_id=$2 for update',[salaryOverrideMatch[1],org])).rows[0];
    if(!collaborator)fail('Colaborador no encontrado',404);
    await assertRecordAvailable(c,'agency_collaborators',collaborator);
