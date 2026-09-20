@@ -192,6 +192,7 @@ async function init() {
     await migration.query(await fs.readFile(path.join(root,'migrations/20260919_pipeline_stages.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260919_inventory_value_maintenance.sql'),'utf8'));
     await migration.query(await fs.readFile(path.join(root,'migrations/20260920_platform_coupon_shape.sql'),'utf8'));
+    await migration.query(await fs.readFile(path.join(root,'migrations/20260920_currency_widening.sql'),'utf8'));
     await applyPendingMigrations(migration, path.join(root,'migrations'), {firstRun: 'baseline'});
     await migration.query('commit');
   }catch(error){await migration.query('rollback');throw error;}finally{migration.release();}

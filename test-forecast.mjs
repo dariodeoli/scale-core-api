@@ -23,6 +23,9 @@ await pg.exec(await fs.readFile(new URL('./migrations/20260915_planned_expense_k
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_planned_expense_kind.sql',import.meta.url),'utf8'));
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_client_terms_end_date.sql',import.meta.url),'utf8'));
 await pg.exec(await fs.readFile(new URL('./migrations/20260915_salary_override_signed.sql',import.meta.url),'utf8'));
+// El widening de monedas es la última migración del arranque: se aplica después de
+// las repeticiones de arriba para no volver al check PYG|USD.
+await pg.exec(await fs.readFile(new URL('./migrations/20260920_currency_widening.sql',import.meta.url),'utf8'));
 await identitySchema(pg);
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
@@ -84,6 +87,12 @@ assert.equal((await call(`${overridePath}?month=2026-09`,'GET',{},fullFinance)).
 assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'2500',note:'Ajuste de finanzas'},fullFinance)).override.amount,'2500','finance with salary.view writes the adjustment');
 assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'1500',note:'Ajuste corregido'},fullFinance)).override.amount,'1500','the adjustment upserts');
 assert.equal((await call(`${overridePath}?month=2026-09`,'DELETE',{},fullFinance)).override,null,'finance with salary.view deletes the adjustment');
+// El salario mensual acepta las seis monedas (antes solo PYG|USD) y el resto se rechaza.
+const euroSalary=await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}`,'PATCH',{monthly_salary_amount:400000,monthly_salary_currency:'EUR'});
+assert.equal(euroSalary.status,200,'the monthly salary accepts EUR');
+assert.equal(euroSalary.collaborator.monthly_salary_currency,'EUR','the monthly salary stores EUR');
+assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}`,'PATCH',{monthly_salary_amount:400000,monthly_salary_currency:'GBP'})).status,400,'a seventh currency is rejected on the monthly salary');
+await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}`,'PATCH',{monthly_salary_amount:null,monthly_salary_currency:null});
 assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'1800',note:'Ajuste de administración'},{...user,role:'admin'})).override.amount,'1800','admin keeps editing salaries');
 assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'900',note:'Ajuste del dueño'})).override.amount,'900','owner keeps editing salaries');
 assert.equal((await call(`${overridePath}?month=2026-09`,'DELETE')).override,null);

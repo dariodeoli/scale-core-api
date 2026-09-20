@@ -8,7 +8,7 @@ import {suite} from './agency-suite.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-const migrationFiles=['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_client_links.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_billing_cadence_and_coupons.sql','20260915_client_terms_end_date.sql','20260915_planned_expense_kind.sql'];
+const migrationFiles=['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_client_links.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260914_client_commercial_lifecycle.sql','20260914_salary_forecast.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_billing_cadence_and_coupons.sql','20260915_client_terms_end_date.sql','20260915_planned_expense_kind.sql','20260920_currency_widening.sql'];
 for(const name of migrationFiles)await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
 const query=(sql,args=[])=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 const one=async(sql,args)=>(await query(sql,args)).rows[0];
@@ -198,5 +198,29 @@ assert.equal((await call(cadencePath,'PATCH',{...cadenceBody,cadence:'weekly'},u
 assert.equal((await call(cadencePath,'PATCH',{...cadenceBody,cadence:'interval',intervalMonths:25},user)).status,400,'intervals outside 1..24 are rejected');
 const cadenceExplicit=await call(cadencePath,'PATCH',{...cadenceBody,cadence:'monthly'},user);
 assert.deepEqual({cadence:cadenceExplicit.terms.cadence,interval:cadenceExplicit.terms.intervalMonths},{cadence:'monthly',interval:1},'an explicit cadence still changes and normalizes the interval');
+// Cierre de las seis monedas: términos comerciales y gastos planificados aceptan
+// EUR/BRL/ARS/MXN (la base y el validador estaban en PYG|USD) y rechazan el resto.
+const sixCurrencies=['EUR','BRL','ARS','MXN'];
+const euroClient=await one("insert into agency_clients(organization_id,name) values($1,'Monedas') returning id",[org]);
+const euroPath=`/api/agency/clients/${euroClient.id}/commercial-terms`;
+for(const currency of sixCurrencies){
+ const saved=await call(euroPath,'PATCH',{...cadenceBody,currency},user);
+ assert.equal(saved.status,200,`commercial terms accept ${currency}`);
+ assert.equal(saved.terms.currency,currency,`commercial terms store ${currency}`);
+ assert.equal((await query('select currency from agency_client_commercial_terms where organization_id=$1 and client_id=$2 and effective_until is null',[org,euroClient.id])).rows[0].currency,currency,`the ${currency} term is persisted`);
+}
+assert.equal((await call(euroPath,'PATCH',{...cadenceBody,currency:'GBP'},user)).status,400,'a seventh currency is rejected on commercial terms');
+assert.equal((await call(euroPath,'PATCH',{...cadenceBody,currency:'eur'},user)).status,400,'currencies are uppercase codes');
+const expenseMonth='2026-09';
+for(const currency of sixCurrencies){
+ const created=await call('/api/agency/planned-expenses','POST',{cadence:'monthly',effectiveMonth:expenseMonth,category:`Gasto ${currency}`,amount:'1500',currency,note:null,kind:'variable'},user);
+ assert.equal(created.status,201,`planned expenses accept ${currency}`);
+ assert.equal(created.expense.currency,currency,`planned expenses store ${currency}`);
+}
+assert.equal((await call('/api/agency/planned-expenses','POST',{cadence:'monthly',effectiveMonth:expenseMonth,category:'Gasto GBP',amount:'1500',currency:'GBP',note:null,kind:'variable'},user)).status,400,'a seventh currency is rejected on planned expenses');
+const expenseList=await call(`/api/agency/planned-expenses?month=${expenseMonth}`, 'GET', {}, user);
+for(const currency of sixCurrencies)assert.ok(expenseList.records.some(row=>row.currency===currency),`the ${currency} expense is listed`);
+assert.ok(expenseList.totals.every(total=>sixCurrencies.concat(['PYG','USD']).includes(total.currency)),'totals stay inside the six currencies');
+await query('delete from agency_planned_expenses where organization_id=$1 and category like $2',[org,'Gasto %']);
 console.log(`PASS reports: ${n} real handler calls; migration repeatability, observation coverage, local/leap boundaries, snapshots, lifecycle/archive, roles/tenant/version, numeric currencies, dated reversals, lifecycle terms served end to end, append-only ficha amendments and preserved billing cadence`);
 await pg.close();
