@@ -7,7 +7,7 @@
     "start": "node server.js",
     "test:secure-deletion": "node test-secure-deletion.mjs",
     "test:billing": "node test-subscription-billing.mjs && node test-pagaya-subscription-handoff.mjs",
-    "test:release": "node test-suite.mjs && node test-operations.mjs && node test-inventory-value.mjs && node --experimental-vm-modules test-auth.mjs && node test-forecast.mjs",
+    "test:release": "node test-suite.mjs && node test-commercial-lifecycle.mjs && node test-operations.mjs && node test-inventory-value.mjs && node --experimental-vm-modules test-auth.mjs && node test-forecast.mjs",
     "test:migrations-runner": "node test-migrations-runner.mjs"
   },
   "dependencies": {
