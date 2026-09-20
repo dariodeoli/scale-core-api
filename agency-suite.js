@@ -1,9 +1,9 @@
 import {currencies} from './currencies.js';
-import {profilePhoto} from './media-policy.js';
+import {zoneTodaySql} from './business-time.js';
 import {patchUrgency} from './urgency.js';
 import {companyCurrency} from './forecast.js';
 import crypto from 'node:crypto';
-import {fail,text,id,optId,option,amount,date,email,phone,serial,link,items,owned} from './suite-validation.js';
+import {fail,text,id,optId,option,amount,date,email,phone,link,items,owned} from './suite-validation.js';
 import {budgetDocument,renderBudgetPdf} from './budget-document.js';
 import {ensureClientApproval} from './content-review.js';
 import {budgetSections} from './budget-sections.js';
@@ -51,7 +51,7 @@ async function batchArchive(c,user,org,kind,payload){
 }
 export async function suite({req,res,url,db,session,body,send,sendInvitation,sendAccessGranted}){
  const publicMatch=url.pathname.match(/^\/p\/([A-Za-z0-9_-]{16,128})(?:\/(pdf|respond))?$/);
- const m=url.pathname.match(/^\/api\/agency\/(leads|inventory|plans|activity|dashboard|settings|exchange-rates|members|clients|projects|work-orders|budgets)(?:\/(\d+))?(?:\/(convert|resend|approve|publish|pdf|share|revoke|invoice|batch))?$/);
+ const m=url.pathname.match(/^\/api\/agency\/(leads|plans|activity|dashboard|settings|exchange-rates|members|clients|projects|work-orders|budgets)(?:\/(\d+))?(?:\/(convert|resend|approve|publish|pdf|share|revoke|invoice|batch))?$/);
  if(!publicMatch&&(!m||['members','clients','projects','work-orders','budgets'].includes(m[1])&&!m[2]&&m[3]!=='batch'))return false;
  let c,transaction=false,grantedNotify=null;
  try{
@@ -76,7 +76,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation,sen
    else{res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(html);}return true;
   }
   const org=user.organization_id,kind=m[1],key=m[2],action=m[3];
-  const capability=kind==='members'?'members.manage':kind==='settings'?'settings.manage':kind==='activity'?'activity.view':kind==='inventory'?req.method==='GET'?'inventory.view':'inventory.manage':['clients','projects','work-orders'].includes(kind)?req.method==='GET'?null:kind==='clients'?'clients.manage':kind==='projects'?'projects.edit':action?'work-orders.manage':'work-orders.edit':['plans','budgets'].includes(kind)?'budgets.manage':'commercial.manage';
+  const capability=kind==='members'?'members.manage':kind==='settings'?'settings.manage':kind==='activity'?'activity.view':['clients','projects','work-orders'].includes(kind)?req.method==='GET'?null:kind==='clients'?'clients.manage':kind==='projects'?'projects.edit':action?'work-orders.manage':'work-orders.edit':['plans','budgets'].includes(kind)?'budgets.manage':'commercial.manage';
   if(capability&&!roleCan(user,capability))fail('Tu rol no permite esta operación',403);
   if(kind==='dashboard'&&!roleCan(user,'finance.view'))fail('Tu rol no permite ver saldos',403);
   await c.query('begin');transaction=true;await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
@@ -141,8 +141,8 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation,sen
      result={...result,record,...(kind==='work-orders'?{workOrder:record}:{}),assignees};
     }
    }else fail('Método no permitido',405);
-  }else if(kind==='plans'||kind==='inventory'||kind==='leads'){
-   const table={plans:'agency_plans',inventory:'agency_inventory',leads:'agency_leads'}[kind];
+  }else if(kind==='plans'||kind==='leads'){
+   const table={plans:'agency_plans',leads:'agency_leads'}[kind];
    if(req.method==='GET')result={records:(await c.query(`select r.* from ${table} r where organization_id=$1 and ${visibleRecord('r',kind)} order by id desc`,[org])).rows};
    else if(kind==='leads'&&action==='convert'&&key&&req.method==='POST'){const lead=await owned(c,table,key,org);if(lead.client_id)result={clientId:lead.client_id};else{const won=wonLeadStage(await ensurePipelineStages(c,org));const client=(await c.query('insert into agency_clients(organization_id,name,email,phone,notes) values($1,$2,$3,$4,$5) returning id',[org,lead.name,lead.email,lead.phone,lead.notes])).rows[0];await c.query('update agency_leads set stage=$1,probability=100,client_id=$2,updated_at=now() where id=$3',[won,client.id,key]);result={clientId:client.id};}}
    else if((req.method==='POST'&&!key)||(req.method==='PATCH'&&key&&!action)){
@@ -150,7 +150,6 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation,sen
     if(!key&&b.currency===undefined)b.currency=await companyCurrency(c,org);
     let columns,values;
     if(kind==='plans'){columns=['name','currency','items','notes','active'];values=[name,option(b.currency,currencies),JSON.stringify(items(b.items)),text(b.notes||''),b.active!==false];}
-    if(kind==='inventory'){const custodian=optId(b.custodian_user_id);await member(c,custodian,org);const photo=Object.hasOwn(b,'photo_url')?await profilePhoto(b.photo_url):old.photo_url||null;columns=['name','category','serial_number','custodian_user_id','value','currency','status','acquired_on','notes','photo_url'];values=[name,text(b.category||'',80),serial(b.serial_number||''),custodian,amount(b.value||0),option(b.currency,currencies),option(b.status||'available',['available','in_use','maintenance','retired']),date(b.acquired_on),text(b.notes||''),photo];}
     if(kind==='leads'){
      // Stages are editable per company: only an active stage of this tenant is
      // accepted, while an untouched historical slug stays readable on PATCH.

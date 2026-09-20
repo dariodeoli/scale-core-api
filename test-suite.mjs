@@ -16,6 +16,8 @@ await pg.exec(await fs.readFile('migrations/20260911_drive_links.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_project_assignees.sql','utf8'));
 for(const file of ['20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260910_work_checklists.sql','20260910_notifications.sql','20260913_ruc_collaboration.sql','20260914_production_traceability.sql','20260915_planned_expense_kind.sql','20260915_inventory_photos.sql','20260915_salary_override_signed.sql','20260919_pipeline_stages.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
+const serverSource=await fs.readFile(new URL('./server.js',import.meta.url),'utf8');
+assert(serverSource.indexOf('inventoryReservations({')<serverSource.indexOf('suite({'),'inventory routes are handled before the suite in server.js');
 const other=(await query("insert into organizations(slug,name) values('suite-other','Other') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('suite-owner@example.invalid','unused') returning id")).rows[0].id;
 const viewer=(await query("insert into users(email,password_hash) values('suite-viewer@example.invalid','unused') returning id")).rows[0].id;
@@ -102,7 +104,11 @@ assert.equal(convertedStage.probability,100);
 assert.equal((await call(`/api/agency/pipeline-stages/${wonStage.id}`,'PATCH',{label:'Ajeno'},{...stageUser,organization_id:org})).status,404,'cross-tenant stage edits are refused');
 assert.equal((await call('/api/agency/pipeline-stages','GET',{}, {...stageUser,role:'viewer'})).status,403);
 assert.equal((await call('/api/agency/pipeline-stages','POST',{label:'Viewer'}, {...stageUser,role:'viewer'})).status,403);
-r=await call('/api/agency/inventory','POST',{name:'Camera',value:2000,currency:'USD'});assert.equal(r.status,201);
+// El inventario se escribe en inventory-reservations.js: el suite ya no reclama
+// esas rutas (si lo hiciera, volvería a guardar la forma vieja sin category_id,
+// ubicación ni valor de compra). Acá solo se necesita una fila para el tablero.
+assert.equal(await suite({req:{method:'POST',socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test/api/agency/inventory'),send:()=>{}}),false,'the suite never handles inventory routes');
+await query("insert into agency_inventory(organization_id,name,value,currency) values($1,'Camera',2000,'USD')",[org]);
 assert.equal((await call('/api/agency/plans','POST',{name:'Plan',items:[{description:'Video',quantity:2,unitPrice:100}],currency:'USD'})).status,201);
 assert.equal((await call('/api/agency/plans','POST',{name:'Invalid',items:[]})).status,400);
 assert.equal((await call('/api/agency/exchange-rates','POST',{rate_date:'2026-09-08',usd_to_pyg:7500})).status,200);
