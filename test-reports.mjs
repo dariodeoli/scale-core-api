@@ -8,7 +8,8 @@ import {suite} from './agency-suite.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_client_links.sql','20260910_client_lifecycle.sql'])await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
+const migrationFiles=['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_client_links.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_billing_cadence_and_coupons.sql','20260915_client_terms_end_date.sql','20260915_planned_expense_kind.sql'];
+for(const name of migrationFiles)await pg.exec(await fs.readFile(new URL(`./migrations/${name}`,import.meta.url),'utf8'));
 const query=(sql,args=[])=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
 const one=async(sql,args)=>(await query(sql,args)).rows[0];
 const org=(await one("select id from organizations where slug='scale'")).id;
@@ -160,5 +161,42 @@ assert.equal(zero.invoiceCount,0);assert.equal(zero.billedClients,0);assert.equa
 const patched=await call(`/api/agency/clients/${legacy}`,'PATCH',{name:'Existing client',lifecycle_status:'paused'},user,suite);
 assert.equal(patched.status,200);
 const last=await one('select * from agency_client_reporting_events where client_id=$1 order by event_at desc,id desc limit 1',[legacy]);assert.equal(last.lifecycle_status,'paused');assert.equal(last.active,false);
-console.log(`PASS reports: ${n} real handler calls; migration repeatability, observation coverage, local/leap boundaries, snapshots, lifecycle/archive, roles/tenant/version, numeric currencies and dated reversals`);
+// --- Términos comerciales y ciclo comercial -------------------------------------
+const termsPlan=await one("insert into agency_plans(organization_id,name,currency,items) values($1,'Plan ficha','PYG','[]'::jsonb) returning id",[org]);
+const termsClient=await one("insert into agency_clients(organization_id,name) values($1,'Términos') returning id",[org]);
+const termsPath=`/api/agency/clients/${termsClient.id}/commercial-terms`;
+// Una fila del ciclo comercial (plan_id null, snapshot del plan) se sirve con el
+// contrato de la ficha: nombre del plan del snapshot y monto neto de descuentos.
+await query("insert into agency_client_commercial_terms(organization_id,client_id,activation_date,effective_from,plan_name,plan_version,monthly_price,currency,discount_type,discount_value,starts_on) values($1,$2,'2026-01-01','2026-01-01','Plan ciclo','v3',100000,'PYG','percent',10,'2026-01-01')",[org,termsClient.id]);
+const cycleRead=await call(termsPath,'GET',{},user);
+assert.equal(cycleRead.status,200);
+assert.equal(cycleRead.terms?.planName,'Plan ciclo','the lifecycle snapshot row is served instead of null');
+assert.deepEqual({planId:cycleRead.terms.planId,planName:cycleRead.terms.planName,recurringAmount:cycleRead.terms.recurringAmount,commissionMode:cycleRead.terms.commissionMode,startsOn:cycleRead.terms.startsOn,cadence:cycleRead.terms.cadence},{planId:'',planName:'Plan ciclo',recurringAmount:90000,commissionMode:'none',startsOn:'2026-01-01',cadence:'monthly'},'the lifecycle snapshot row is served with its plan snapshot and net recurring amount');
+// El mismo período no se reescribe: la enmienda necesita una fecha posterior.
+const cycleRefused=await call(termsPath,'PATCH',{planId:String(termsPlan.id),recurringAmount:'130000',currency:'PYG',startsOn:'2026-01-01',endsOn:null,invoiceRequired:true,commissionRecipientId:null,commissionMode:'none',commissionValue:null},user);
+assert.equal(cycleRefused.status,409,'a same-day edit of a cycle term is refused, never rewritten');
+assert.match(cycleRefused.error,/ciclo comercial/,'the refusal explains where the term comes from');
+const untouched=(await query('select plan_id,recurring_amount,monthly_price::text as monthly_price,plan_name,version from agency_client_commercial_terms where organization_id=$1 and client_id=$2',[org,termsClient.id])).rows;
+assert.deepEqual(untouched,[{plan_id:null,recurring_amount:null,monthly_price:'100000.00',plan_name:'Plan ciclo',version:1}],'the refused edit never touched the cycle row');
+// Con una fecha posterior, la ficha cierra el término del ciclo (version+1) y anexa el nuevo.
+const cycleEdit=await call(termsPath,'PATCH',{planId:String(termsPlan.id),recurringAmount:'120000',currency:'PYG',startsOn:'2026-07-01',endsOn:null,invoiceRequired:true,commissionRecipientId:null,commissionMode:'none',commissionValue:null},user);
+assert.equal(cycleEdit.status,200);assert.equal(cycleEdit.terms.recurringAmount,120000);assert.equal(cycleEdit.terms.planName,'Plan ficha');
+const cycleRows=(await query('select id,effective_until::text as effective_until,ends_on::text as ends_on,version,plan_name,monthly_price::text as monthly_price from agency_client_commercial_terms where organization_id=$1 and client_id=$2 order by id',[org,termsClient.id])).rows;
+assert.equal(cycleRows.length,2,'a ficha edit of a cycle term appends instead of rewriting it');
+assert.deepEqual({until:cycleRows[0].effective_until,ends:cycleRows[0].ends_on,version:cycleRows[0].version,plan:cycleRows[0].plan_name,price:cycleRows[0].monthly_price},{until:'2026-06-30',ends:'2026-06-30',version:2,plan:'Plan ciclo',price:'100000.00'},'the closed cycle row keeps its snapshot and bumps its version');
+assert.equal(cycleRows[1].effective_until,null,'the appended term stays open');
+// La cadencia y el intervalo se conservan cuando el cuerpo no los manda.
+const cadenceClient=await one("insert into agency_clients(organization_id,name) values($1,'Cadencia') returning id",[org]);
+const cadencePath=`/api/agency/clients/${cadenceClient.id}/commercial-terms`;
+const cadenceBody={planId:String(termsPlan.id),recurringAmount:'500000',currency:'PYG',startsOn:'2026-02-01',endsOn:null,invoiceRequired:false,commissionRecipientId:null,commissionMode:'none',commissionValue:null};
+const cadenceFirst=await call(cadencePath,'PATCH',{...cadenceBody,cadence:'interval',intervalMonths:6},user);
+assert.deepEqual({cadence:cadenceFirst.terms.cadence,interval:cadenceFirst.terms.intervalMonths},{cadence:'interval',interval:6},'an interval cadence is stored');
+const cadenceSecond=await call(cadencePath,'PATCH',{...cadenceBody,recurringAmount:'600000'},user);
+assert.deepEqual({cadence:cadenceSecond.terms.cadence,interval:cadenceSecond.terms.intervalMonths},{cadence:'interval',interval:6},'an absent cadence keeps the stored billing rhythm');
+assert.equal((await query('select cadence,interval_months from agency_client_commercial_terms where organization_id=$1 and client_id=$2 and effective_until is null',[org,cadenceClient.id])).rows[0].interval_months,6,'the stored interval survives a second edit');
+assert.equal((await call(cadencePath,'PATCH',{...cadenceBody,cadence:'weekly'},user)).status,400,'unknown cadences are rejected');
+assert.equal((await call(cadencePath,'PATCH',{...cadenceBody,cadence:'interval',intervalMonths:25},user)).status,400,'intervals outside 1..24 are rejected');
+const cadenceExplicit=await call(cadencePath,'PATCH',{...cadenceBody,cadence:'monthly'},user);
+assert.deepEqual({cadence:cadenceExplicit.terms.cadence,interval:cadenceExplicit.terms.intervalMonths},{cadence:'monthly',interval:1},'an explicit cadence still changes and normalizes the interval');
+console.log(`PASS reports: ${n} real handler calls; migration repeatability, observation coverage, local/leap boundaries, snapshots, lifecycle/archive, roles/tenant/version, numeric currencies, dated reversals, lifecycle terms served end to end, append-only ficha amendments and preserved billing cadence`);
 await pg.close();

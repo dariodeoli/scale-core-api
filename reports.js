@@ -1,4 +1,5 @@
 import {forecastMonth,wholeMoney} from './forecast.js';
+import {option} from './suite-validation.js';
 import {roleCan} from './permissions.js';
 
 const timezone='America/Asuncion';
@@ -107,10 +108,16 @@ async function commercialTerms(db,org,id) {
  const client=(await db.query(`select c.id::text,exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='clients' and a.record_id=c.id) archived
   from agency_clients c where c.organization_id=$1 and c.id=$2`,[org,id])).rows[0];
  if(!client)fail('Cliente no encontrado',404);
-  const terms=(await db.query(`select t.client_id::text as "clientId",t.plan_id::text as "planId",p.name as "planName",t.recurring_amount::text as "recurringAmount",t.currency,
+  // Rows written by the commercial lifecycle carry the plan snapshot instead of a
+  // catalog plan (plan_id null, plan_name/plan_version/monthly_price set). They are
+  // served with the same contract: the plan name from the snapshot, no catalog id,
+  // and the recurring amount net of discounts (the same projection the forecast and
+  // the control center use).
+  const terms=(await db.query(`select t.client_id::text as "clientId",coalesce(t.plan_id::text,'') as "planId",coalesce(t.plan_name,p.name,'') as "planName",
+  coalesce(t.recurring_amount,round(case when t.discount_type='percent' then t.monthly_price*(1-t.discount_value/100) when t.discount_type='fixed' then greatest(t.monthly_price-t.discount_value,0) else t.monthly_price end)::bigint)::text as "recurringAmount",t.currency,
   t.starts_on::text as "startsOn",t.ends_on::text as "endsOn",t.cadence,t.interval_months as "intervalMonths",t.invoice_required as "invoiceRequired",t.commission_recipient_id::text as "commissionRecipientId",c.full_name as "commissionRecipientName",
-  t.commission_mode as "commissionMode",t.commission_value::text as "commissionValue",t.updated_at as "updatedAt"
-  from agency_client_commercial_terms t join agency_plans p on p.organization_id=t.organization_id and p.id=t.plan_id
+  coalesce(t.commission_mode,'none') as "commissionMode",t.commission_value::text as "commissionValue",t.updated_at as "updatedAt"
+  from agency_client_commercial_terms t left join agency_plans p on p.organization_id=t.organization_id and p.id=t.plan_id
   left join agency_collaborators c on c.organization_id=t.organization_id and c.id=t.commission_recipient_id
   where t.organization_id=$1 and t.client_id=$2 and t.effective_until is null order by t.id desc limit 1`,[org,id])).rows[0]||null;
  const plans=(await db.query(`select p.id::text,p.name,p.currency from agency_plans p where p.organization_id=$1 and p.active
@@ -125,7 +132,7 @@ async function ensureCustomPlan(db,org) {
  if(existing)return existing.id;
  return (await db.query(`insert into agency_plans(organization_id,name,currency,items,notes) values($1,'Plan personalizado','PYG','[]','Plan personalizado con precio manual.') returning id`,[org])).rows[0].id;
 }
-async function validateTerms(db,org,input) {
+async function validateTerms(db,org,input,current=null) {
  validateFields(input,termFields,'condiciones comerciales');
  if(termFields.filter(field=>!['cadence','intervalMonths','endsOn'].includes(field)).some(field=>!Object.hasOwn(input,field)))fail('Completá todas las condiciones comerciales');
  const planInput=String(input.planId||'');
@@ -135,8 +142,10 @@ async function validateTerms(db,org,input) {
  const startsOn=requiredDate(input.startsOn,'Fecha de inicio');
  const endsOn=optionalDate(input.endsOn,'Fecha de fin');
  if(endsOn&&endsOn<startsOn)fail('La fecha de fin no puede ser anterior al inicio');
- const cadence=['monthly','interval','once'].includes(input.cadence)?input.cadence:'monthly';
- const rawInterval=cadence==='interval'?Number(input.intervalMonths):1;
+ const hasCadence=Object.hasOwn(input,'cadence')&&input.cadence!==undefined;
+ const cadence=hasCadence?option(input.cadence,['monthly','interval','once']):(current?.cadence??'monthly');
+ const hasInterval=Object.hasOwn(input,'intervalMonths')&&input.intervalMonths!==undefined;
+ const rawInterval=cadence==='interval'?Number(hasInterval?input.intervalMonths:current?.interval_months??1):1;
  const intervalMonths=Number.isInteger(rawInterval)&&rawInterval>=1&&rawInterval<=24?rawInterval:fail('El intervalo debe ser entre 1 y 24 meses');
  if(typeof input.invoiceRequired!=='boolean')fail('invoiceRequired debe ser booleano');
  const commissionMode=['percentage','fixed','none'].includes(input.commissionMode)?input.commissionMode:fail('Modo de comisión inválido');
@@ -180,6 +189,7 @@ async function validateExpense(input) {
  }
  return {cadence,effectiveMonth,category:input.category.trim(),amount:wholeAmount(input.amount,'El importe'),currency:input.currency,note:input.note?.trim()||null,kind};
 }
+const insertCommercialTerm=(connection,organization,clientId,value)=>connection.query(`insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,ends_on,invoice_required,commission_recipient_id,commission_mode,commission_value,cadence,interval_months) values($1,$2,$3,$4,$5,$6::date,$7::date,$8,$9,$10,$11,$12,$13)`,[organization,clientId,value.planId,value.recurringAmount,value.currency,value.startsOn,value.endsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue,value.cadence,value.intervalMonths]);
 export async function reports({req,res,url,db,session,body,send}) {
  const aggregate=url.pathname==='/api/agency/reports',match=url.pathname.match(/^\/api\/agency\/clients\/([1-9]\d*)\/reporting$/),termsMatch=url.pathname.match(/^\/api\/agency\/clients\/([1-9]\d*)\/commercial-terms$/),expenseMatch=url.pathname.match(/^\/api\/agency\/planned-expenses(?:\/([1-9]\d*))?$/);
  if(!aggregate&&!match&&!termsMatch&&!expenseMatch)return false;
@@ -221,13 +231,24 @@ export async function reports({req,res,url,db,session,body,send}) {
    await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket?.remoteAddress||'']);
    const client=(await c.query(`select c.id from agency_clients c where c.organization_id=$1 and c.id=$2 and not exists(select 1 from agency_archived_records a where a.organization_id=c.organization_id and a.kind='clients' and a.record_id=c.id) for update`,[user.organization_id,id])).rows[0];
    if(!client)fail('Cliente no disponible',404);
-   const value=await validateTerms(c,user.organization_id,await body(req));
-   // The terms contract keeps one effective row per client. The lifecycle
-   // contract stores append-only history, so reconcile both by writing the
-   // open row instead of relying on a full-table unique constraint.
-   const open=(await c.query('select id from agency_client_commercial_terms where organization_id=$1 and client_id=$2 and effective_until is null for update',[user.organization_id,id])).rows[0];
-    if(open)await c.query(`update agency_client_commercial_terms set plan_id=$3,recurring_amount=$4,currency=$5,starts_on=$6::date,ends_on=$7::date,invoice_required=$8,commission_recipient_id=$9,commission_mode=$10,commission_value=$11,cadence=$12,interval_months=$13,updated_at=clock_timestamp() where organization_id=$1 and client_id=$2 and effective_until is null`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.endsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue,value.cadence,value.intervalMonths]);
-    else await c.query(`insert into agency_client_commercial_terms(organization_id,client_id,plan_id,recurring_amount,currency,starts_on,ends_on,invoice_required,commission_recipient_id,commission_mode,commission_value,cadence,interval_months) values($1,$2,$3,$4,$5,$6::date,$7::date,$8,$9,$10,$11,$12,$13)`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.endsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue,value.cadence,value.intervalMonths]);
+   const open=(await c.query('select id,plan_name,monthly_price,effective_from,starts_on,version,cadence,interval_months from agency_client_commercial_terms where organization_id=$1 and client_id=$2 and effective_until is null for update',[user.organization_id,id])).rows[0];
+   const value=await validateTerms(c,user.organization_id,await body(req),open);
+   // The terms contract keeps one effective row per client. Rows written by the
+   // commercial lifecycle carry the plan snapshot and belong to its append-only
+   // history: an edit from the ficha closes the open term (version+1, the same
+   // amendment rule) and appends the new one, so the cycle's optimistic version
+   // keeps moving. Rows written by the terms contract itself have no snapshot and
+   // are edited in place, the reconciliation the 20260915 migration documents.
+   if(open&&(open.plan_name!==null||open.monthly_price!==null)){
+    const priorStart=open.effective_from?dateString(open.effective_from).slice(0,10):open.starts_on?dateString(open.starts_on).slice(0,10):null;
+    if(priorStart&&!(value.startsOn>priorStart))fail(`El término vigente pertenece al ciclo comercial: la enmienda debe empezar después del ${priorStart}`,409);
+    const closedOn=new Date(`${value.startsOn}T12:00:00Z`);closedOn.setUTCDate(closedOn.getUTCDate()-1);
+    const effectiveUntil=closedOn.toISOString().slice(0,10);
+    const closed=(await c.query('update agency_client_commercial_terms set effective_until=$3::date,ends_on=$3::date,closed_at=now(),version=version+1,updated_at=clock_timestamp() where organization_id=$1 and client_id=$2 and id=$4 and effective_until is null and version=$5 returning id',[user.organization_id,id,effectiveUntil,open.id,open.version])).rows[0];
+    if(!closed)fail('El término comercial cambió. Recargá antes de guardar.',409);
+    await insertCommercialTerm(c,user.organization_id,id,value);
+   }else if(open)await c.query(`update agency_client_commercial_terms set plan_id=$3,recurring_amount=$4,currency=$5,starts_on=$6::date,ends_on=$7::date,invoice_required=$8,commission_recipient_id=$9,commission_mode=$10,commission_value=$11,cadence=$12,interval_months=$13,updated_at=clock_timestamp() where organization_id=$1 and client_id=$2 and id=$14 and effective_until is null`,[user.organization_id,id,value.planId,value.recurringAmount,value.currency,value.startsOn,value.endsOn,value.invoiceRequired,value.recipientId,value.commissionMode,value.commissionValue,value.cadence,value.intervalMonths,open.id]);
+    else await insertCommercialTerm(c,user.organization_id,id,value);
    const result=await commercialTerms(c,user.organization_id,id);await c.query('commit');c.release();c=null;send(res,200,result);return true;
   }
   if(req.method==='GET'){send(res,200,await metadata(db,user.organization_id,id));return true;}
@@ -254,7 +275,13 @@ export async function reports({req,res,url,db,session,body,send}) {
   if(input.relationshipStartedOn&&(await c.query("select $1::date>(clock_timestamp() at time zone 'America/Asuncion')::date future",[input.relationshipStartedOn])).rows[0].future)fail('La fecha de inicio no puede ser futura');
   await c.query('update agency_clients set customer_kind=$3,service_plan_id=$4,relationship_started_on=$5,updated_at=clock_timestamp() where organization_id=$1 and id=$2',[user.organization_id,id,input.customerKind??row.customer_kind,Object.hasOwn(input,'servicePlanId')?input.servicePlanId:row.service_plan_id,Object.hasOwn(input,'relationshipStartedOn')?input.relationshipStartedOn:row.relationship_started_on]);
   const result=await metadata(c,user.organization_id,id);await c.query('commit');send(res,200,result);
- }catch(error){if(c)await c.query('rollback');send(res,error.status||500,{error:error.status?error.message:'No se pudo completar el informe'});}
+ }catch(error){
+  if(c)await c.query('rollback');
+  // A concurrent close holds the open term (the immutability guard and the open-row
+  // unique index raise here too), so those conflicts answer 409 instead of 500.
+  const conflict=['23505','23514','40001','40P01'].includes(error.code);
+  send(res,conflict?409:error.status||500,{error:conflict?'Los términos comerciales cambiaron. Recargá antes de guardar.':error.status?error.message:'No se pudo completar el informe'});
+ }
  finally{c?.release();}
  return true;
 }
