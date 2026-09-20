@@ -37,10 +37,16 @@ assert.equal((await call('','GET',{},null)).status,401);
 let result=await call();assert.equal(result.version,'0');assert.deepEqual(result.items,[]);assert.equal(result.total,0);
 assert.equal(result.headers['Cache-Control'],'no-store');
 assert.equal((await query('select * from agency_work_checklists')).rows.length,0,'GET never seeds a list');
+// Lectura con capacidad propia (issue #18): la audiencia son los roles que
+// trabajan la pieza; inventario ya no la cubre por accidente.
+for(const role of ['production','editor','collaborator'])assert.equal((await call('','GET',{}, {...user,role})).status,200,`${role} lee el checklist`);
 for(const role of ['viewer','finance','sales']){
- assert.equal((await call('','GET',{}, {...user,role})).status,200);
- for(const [suffix,method]of [['/items','POST'],['/items/1','PATCH'],['/items/1','DELETE']])assert.equal((await call(suffix,method,{text:'No',expected_version:'0'}, {...user,role})).status,403);
+ assert.equal((await call('','GET',{}, {...user,role})).status,403,`${role} ya no hereda el checklist de inventory.view`);
+ for(const [suffix,method]of [['/items','POST'],['/items/1','PATCH'],['/items/1','DELETE']])assert.equal((await call(suffix,method,{text:'No',expected_version:'0'}, {...user,role})).status,403,`${role} no escribe el checklist`);
 }
+assert.equal((await call('','GET',{}, {...user,role:'production',capabilities:{'inventory.view':false}})).status,200,'revocar inventario no quita el checklist');
+assert.equal((await call('','GET',{}, {...user,role:'production',capabilities:{'work-checklists.view':false}})).status,403,'el checklist tiene su propia capacidad');
+assert.equal((await call('','GET',{}, {...user,role:'production',capabilities:{'work-checklists.view':false,'inventory.view':true}})).status,403,'inventario no reabre el checklist');
 assert.equal((await call('','GET',{}, {...user,organization_id:other})).status,404);
 for(const payload of [{text:'No version'},{text:'',expected_version:'0'},{text:' '.repeat(3),expected_version:'0'},
  {text:'x'.repeat(501),expected_version:'0'},{text:'Text',expected_version:-1},{text:'Text',expected_version:'0',completed:true},
