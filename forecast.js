@@ -1,9 +1,9 @@
+import {fail} from './suite-validation.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {roleCan} from './permissions.js';
 
 export const forecastRoles = ['owner','admin','finance'];
 export const forecastTimezone = 'America/Asuncion';
-const fail = (message,status=400) => { throw Object.assign(new Error(message),{status}); };
 
 // Also used by creation routes: the caller must pass its authenticated tenant.
 export async function companyCurrency(db,organizationId) {

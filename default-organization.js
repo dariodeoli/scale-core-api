@@ -1,3 +1,4 @@
+import {fail} from './suite-validation.js';
 const eligible = `o.active and m.active and m.removed_at is null and not u.is_demo_guest
  and o.demo_owner_user_id is null and o.demo_source_id is null and o.slug<>'scale-demo-controles-20260908'`;
 
@@ -17,9 +18,7 @@ export async function defaultOrganizationId(db,userId) {
  return row?.is_default?String(row.organization_id):null;
 }
 
-export async function setDefaultOrganization(db,user,payload) {
- const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
- if(user.demo_owner_user_id||user.demo_source_id||user.organization_slug==='scale-demo-controles-20260908')fail('Elegí una empresa real para cambiar esta preferencia',403);
+export async function setDefaultOrganization(db,user,payload) { if(user.demo_owner_user_id||user.demo_source_id||user.organization_slug==='scale-demo-controles-20260908')fail('Elegí una empresa real para cambiar esta preferencia',403);
  if(!payload||Array.isArray(payload)||typeof payload!=='object'||Object.keys(payload).some(k=>k!=='organizationId')||!Object.hasOwn(payload,'organizationId'))fail('Indicá la empresa predeterminada');
  const value=payload.organizationId;
  if(value!==null&&(!['number','string'].includes(typeof value)||typeof value==='number'&&!Number.isSafeInteger(value)||! /^[1-9]\d{0,18}$/.test(String(value))||BigInt(value)>9223372036854775807n))fail('Empresa inválida');
