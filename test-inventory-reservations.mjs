@@ -86,6 +86,8 @@ const batchCard=await call(`inventory/${card}`);assert.equal(batchCard.record.la
 assert.equal((await call(`inventory/${micId}`)).record.storage_shelf,'Estante Lote','the second selected item moved too');
 assert.equal((await call('inventory/batch','POST',{ids:[card,'999999'],change:{verify:true}})).status,404,'every id must belong to the company');
 assert.equal((await call('inventory/batch','POST',{ids:[card],change:{}})).status,400,'a batch needs something to change');
+const oversizedBatch=await call('inventory/batch','POST',{ids:Array.from({length:51},(_,index)=>String(index+1)),change:{verify:true}});
+assert.equal(oversizedBatch.status,400);assert.match(oversizedBatch.error,/1 y 50/,'the batch cap is explicit for the UI');
 assert.equal((await call('inventory/batch','POST',{ids:[card],change:{verify:true}},viewer)).status,403,'batch actions require inventory.manage');
 assert.equal((await call(`inventory-categories/${category.id}`,'PATCH',{name:'Memorias'})).status,200);
 assert.equal((await call(`inventory/${card}`)).record.category,'Memorias');
@@ -131,6 +133,10 @@ assert.equal((await call(`inventory-reservations/${row.id}/checkout`,'POST',{},p
 const current=(await call(`inventory/${card}`)).record;
 assert.equal(current.status,'in_use');assert.equal(current.location_type,'checked_out');assert.equal(String(current.current_custodian_user_id),String(producer.id));
 assert.equal((await call(`inventory/${card}`,'PATCH',{storage_shelf:'Invented move'})).status,409);
+const shelfWhileCheckedOut=(await call(`inventory/${card}`)).record.storage_shelf;
+const batchWhileCheckedOut=await call('inventory/batch','POST',{ids:[card],change:{location:{storage_shelf:'Invented batch move'}}},management);
+assert.equal(batchWhileCheckedOut.status,409,'a checked-out unit cannot be relocated in a batch either');
+assert.equal((await call(`inventory/${card}`)).record.storage_shelf,shelfWhileCheckedOut,'the blocked batch leaves the stored location untouched');
 assert.equal((await call(`inventory-reservations/${row.id}/cancel`,'POST',{expected_version:row.version},producer)).status,409);
 assert.equal((await call(`inventory-reservations/${row.id}`,'PATCH',{...reservationPayload([card]),expected_version:row.version},producer)).status,409);
 assert.equal((await call(`inventory-reservations/${row.id}/return`,'POST',{expected_version:row.version,locations:[{inventory_id:card,storage_shelf:'A'}]},producer)).status,400);
@@ -228,6 +234,10 @@ for(const id of [b,c]){
  assert.equal(unit.location_type,'checked_out');assert.equal(String(unit.current_custodian_user_id),String(secondProducer.id));
  assert.equal(unit.production_name,booking.title);assert.equal(unit.project_name,'Fixture project');
 }
+// A batch never mixes a checked-out unit with a free one: the whole request fails.
+const mixedBatch=await call('inventory/batch','POST',{ids:[a,b],change:{location:{storage_shelf:'Batch shelf'}}},management);
+assert.equal(mixedBatch.status,409,'the batch refuses to relocate checked-out units');
+assert.equal((await call(`inventory/${a}`)).record.storage_shelf,'Original shelf','the blocked batch moves nothing, not even the free unit');
 // Wrong versions and partial payloads do not alter custody or free either unit.
 const fullLocations=[{inventory_id:b,storage_shelf:'Returned shelf',storage_row:'4'},{inventory_id:c,storage_shelf:'Repair bench',status:'maintenance'}];
 assert.equal((await call(`inventory-reservations/${booking.id}/return`,'POST',{expected_version:booking.version-1,locations:fullLocations},secondProducer)).status,409);

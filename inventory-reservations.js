@@ -344,6 +344,9 @@ async function batchItems(c,user,org,payload){
  if(location!==undefined&&(typeof location!=='object'||!location||Array.isArray(location)))fail('Ubicación inválida');
  const rows=(await c.query('select id from agency_inventory where organization_id=$1 and id = any($2::bigint[]) order by id for update',[org,ids])).rows;
  if(rows.length!==ids.length)fail('Algún equipo no pertenece a esta empresa',404);
+ // A checked-out unit travels with its custodian: its landing place is fixed when
+ // the return is registered, exactly like the single-equipment edit enforces.
+ if(location!==undefined&&(await c.query("select 1 from agency_inventory_reservation_items where organization_id=$1 and inventory_id=any($2::bigint[]) and status='checked_out' limit 1",[org,ids])).rows.length)fail('La ubicación y el custodio se cambian al registrar la devolución',409);
  let locationId=null,shelf='',row='';
  if(location!==undefined){
   locationId=location.location_id===undefined||location.location_id===null||location.location_id===''?null:identifier(location.location_id);
