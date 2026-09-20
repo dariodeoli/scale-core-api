@@ -35,19 +35,25 @@ const start='2026-09-15T13:00:00-03:00',end='2026-09-15T15:00:00-03:00',adjacent
 assert.equal((await call('studio-spaces','GET',{},null)).status,401);
 assert.equal((await call('studio-spaces','POST',{name:'Set principal'},viewer)).status,403);
 const space=(await call('studio-spaces','POST',{name:'Set principal',scenario:'Fondo nogal'})).space;
-assert.equal((await call('studio-spaces','POST',{name:'Cabina'},producer)).status,403);
+// Decisión de producto #25: production vuelve a studio.manage (reserva y espacios).
+assert.equal((await call('studio-spaces','POST',{name:'Cabina'},producer)).status,201,'producción administra espacios con studio.manage');
 assert.equal((await call('studio-context','GET',{},viewer)).members.length,0);
 // Decisión de producto #18: reservar el estudio se gobierna con studio.manage.
 const studioContext=await call('studio-context','GET',{},seller);
 assert.equal(studioContext.can_reserve,true,'ventas con studio.manage puede reservar');
 assert(studioContext.projects.some(row=>String(row.id)===String(project)));
+const managerContext=await call('studio-context','GET',{},manager);
+assert.equal(managerContext.can_reserve,true,'gerencia reserva el estudio igual que antes');
 const producerContext=await call('studio-context','GET',{},producer);
-assert.equal(producerContext.can_reserve,false,'producción conserva el calendario pero ya no reserva el estudio');
-assert.deepEqual(producerContext.members,[],'sin studio.manage no se sirve el contexto de reserva');
-assert.deepEqual(producerContext.projects,[]);
+assert.equal(producerContext.can_reserve,true,'producción reserva el estudio como antes de #18 (issue #25)');
+assert(producerContext.members.some(row=>String(row.id)===String(producer.id)),'el contexto de reserva llega completo para producción');
+assert(producerContext.projects.some(row=>String(row.id)===String(project)));
 assert.throws(()=>studioTimestamp('2026-02-30T10:00:00Z'));
 const payload={space_id:space.id,project_id:project,title:'Podcast de lanzamiento',production_type:'podcast',starts_at:start,ends_at:end,responsible_user_ids:[producer.id],notes:'Dos micrófonos'};
-assert.equal((await call('studio-reservations','POST',{...payload,responsible_user_ids:[owner.id]},producer)).status,403,'producción ya no reserva el estudio');
+assert.equal((await call('studio-reservations','POST',{...payload,responsible_user_ids:[owner.id]},producer)).status,400,'producción debe incluirse entre los responsables de su reserva');
+const productionReservation=(await call('studio-reservations','POST',payload,producer)).reservation;
+assert.equal((await call('studio-reservations','POST',{...payload,title:'Overlap'},producer)).status,409,'el solape sigue bloqueado para producción');
+assert.equal((await call(`studio-reservations/${productionReservation.id}/cancel`,'POST',{expected_version:productionReservation.version},producer)).reservation.status,'cancelled','producción cancela su propia reserva');
 assert.equal((await call('studio-reservations','POST',{...payload,project_id:otherProject},seller)).status,400);
 const reservation=(await call('studio-reservations','POST',payload,seller)).reservation;
 assert.equal(reservation.space_name,'Set principal');assert.equal(reservation.responsible_members.length,1);assert.equal(reservation.project_name,'Launch film');
@@ -67,4 +73,4 @@ assert.equal((await call('studio-reservations','POST',{...payload,space_id:space
 assert.equal((await call(`studio-reservations/${second.id}`,'GET',{}, {...owner,organization_id:other})).status,404);
 assert.equal((await query('select count(*)::int as count from agency_inventory_reservations')).rows[0].count,0,'studio bookings do not touch inventory reservations');
 await pg.close();
-console.log('PASS: studio spaces, tenant isolation, permissions, optional project, responsible members, exclusion overlap and inventory separation');
+console.log('PASS: studio spaces, tenant isolation, permissions (production, sales and management reserve; viewer cannot), optional project, responsible members, exclusion overlap and inventory separation');
