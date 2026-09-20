@@ -6,7 +6,7 @@ function appLink(appUrl){
  if(url.protocol!=='https:'||url.username||url.password)throw new Error('Email URL must use HTTPS without credentials');
  return url;
 }
-const roles={owner:'Dueño',admin:'Administrador',management:'Gerencia',finance:'Finanzas',sales:'Ventas',production:'Producción',editor:'Editor',viewer:'Solo lectura'};
+const roles={owner:'Dueño',admin:'Administrador',management:'Gerencia',finance:'Finanzas',sales:'Ventas',production:'Producción',editor:'Editor',viewer:'Solo lectura',collaborator:'Colaborador'};
 const facts=rows=>`<div style="margin:0 0 14px;padding:12px 14px;border:1px solid #e8e3ea;border-radius:10px;background:#f9f6fb">${rows.map(([k,v])=>`<p style="margin:0;font-size:13px"><strong style="color:#4d065b">${k}:</strong> ${escape(v)}</p>`).join('')}</div>`;
 
 export function invitationEmail({email,organizationName,role,appUrl}){

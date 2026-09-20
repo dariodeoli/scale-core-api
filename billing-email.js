@@ -5,7 +5,8 @@ function appLink(appUrl){
  if(url.protocol!=='https:'||url.username||url.password)throw new Error('Email URL must use HTTPS without credentials');
  return url;
 }
-const formatDate=value=>{const date=value?new Date(value):null;return date&&!Number.isNaN(date.getTime())?new Intl.DateTimeFormat('es-PY',{day:'numeric',month:'long',year:'numeric'}).format(date):null;};
+// Fechas visibles en hora de Asunción (el servidor corre en UTC).
+const formatDate=value=>{const date=value?new Date(value):null;return date&&!Number.isNaN(date.getTime())?new Intl.DateTimeFormat('es-PY',{day:'numeric',month:'long',year:'numeric',timeZone:'America/Asuncion'}).format(date):null;};
 
 export function trialStartedEmail({email,organizationName,trialEndsOn,appUrl}){
  const url=appLink(appUrl),organization=line(organizationName),ends=formatDate(trialEndsOn);
