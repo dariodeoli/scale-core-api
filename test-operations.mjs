@@ -173,4 +173,31 @@ await sql("insert into agency_archived_records(organization_id,kind,record_id) v
 const archived=await call('/api/agency/team');assert.ok(!archived.collaborators.some(p=>String(p.id)===String(minimal.id)));assert.ok(archived.archivedProfiles.some(p=>String(p.id)===String(minimal.id)));
 assert.equal((await call('/api/agency/collaborators','POST',{full_name:'Duplicate archived',email:'new@example.invalid'})).status,409);
 assert.equal((await sql('select balance from bank_accounts where id=$1',[account])).rows[0].balance,beforeTeam);
+const commissionWrite={beneficiary_name:'Gate referral',kind:'referral',basis:'collected',percentage:10,amount:0,currency:'PYG',invoice_id:invoice,collaborator_id:pid};
+// Issue #14: los helpers de validación se importan de suite-validation.js; no
+// vuelven a definirse copias locales con límites o mensajes propios.
+const operationsSource=await fs.readFile(new URL('./operations.js',import.meta.url),'utf8');
+assert.match(operationsSource,/import \{fail,text,id,optId,option,amount,date,email\} from '\.\/suite-validation\.js';/,'operations.js imports every shared validator');
+for(const helper of ['text','id','optId','option','date','email'])assert(!new RegExp(`^(const|function)\\s+${helper}\\b`,'m').test(operationsSource),`operations.js does not redefine ${helper}`);
+assert.match(operationsSource,/const money=\(value,zero=false\)=>\{const n=amount\(value\);if\(!zero&&n===0\)fail\('Importe inválido'\);return n;\};/,'the module amount delegates to the shared amount and only adds the zero rule');
+
+// Validación compartida (suite-validation): mismos límites y mensajes que las
+// copias que tenía operations.js, incluida la regla del módulo sobre el cero.
+const invalidAmount=await call('/api/agency/commissions','POST',{...commissionWrite,basis:'fixed',amount:-1});
+assert.equal(invalidAmount.status,400);assert.equal(invalidAmount.error,'Importe inválido');
+const invalidDate=await call('/api/agency/payouts','POST',{collaborator_id:pid,account_id:account,amount:10,reference:'QA',paid_on:'2026-13-01'});
+assert.equal(invalidDate.status,400);assert.equal(invalidDate.error,'Fecha inválida');
+const invalidId=await call('/api/agency/payouts','POST',{collaborator_id:pid,account_id:'abc',amount:10,reference:'QA',paid_on:'2026-09-08'});
+assert.equal(invalidId.status,400);assert.equal(invalidId.error,'Identificador inválido');
+const invalidOption=await call('/api/agency/commissions','POST',{...commissionWrite,kind:'otro'});
+assert.equal(invalidOption.status,400);assert.equal(invalidOption.error,'Opción inválida');
+const invalidText=await call('/api/agency/commissions','POST',{...commissionWrite,notes:'x'.repeat(2001)});
+assert.equal(invalidText.status,400);assert.equal(invalidText.error,'Texto inválido');
+const invalidEmail=await call('/api/agency/collaborators','POST',{full_name:'Correo compartido',email:'no-email'});
+assert.equal(invalidEmail.status,400);assert.equal(invalidEmail.error,'Correo inválido','the shared email message replaces the module copy');
+const zeroCommission=await call('/api/agency/commissions','POST',{...commissionWrite,basis:'fixed',amount:0});
+assert.equal(zeroCommission.status,400);assert.equal(zeroCommission.error,'La comisión debe ser mayor a cero');
+const zeroPayout=await call('/api/agency/payouts','POST',{collaborator_id:pid,account_id:account,amount:0,reference:'QA',paid_on:'2026-09-08'});
+assert.equal(zeroPayout.status,400);assert.equal(zeroPayout.error,'Importe inválido','a zero payout stays invalid: shared amount plus the module rule');
+
 await pg.close();console.log('PASS: collaborators, comments, commissions, payouts, tenant isolation, profile photos, unified directory, permission boundaries, archived profiles, duplicate prevention and audit');
