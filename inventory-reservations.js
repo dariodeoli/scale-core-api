@@ -344,6 +344,9 @@ async function batchItems(c,user,org,payload){
  if(location!==undefined&&(typeof location!=='object'||!location||Array.isArray(location)))fail('Ubicación inválida');
  const rows=(await c.query('select id from agency_inventory where organization_id=$1 and id = any($2::bigint[]) order by id for update',[org,ids])).rows;
  if(rows.length!==ids.length)fail('Algún equipo no pertenece a esta empresa',404);
+ // A checked-out unit travels with its custodian: its landing place is fixed when
+ // the return is registered, exactly like the single-equipment edit enforces.
+ if(location!==undefined&&(await c.query("select 1 from agency_inventory_reservation_items where organization_id=$1 and inventory_id=any($2::bigint[]) and status='checked_out' limit 1",[org,ids])).rows.length)fail('La ubicación y el custodio se cambian al registrar la devolución',409);
  let locationId=null,shelf='',row='';
  if(location!==undefined){
   locationId=location.location_id===undefined||location.location_id===null||location.location_id===''?null:identifier(location.location_id);
@@ -403,7 +406,7 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
    if(req.method==='GET'&&!key)result={categories:(await c.query('select * from agency_inventory_categories where organization_id=$1 order by active desc,name',[org])).rows};
    else if(req.method==='POST'&&!key||req.method==='PATCH'&&key){
     const b=await body(req),old=key?(await c.query('select * from agency_inventory_categories where id=$1 and organization_id=$2',[key,org])).rows[0]:{};
-    if(!old)fail('Categoría no encontrada',404);const name=text(b.name??old.name,80);if(!name)fail('Ingresá el nombre de la categoría');
+    if(!old)fail('Categoría no encontrada',404);const name=text(b.name??old.name,80);if(name.length<2)fail('El nombre debe tener entre 2 y 80 caracteres.');
     const active=b.active??old.active??true;if(typeof active!=='boolean')fail('Estado de categoría inválido');
     let icon=old.icon??null;
     if(b.icon!==undefined){
@@ -420,7 +423,7 @@ export async function inventoryReservations({req,res,url,db,session,body,send}){
    else if(req.method==='POST'&&!key||req.method==='PATCH'&&key){
     const b=await body(req),old=key?(await c.query('select * from agency_inventory_storage_locations where id=$1 and organization_id=$2 for update',[key,org])).rows[0]:null;
     if(key&&!old)fail('Lugar de guardado no encontrado',404);
-    const name=storageLocationName(b.name??old?.name);if(!name)fail('Ingresá el nombre del lugar de guardado');
+    const name=storageLocationName(b.name??old?.name);if(name.length<2)fail('El nombre del lugar debe tener entre 2 y 100 caracteres.');
     const active=b.active??old?.active??true;if(typeof active!=='boolean')fail('Estado de lugar inválido');
     const responsible=Object.hasOwn(b,'responsible_user_id')?optionalId(b.responsible_user_id):old?.responsible_user_id??null;
     if(responsible)await activeMembers(c,org,[responsible]);

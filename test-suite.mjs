@@ -133,4 +133,9 @@ assert.equal((await call('/api/agency/projects/batch','POST',{ids:[batchProject]
 assert.equal((await call('/api/agency/projects/batch','POST',{ids:['999999'],archived:true})).status,404,'every id must belong to the company');
 assert.equal((await call('/api/agency/clients/batch','POST',{ids:[batchClient],archived:true},{...user,role:'viewer'})).status,403,'batch actions require the manage capability');
 assert.equal((await call('/api/agency/clients/batch','POST',{ids:['abc'],archived:true})).status,400);
+// El lote de proyectos responde a projects.edit y no a work-orders.manage:
+// las capacidades se otorgan y revocan por separado desde el panel.
+assert.equal((await call('/api/agency/projects/batch','POST',{ids:[batchProject],archived:true},{...user,role:'editor',capabilities:{'projects.edit':true,'work-orders.manage':false}})).status,200,'projects.edit authorizes the project batch');
+assert.equal((await call('/api/agency/projects/batch','POST',{ids:[batchProject],archived:false},{...user,role:'editor',capabilities:{'projects.edit':false,'work-orders.manage':true}})).status,403,'work-orders.manage cannot archive projects');
+assert.equal((await call('/api/agency/projects/batch','POST',{ids:[batchProject],archived:false},{...user,role:'editor',capabilities:{'projects.edit':true,'work-orders.manage':true}})).status,200);
 await pg.close();console.log('PASS: approvals, member suspension, tenant isolation, pipeline conversion, plans, inventory, dashboard permissions, public quotes, invoice idempotency, audit and password reset');

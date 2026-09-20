@@ -80,6 +80,9 @@ assert.equal((await call(base+`/clients/${client}`,'GET',{}, {...user,role:'edit
 assert.ok(Array.isArray((await call(base+`/clients/${client}`)).invoices));
 const internal=(await call(base+'/internal-tasks','POST',{title:'Tarea interna',source_key:'test:internal'})).record;
 assert.equal((await call(base+'/internal-tasks','POST',{title:'Tarea interna',source_key:'test:internal'})).record.id,internal.id);
+assert.equal((await call(base+'/internal-tasks','POST',{title:' '})).status,400,'an internal task needs a real title');
+assert.equal((await call(base+`/internal-tasks/${internal.id}`,'PATCH',{title:' '})).status,400,'a partial edit cannot blank the title');
+assert.equal((await query('select title from agency_internal_tasks where id=$1',[internal.id])).rows[0].title,'Tarea interna','the rejected edit preserves the stored title');
 assert.equal((await call(base+`/internal-tasks/${internal.id}`,'PATCH',{status:'done'})).record.status,'done');
 assert.equal((await call(base+`/internal-tasks/${internal.id}`,'PATCH',{status:'pending'},{...user,organization_id:other})).status,404);
 const event={source_key:'trello:test',source_url:'https://trello.com/b/test',source_author:'Autor de Trello',body:'Actividad original',occurred_at:'2026-09-08T13:00:00-03:00'};

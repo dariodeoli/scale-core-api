@@ -76,7 +76,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation,sen
    else{res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(html);}return true;
   }
   const org=user.organization_id,kind=m[1],key=m[2],action=m[3];
-  const capability=kind==='members'?'members.manage':kind==='settings'?'settings.manage':kind==='activity'?'activity.view':kind==='inventory'?req.method==='GET'?'inventory.view':'inventory.manage':['clients','projects','work-orders'].includes(kind)?req.method==='GET'?null:kind==='clients'?'clients.manage':kind==='work-orders'&&!action?'work-orders.edit':'work-orders.manage':['plans','budgets'].includes(kind)?'budgets.manage':'commercial.manage';
+  const capability=kind==='members'?'members.manage':kind==='settings'?'settings.manage':kind==='activity'?'activity.view':kind==='inventory'?req.method==='GET'?'inventory.view':'inventory.manage':['clients','projects','work-orders'].includes(kind)?req.method==='GET'?null:kind==='clients'?'clients.manage':kind==='projects'?'projects.edit':action?'work-orders.manage':'work-orders.edit':['plans','budgets'].includes(kind)?'budgets.manage':'commercial.manage';
   if(capability&&!roleCan(user,capability))fail('Tu rol no permite esta operación',403);
   if(kind==='dashboard'&&!roleCan(user,'finance.view'))fail('Tu rol no permite ver saldos',403);
   await c.query('begin');transaction=true;await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
