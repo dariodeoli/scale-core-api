@@ -1,4 +1,5 @@
 import {currencies} from './currencies.js';
+import {civilDate} from './business-time.js';
 import {roleCan} from './permissions.js';
 import {amount,date,fail,id,option,text} from './suite-validation.js';
 
@@ -6,19 +7,14 @@ import {amount,date,fail,id,option,text} from './suite-validation.js';
 
 const discountTypes=['none','percent','fixed'];
 const currentTerm=`effective_from<=current_date and (effective_until is null or effective_until>=current_date)`;
-const sqlDate=value=>value instanceof Date?value.toISOString().slice(0,10):String(value).slice(0,10);
+// Fecha civil del negocio: un `date` no puede correrse por leerlo en UTC.
+const sqlDate=value=>civilDate(value)??String(value??'').slice(0,10);
 
 function requiredText(value,label,max){const valueText=text(value??'',max);if(!valueText)fail(`${label} es obligatorio`);return valueText;}
 function list(value,label){
  if(value===undefined)return [];
  if(!Array.isArray(value)||value.length>100)fail(`${label} debe contener entre 0 y 100 elementos`);
  return value.map(entry=>requiredText(entry,label,300));
-}
-function expectedVersion(input){
- const raw=input.expected_version??input.expectedVersion;
- const value=Number(raw);
- if(!Number.isSafeInteger(value)||value<1)fail('La versión esperada es obligatoria');
- return value;
 }
 function discount(input){
  const type=option(input.discount_type??input.discountType??'none',discountTypes);
@@ -97,12 +93,6 @@ export async function commercialProfile(connection,organization,clientId){
  const rows=await terms(connection,organization,clientId);
  return {current_term:rows.find(term=>term.effective_until===null)||null,terms:rows};
 }
-async function ltv(connection,organization,clientId){
- return (await connection.query(`select i.currency,coalesce(sum(case when r.id is null then p.amount else -p.amount end),0)::text as net_collected
-  from agency_payments p join agency_invoices i on i.id=p.invoice_id and i.organization_id=p.organization_id
-  left join agency_payment_reversals r on r.payment_id=p.id and r.organization_id=p.organization_id
-  where p.organization_id=$1 and i.client_id=$2 group by i.currency order by i.currency`,[organization,clientId])).rows;
-}
 async function controlCenter(connection,organization,financial){
  const activeClients=(await connection.query("select count(*)::int as count from agency_clients where organization_id=$1 and active=true and coalesce(lifecycle_status,'active')='active'",[organization])).rows[0].count;
  // A custom stage counts as closed only through its kind; legacy slugs keep the
@@ -118,7 +108,11 @@ async function controlCenter(connection,organization,financial){
  };
 }
 export async function commercialLifecycle({req,res,url,db,session,body,send}){
- const route=url.pathname.match(/^\/api\/agency\/(?:commercial\/clients\/(\d+)(?:\/terms(?:\/(\d+)\/amend)?)?|control-center)$/);
+ // Superficie vigente: el control center y la ficha del cliente. La ruta legacy
+ // /api/agency/commercial/clients/... se retiró en el issue #21: ningún
+ // consumidor del front la usaba (solo su propio test) y el flujo de ficha
+ // (lectura versionada + enmiendas) ya cubre el alta y la edición del término.
+ const route=url.pathname.match(/^\/api\/agency\/control-center$/);
  const uiRoute=url.pathname.match(/^\/api\/agency\/clients\/(\d+)\/commercial-lifecycle(?:\/amendments)?$/);
  if(!route&&!uiRoute)return false;
  let connection,transaction=false;
@@ -139,7 +133,8 @@ export async function commercialLifecycle({req,res,url,db,session,body,send}){
     const current=await uiHistory(connection,organization,clientId);
     if(current.version!==expected)fail('El cliente cambió. Actualizá los datos antes de guardar.',409);
     const prior=await openTerm(connection,organization,clientId);
-    const term=termInput(uiTermInput(input),{activationDate:prior?prior.activation_date:null,minimumEffectiveFrom:prior?(prior.effective_from||prior.starts_on||null):null,activationRequired:false});
+    const term=termInput(uiTermInput(input),{activationDate:prior?prior.activation_date:null,minimumEffectiveFrom:prior?(prior.effective_from||prior.starts_on||null):null,activationRequired:!prior});
+    if(prior&&term.activation!==sqlDate(prior.activation_date))fail('La fecha de activación no cambia en una enmienda',409);
     if(prior){
      const closedOn=new Date(`${term.effective}T12:00:00Z`);closedOn.setUTCDate(closedOn.getUTCDate()-1);
      const effectiveUntil=closedOn.toISOString().slice(0,10);
@@ -152,45 +147,11 @@ export async function commercialLifecycle({req,res,url,db,session,body,send}){
    }else result={commercial:await uiHistory(connection,organization,clientId)};
    await connection.query('commit');transaction=false;send(res,status,result);return true;
   }
-  const [,rawClientId,rawTermId]=route;
   if(!roleCan(user,'commercial.manage'))fail('Tu rol no permite esta operación',403);
-  if(!['GET','POST'].includes(req.method))fail('Método no permitido',405);
+  if(req.method!=='GET')fail('Método no permitido',405);
   connection=await db.connect();await connection.query('begin');transaction=true;
-  const organization=user.organization_id;
-  let result,status=200;
-  if(url.pathname==='/api/agency/control-center'){
-   if(req.method!=='GET')fail('Método no permitido',405);
-   result=await controlCenter(connection,organization,roleCan(user,'finance.view'));
-  }else{
-   const clientId=id(rawClientId);
-   const requestedTermId=rawTermId?id(rawTermId):null;
-   if(req.method==='GET'){
-    if(requestedTermId)fail('Método no permitido',405);
-    const record=await client(connection,organization,clientId);
-    result={client:record,...await commercialProfile(connection,organization,clientId)};
-    result.ltv=roleCan(user,'finance.view')?{available:true,records:await ltv(connection,organization,clientId)}:{available:false,reason:'permission'};
-   }else if(!requestedTermId){
-    const existing=await openTerm(connection,organization,clientId);
-    if(existing)fail('El cliente ya tiene un término comercial vigente; registrá una enmienda',409);
-    await client(connection,organization,clientId);
-    const term=termInput(await body(req));
-    result={term:await insertTerm(connection,organization,clientId,term)};status=201;
-   }else{
-    const input=await body(req),version=expectedVersion(input);
-    const prior=(await connection.query('select * from agency_client_commercial_terms where id=$1 and organization_id=$2 and client_id=$3 for update',[requestedTermId,organization,clientId])).rows[0];
-    if(!prior)fail('Término comercial no encontrado',404);
-    if(prior.effective_until!==null||prior.version!==version)fail('El término comercial cambió. Recargá antes de guardar.',409);
-    const term=termInput(input,{activationDate:prior.activation_date,minimumEffectiveFrom:prior.effective_from});
-    if(term.activation!==sqlDate(prior.activation_date))fail('La fecha de activación no cambia en una enmienda',409);
-    const closedOn=new Date(`${term.effective}T12:00:00Z`);closedOn.setUTCDate(closedOn.getUTCDate()-1);
-    const effectiveUntil=closedOn.toISOString().slice(0,10);
-    if(effectiveUntil<sqlDate(prior.effective_from))fail('La enmienda debe comenzar después del término vigente',409);
-    const closed=await closeTerm(connection,organization,clientId,prior,effectiveUntil,version);
-    if(!closed)fail('El término comercial cambió. Recargá antes de guardar.',409);
-    result={prior_term:closed,term:await insertTerm(connection,organization,clientId,term)};status=201;
-   }
-  }
-  await connection.query('commit');transaction=false;send(res,status,result);
+  const result=await controlCenter(connection,user.organization_id,roleCan(user,'finance.view'));
+  await connection.query('commit');transaction=false;send(res,200,result);
  }catch(error){
   if(transaction)await connection.query('rollback');
   const conflict=['23505','23514','40001','40P01'].includes(error.code);

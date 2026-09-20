@@ -27,34 +27,39 @@ async function call(path,{method='GET',payload={},as=owner,handler=commercialLif
  assert.equal(handled,true);return result;
 }
 const profile={activation_date:'2020-01-01',effective_from:'2020-01-01',plan_name:'Growth',plan_version:'2026.1',monthly_price:100,currency:'USD',discount_type:'percent',discount_value:10,discount_terms:'First quarter',extras:['Priority support'],deliverables:['Four videos']};
-assert.equal((await call(`/api/agency/commercial/clients/${client}/terms`,{method:'POST',as:null,payload:profile})).status,401);
-assert.equal((await call(`/api/agency/commercial/clients/${client}/terms`,{method:'POST',as:{...owner,role:'viewer'},payload:profile})).status,403);
-const created=await call(`/api/agency/commercial/clients/${client}/terms`,{method:'POST',payload:profile});
-assert.equal(created.status,201);assert.equal(created.term.plan_version,'2026.1');assert.deepEqual(created.term.extras,['Priority support']);
-assert.equal((await call(`/api/agency/commercial/clients/${client}/terms`,{method:'POST',payload:profile})).status,409,'one open term per tenant/client');
-assert.equal((await call(`/api/agency/commercial/clients/${otherClient}/terms`,{method:'POST',payload:profile})).status,404,'a client outside the session tenant is not addressable');
-const clientDetail=await call(`/api/agency/commercial/clients/${client}`);assert.equal(clientDetail.current_term.id,created.term.id);assert.equal(clientDetail.ltv.available,true);
-const suiteDetail=await call(`/api/agency/clients/${client}`,{handler:suite});assert.equal(suiteDetail.commercial.current_term.id,created.term.id,'client reads integrate the current commercial profile');
+// Issue #21: la superficie legacy /api/agency/commercial/clients/... se retiró
+// (ningún consumidor del front la usaba). Este bloque fija la retirada y cubre
+// el mismo flujo por la ficha versionada.
+const retired={status:0};
+const retiredHandled=await commercialLifecycle({req:{method:'POST',socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL(`https://test/api/agency/commercial/clients/${client}/terms`),db,session:async()=>owner,body:async()=>profile,send:(_res,status,data)=>{retired.status=status;retired.body=data;}});
+assert.equal(retiredHandled,false,'the legacy commercial surface is retired');
+assert.equal(retired.status,0,'the retired route never answers');
+const clientPath=`/api/agency/clients/${client}/commercial-lifecycle`;
+const fichaProfile={activationDate:profile.activation_date,effectiveOn:profile.effective_from,planName:profile.plan_name,planVersionSnapshot:profile.plan_version,monthlyPrice:profile.monthly_price,currency:profile.currency,discountType:profile.discount_type,discountValue:profile.discount_value,discountTerms:profile.discount_terms,extrasDeliverables:'Priority support'};
+assert.equal((await call(`${clientPath}/amendments`,{method:'POST',as:null,payload:fichaProfile})).status,401);
+assert.equal((await call(`${clientPath}/amendments`,{method:'POST',as:{...owner,role:'viewer'},payload:fichaProfile})).status,403);
+const created=await call(`${clientPath}/amendments`,{method:'POST',payload:{...fichaProfile,expectedVersion:'0'}});
+assert.equal(created.status,201);assert.equal(created.commercial.amendments[0].planVersionSnapshot,'2026.1');assert.equal(created.commercial.amendments[0].extrasDeliverables,'Priority support');
+assert.equal((await call(`${clientPath}/amendments`,{method:'POST',payload:{...fichaProfile,expectedVersion:'0'}})).status,409,'stale versions cannot create the first term twice');
+assert.equal((await call(`/api/agency/clients/${otherClient}/commercial-lifecycle/amendments`,{method:'POST',payload:{...fichaProfile,expectedVersion:'0'}})).status,404,'a client outside the session tenant is not addressable');
+const noActivation=await insert("insert into agency_clients(organization_id,name,lifecycle_status) values($1,'Sin activación','active')",[organization]);
+assert.equal((await call(`/api/agency/clients/${noActivation}/commercial-lifecycle/amendments`,{method:'POST',payload:{...fichaProfile,activationDate:null,expectedVersion:'0'}})).status,400,'creating the first term requires the activation date (date not null)');
+const clientDetail=await call(clientPath);assert.equal(clientDetail.commercial.amendments.length,1);assert.equal(clientDetail.commercial.amendments[0].monthlyPrice,'100.00');
+const suiteDetail=await call(`/api/agency/clients/${client}`,{handler:suite});assert.equal(String(suiteDetail.commercial.current_term.id),created.commercial.amendments[0].id,'client reads integrate the current commercial profile');
 assert.equal((await call(`/api/agency/control-center`,{as:{...owner,role:'sales'}})).contracted_billing.available,false,'commercial roles without financial permission receive state, not fabricated zero');
 assert.equal((await call(`/api/agency/control-center`,{as:{...owner,role:'viewer'}})).status,403);
-let center=await call('/api/agency/control-center');assert.equal(center.active_clients,1);assert.equal(center.active_prospects,0);assert.deepEqual(center.contracted_billing.records,[{currency:'USD',net_monthly:'90.00'}]);assert.equal(center.forecast.separate,true);
+let center=await call('/api/agency/control-center');assert.equal(center.active_clients,2);assert.equal(center.active_prospects,0);assert.deepEqual(center.contracted_billing.records,[{currency:'USD',net_monthly:'90.00'}]);assert.equal(center.forecast.separate,true);
 await query("insert into agency_leads(organization_id,name,stage,amount,currency,probability) values($1,'Open lead','lead',100,'USD',10),($1,'Won lead','won',100,'USD',100),($1,'Lost lead','lost',100,'USD',0)",[organization]);
 center=await call('/api/agency/control-center');assert.equal(center.active_prospects,1,'only non-won/non-lost leads are prospects');
-const amendment={...profile,effective_from:'2021-01-01',plan_version:'2026.2',monthly_price:200,currency:'PYG',discount_type:'fixed',discount_value:20,discount_terms:'Retention'};
-const amended=await call(`/api/agency/commercial/clients/${client}/terms/${created.term.id}/amend`,{method:'POST',payload:{...amendment,expected_version:1}});
-assert.equal(amended.status,201);assert.equal(amended.prior_term.effective_until.toISOString().slice(0,10),'2020-12-31');assert.equal(amended.prior_term.ends_on.toISOString().slice(0,10),'2020-12-31','the legacy close also ends the forecast projection');assert.equal(amended.term.monthly_price,'200.00');
-assert.equal((await call(`/api/agency/commercial/clients/${client}/terms/${created.term.id}/amend`,{method:'POST',payload:{...amendment,expected_version:1}})).status,409,'stale amendments fail optimistic concurrency');
+const amendment={...fichaProfile,effectiveOn:'2021-01-01',planVersionSnapshot:'2026.2',monthlyPrice:200,currency:'PYG',discountType:'fixed',discountValue:20,discountTerms:'Retention'};
+const amended=await call(`${clientPath}/amendments`,{method:'POST',payload:{...amendment,expectedVersion:created.commercial.version}});
+assert.equal(amended.status,201);assert.equal(amended.commercial.amendments.length,2);assert.equal(amended.commercial.amendments[1].monthlyPrice,'200.00');
+const amendedRows=(await query('select effective_until::text as effective_until,ends_on::text as ends_on from agency_client_commercial_terms where organization_id=$1 and client_id=$2 order by id',[organization,client])).rows;
+assert.equal(amendedRows[0].effective_until,'2020-12-31');assert.equal(amendedRows[0].ends_on,'2020-12-31','the amendment close also ends the forecast projection');
+assert.equal((await call(`${clientPath}/amendments`,{method:'POST',payload:{...amendment,expectedVersion:created.commercial.version}})).status,409,'stale amendments fail optimistic concurrency');
+assert.equal((await call(`${clientPath}/amendments`,{method:'POST',payload:{...amendment,activationDate:'2021-05-05',expectedVersion:amended.commercial.version}})).status,409,'la activación no cambia en una enmienda');
 assert.equal((await query('select count(*)::int as count from agency_client_commercial_terms where organization_id=$1 and client_id=$2 and effective_until is null',[organization,client])).rows[0].count,1);
-await assert.rejects(()=>query('update agency_client_commercial_terms set monthly_price=1 where id=$1',[amended.term.id]),/immutable/,'term snapshot values cannot be rewritten');
-const accountUsd=await insert("insert into bank_accounts(organization_id,name,account_type,currency) values($1,'USD cash','cash','USD')",[organization]);
-const accountPyg=await insert("insert into bank_accounts(organization_id,name,account_type,currency) values($1,'PYG cash','cash','PYG')",[organization]);
-const invoiceUsd=await insert("insert into agency_invoices(organization_id,client_id,number,currency,total) values($1,$2,'COM-USD','USD',100)",[organization,client]);
-const invoicePyg=await insert("insert into agency_invoices(organization_id,client_id,number,currency,total) values($1,$2,'COM-PYG','PYG',100)",[organization,client]);
-const paidUsd=await insert('insert into agency_payments(organization_id,invoice_id,account_id,amount) values($1,$2,$3,100)',[organization,invoiceUsd,accountUsd]);
-await query('insert into agency_payments(organization_id,invoice_id,account_id,amount) values($1,$2,$3,50)',[organization,invoicePyg,accountPyg]);
-await query("insert into agency_payment_reversals(organization_id,payment_id,reason,created_by_user_id) values($1,$2,'Customer return',$3)",[organization,paidUsd,ownerId]);
-const afterPayments=await call(`/api/agency/commercial/clients/${client}`);assert.deepEqual(afterPayments.ltv.records,[{currency:'PYG',net_collected:'50.00'},{currency:'USD',net_collected:'-100.00'}],'LTV remains segmented by invoice currency and subtracts reversals');
-assert.equal((await call(`/api/agency/commercial/clients/${client}`,{as:{...owner,role:'sales'}})).ltv.available,false,'non-finance commercial users do not receive false financial values');
+await assert.rejects(()=>query('update agency_client_commercial_terms set monthly_price=1 where id=$1',[amended.commercial.amendments[1].id]),/immutable/,'term snapshot values cannot be rewritten');
 // Client ficha contract (scale-os app/client-commercial-lifecycle.tsx): the
 // camelCase amendment list served at /clients/:id/commercial-lifecycle.
 const uiClient=await insert("insert into agency_clients(organization_id,name,lifecycle_status) values($1,'Ficha UI','active')",[organization]);
@@ -112,4 +117,4 @@ assert.equal(archivedFicha.commercial.archived,true);
 assert.equal((await call(`${uiPath}/amendments`,{method:'POST',payload:{...uiPayload,expectedVersion:archivedFicha.commercial.version}})).status,409,'archived clients never accept new amendments');
 assert.equal((await call(`/api/agency/clients/${otherClient}/commercial-lifecycle`)).status,404,'another tenant client is never addressable');
 await pg.close();
-console.log('PASS: commercial terms are tenant-scoped and immutable, amendments are optimistic and close the prior term, LTV subtracts reversals without currency conversion, Control Center separates contracted billing from forecast permissions, and the client ficha contract (camelCase history, role gates, archived read-only, reporting projection) is served end to end, and a ficha terms edit amends the cycle as an append-only versioned term.');
+console.log('PASS: commercial terms are tenant-scoped and immutable, amendments are optimistic and close the prior term, the retired legacy commercial surface is fixed by test, Control Center separates contracted billing from forecast permissions, and the client ficha contract (camelCase history, role gates, archived read-only, reporting projection) is served end to end, and a ficha terms edit amends the cycle as an append-only versioned term.');

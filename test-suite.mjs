@@ -6,7 +6,7 @@ import {pipelineStages} from './pipeline-stages.js';
 import {passwordAccess} from './password-access.js';
 import {collaboratorAccess} from './collaborator-access.js';
 import {budgetDocument} from './budget-document.js';
-import {zoneDate,zoneToday} from './business-time.js';
+import {civilDate,zoneDate,zoneToday} from './business-time.js';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
@@ -145,9 +145,22 @@ assert.equal(zoneDate('2026-09-21T02:59:00.000Z'),'2026-09-20','late evening in 
 assert.equal(zoneDate('2026-09-21T03:00:00.000Z'),'2026-09-21','midnight in Asuncion starts the next day');
 assert.equal(zoneToday(new Date('2026-01-01T02:30:00.000Z')),'2025-12-31');
 assert.equal(zoneDate('nope'),null);
+// Las columnas `date` se leen como fecha civil: algunos drivers entregan
+// medianoche UTC y otros medianoche local, y ninguno puede correr el día.
+assert.equal(civilDate(new Date('2020-01-01T00:00:00Z')),'2020-01-01','UTC midnight dates keep their civil day');
+assert.equal(civilDate(new Date(2020,0,1)),'2020-01-01','local midnight dates keep their civil day');
+assert.equal(civilDate('2026-09-20'),'2026-09-20');
+assert.equal(civilDate(null),null);
 const budgetSource=await fs.readFile(new URL('./budget-document.js',import.meta.url),'utf8');
-assert.match(budgetSource,/valid_until\)\.toISOString\(\)\.slice\(0,10\)>=zoneToday\(\)/,'budget validity uses the company day');
+assert.match(budgetSource,/const validUntil=civilDate\(b\.valid_until\)/,'budget validity reads the stored civil date');
+assert.match(budgetSource,/validUntil>=zoneToday\(\)/,'budget validity uses the company day');
 assert.match(budgetSource,/escape\(zoneDate\(b\.accepted_at\)\)/,'acceptance prints the company day');
+// La respuesta pública se habilita el día de la empresa y se cierra al vencer.
+const publicBudget={status:'sent',public_token:'fixture',revision:1,number:'T',title:'T',organization_name:'Test',client_name:'Client',currency:'USD',subtotal:10,total:11,tax_rate:.1};
+const yesterday=zoneDate(new Date(Date.now()-86400000));
+assert.match(budgetDocument({...publicBudget,valid_until:zoneToday()},[],{publicView:true}),/Aceptar presupuesto/,'a budget valid today still accepts the response');
+assert.match(budgetDocument({...publicBudget,valid_until:zoneDate(new Date(Date.now()+86400000))},[],{publicView:true}),/Aceptar presupuesto/,'a budget valid tomorrow still accepts the response');
+assert.doesNotMatch(budgetDocument({...publicBudget,valid_until:yesterday},[],{publicView:true}),/Aceptar presupuesto/,'a budget that expired yesterday no longer accepts the response');
 const suiteSource=await fs.readFile(new URL('./agency-suite.js',import.meta.url),'utf8');
 assert.match(suiteSource,/valid_until>="\+zoneTodaySql\+"/,'the public response compares against the company day');
 const todayToken='c'.repeat(32);
