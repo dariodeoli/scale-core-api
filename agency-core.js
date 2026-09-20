@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import {currencies} from './currencies.js';
-import {email as validEmail} from './suite-validation.js';
+import {amount,date as validDate,email as validEmail,fail,items as validItems,option,text} from './suite-validation.js';
 import {normalizeUrgency} from './urgency.js';
 import {visibleRecord} from './record-lifecycle.js';
 import {roleCan,roles} from './permissions.js';
@@ -136,17 +136,25 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
     }
     if (url.pathname === '/api/agency/clients' && req.method === 'POST') {
       const user = await session(req); if (!roleCan(user,'clients.manage')) return send(res,403,{error:'Sin permiso'});
-      const {name='',email=null,phone=null,notes=null,logo_url=null,color_key='violet',tax_id='',legal_name=''}=await body(req);
-      if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 120) return send(res,400,{error:'Nombre inválido'});
-      let contact;
-      try{contact={email:normalizedEmail(email),phone:normalizedPhone(phone)};}catch(error){return send(res,400,{error:error.message||'Contacto inválido'});}
-      const logo=await clientLogo(logo_url),color=clientColor(color_key);
+      // Mismos límites que el PATCH del suite: nombre 120, RUC 60, razón social
+      // 160 y notas 2000 (antes el alta guardaba cualquier largo y la edición
+      // después rechazaba el registro).
+      const incoming=await body(req);
+      let name,contact,taxId,legalName,notes;
+      try{
+        name=text(incoming.name??'',120);if(name.length<2)fail('Ingresá el nombre');
+        contact={email:normalizedEmail(incoming.email),phone:normalizedPhone(incoming.phone)};
+        taxId=text(incoming.tax_id??'',60);
+        legalName=text(incoming.legal_name??'',160);
+        notes=text(incoming.notes??'');
+      }catch(error){return send(res,error.status||400,{error:error.message||'Cliente inválido'});}
+      const logo=await clientLogo(incoming.logo_url),color=clientColor(incoming.color_key);
       const client=await db.connect();
       try{
        await client.query('begin');await client.query('select id from organizations where id=$1 for update',[user.organization_id]);
-       await assertUniqueClientRuc(client,user.organization_id,tax_id);
+       await assertUniqueClientRuc(client,user.organization_id,taxId);
        await client.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
-       const r=await client.query('insert into agency_clients(name,email,phone,notes,organization_id,logo_url,color_key,tax_id,legal_name) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *',[name.trim(),contact.email,contact.phone,notes||null,user.organization_id,logo,color,String(tax_id||'').trim()||null,String(legal_name||'').trim()||null]);
+       const r=await client.query('insert into agency_clients(name,email,phone,notes,organization_id,logo_url,color_key,tax_id,legal_name) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *',[name,contact.email,contact.phone,notes||null,user.organization_id,logo,color,taxId||null,legalName||null]);
        await client.query('commit');return send(res,201,{client:r.rows[0]});
       }catch(error){await client.query('rollback');return send(res,error.status||500,{error:error.status?error.message:'No se pudo crear el cliente'});}finally{client.release();}
     }
@@ -257,25 +265,35 @@ export async function agencyCore({req,res,url,db,session,body,send:rawSend,cooki
     }
     if (url.pathname === '/api/agency/budgets' && req.method === 'POST') {
       const user = await session(req); if (!roleCan(user,'budgets.manage')) return send(res,403,{error:'Sin permiso'});
-      const {title='',clientId,currency=user.default_currency??'PYG',items=[],notes=null,validUntil=null,tax_rate=.1,sections=null} = await body(req);
-      const normalizedSections=budgetSections(sections);
-      if(![0,.05,.1].includes(Number(tax_rate)))return send(res,400,{error:'IVA inválido'});
-      if (typeof title !== 'string' || title.trim().length < 2 || !Number.isInteger(Number(clientId)) || !currencies.includes(currency) || !Array.isArray(items) || !items.length || items.length > 100) return send(res,400,{error:'Presupuesto inválido'});
-      const normalizedItems = items.map((item) => ({ description: typeof item?.description === 'string' ? item.description.trim() : '', quantity: Number(item?.quantity), unitPrice: Number(item?.unitPrice) }));
-      if (normalizedItems.some(item => item.description.length < 2 || !Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.unitPrice) || item.unitPrice < 0)) return send(res,400,{error:'Ítems de presupuesto inválidos'});
+      // Mismos límites y redondeo que el PATCH del suite (título 160, ítems 1–100
+      // con cantidad ≤999999, importes a 2 decimales y vigencia en fecha civil).
+      const incoming=await body(req);
+      let title,clientId,currency,list,notes,validUntil,normalizedSections;
+      try{
+        title=text(incoming.title??'',160);if(title.length<2)fail('Ingresá el título');
+        clientId=Number(incoming.clientId);
+        if(!Number.isInteger(clientId)||clientId<=0)fail('Cliente inválido');
+        currency=option(Object.hasOwn(incoming,'currency')?incoming.currency:(user.default_currency??'PYG'),currencies);
+        list=validItems(incoming.items);
+        notes=text(incoming.notes??'');
+        validUntil=validDate(incoming.validUntil??incoming.valid_until);
+        normalizedSections=budgetSections(incoming.sections);
+      }catch(error){return send(res,error.status||400,{error:error.message||'Presupuesto inválido'});}
+      const taxRate=Number(incoming.tax_rate??.1);
+      if(![0,.05,.1].includes(taxRate))return send(res,400,{error:'IVA inválido'});
+      const subtotal=amount(list.reduce((sum,item)=>sum+item.total,0));
+      const total=amount(subtotal*(1+taxRate));
       const client = await db.connect();
       try {
         await client.query('begin');
-        const belongs = await client.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[Number(clientId),user.organization_id]);
+        const belongs = await client.query(`select id from agency_clients c where id=$1 and organization_id=$2 and ${visibleRecord('c','clients')}`,[clientId,user.organization_id]);
         await auditContext(client,user,req);
         if (!belongs.rows[0]) { await client.query('rollback'); return send(res,404,{error:'Cliente no encontrado'}); }
-        const subtotal = normalizedItems.reduce((sum,item) => sum + item.quantity * item.unitPrice, 0);
-        const total = Math.round(subtotal * (1+Number(tax_rate))*100)/100;
-        const draft = await client.query('insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,notes,valid_until,public_token) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *',[user.organization_id,Number(clientId),'PENDIENTE',title.trim(),currency,subtotal,total,notes || null,validUntil || null,crypto.randomBytes(18).toString('base64url')]);
+        const draft = await client.query('insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,notes,valid_until,public_token) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *',[user.organization_id,clientId,'PENDIENTE',title,currency,subtotal,total,notes || null,validUntil || null,crypto.randomBytes(18).toString('base64url')]);
         const number = `P-${new Date().getFullYear()}-${String(draft.rows[0].id).padStart(4,'0')}`;
-        await client.query('update agency_budgets set tax_rate=$1,sections=$3 where id=$2',[Number(tax_rate),draft.rows[0].id,JSON.stringify(normalizedSections)]);
+        await client.query('update agency_budgets set tax_rate=$1,sections=$3 where id=$2',[taxRate,draft.rows[0].id,JSON.stringify(normalizedSections)]);
         const budget = await client.query('update agency_budgets set number=$1 where id=$2 returning *',[number,draft.rows[0].id]);
-        for (const [position,item] of normalizedItems.entries()) await client.query('insert into agency_budget_items(budget_id,position,description,quantity,unit_price,total) values($1,$2,$3,$4,$5,$6)',[budget.rows[0].id,position + 1,item.description,item.quantity,item.unitPrice,item.quantity * item.unitPrice]);
+        for (const [position,item] of list.entries()) await client.query('insert into agency_budget_items(budget_id,position,description,quantity,unit_price,total) values($1,$2,$3,$4,$5,$6)',[budget.rows[0].id,position + 1,item.description,item.quantity,item.unitPrice,item.total]);
         await client.query('commit');
         return send(res,201,{budget:budget.rows[0]});
       } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
