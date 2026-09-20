@@ -63,6 +63,29 @@ for(const amount of [-1,-0.5,'no es un importe',{},1000000000000,Number.MAX_SAFE
 await call('/api/agency/collaborators','POST',{full_name:'Aún no inicia',compensation_type:'fixed',compensation_amount:'999',currency:'PYG',started_on:'2026-10-01'});
 await call('/api/agency/collaborators','POST',{full_name:'Ya finalizó',compensation_type:'fixed',compensation_amount:'888',currency:'PYG',ended_on:'2026-08-31'});
 assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides?month=2026-09`,'GET',{}, {...user,role:'viewer'})).status,403,'staff cannot read override notes');
+// finance.view sin salary.view no alcanza: el ajuste mensual (y los campos de la
+// ficha) son dato salarial y exigen salary.view, igual que el enmascarado de lectura.
+const financeOnly={...user,role:'sales',capabilities:{'finance.view':true,'salary.view':false}};
+const overridePath=`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides`;
+assert.equal((await call(`${overridePath}?month=2026-09`,'GET',{},financeOnly)).status,403,'salary.view is required to read a monthly adjustment');
+assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'4321',note:'Sin permiso'},financeOnly)).status,403,'salary.view is required to write a monthly adjustment');
+assert.equal((await call(`${overridePath}?month=2026-09`,'DELETE',{},financeOnly)).status,403,'salary.view is required to delete a monthly adjustment');
+assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}`,'PATCH',{compensation_amount:9999},financeOnly)).status,403,'the salary fields on the profile need salary.view');
+assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}`,'PATCH',{monthly_salary_amount:9999},financeOnly)).status,403,'the monthly salary needs salary.view');
+assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}`,'PATCH',{payment_day:9},financeOnly)).status,403,'the payment day needs salary.view');
+for(const key of ['compensation_amount','monthly_salary_amount','monthly_salary_currency','payment_day','invoices_company']){
+ assert.equal((await call('/api/agency/collaborators','POST',{full_name:'Sin salario',[key]:key==='invoices_company'?true:1},financeOnly)).status,403,`creating a profile with ${key} needs salary.view`);
+}
+assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}`,'PATCH',{notes:'Finanzas sin salario'},financeOnly)).status,200,'the rest of the profile stays editable for finance without salary.view');
+assert.equal((await call(`${overridePath}?month=2026-09`)).override,null,'rejected writes never touch the adjustment row');
+const fullFinance={...user,role:'finance'};
+assert.equal((await call(`${overridePath}?month=2026-09`,'GET',{},fullFinance)).status,200,'finance with salary.view reads the adjustment');
+assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'2500',note:'Ajuste de finanzas'},fullFinance)).override.amount,'2500','finance with salary.view writes the adjustment');
+assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'1500',note:'Ajuste corregido'},fullFinance)).override.amount,'1500','the adjustment upserts');
+assert.equal((await call(`${overridePath}?month=2026-09`,'DELETE',{},fullFinance)).override,null,'finance with salary.view deletes the adjustment');
+assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'1800',note:'Ajuste de administración'},{...user,role:'admin'})).override.amount,'1800','admin keeps editing salaries');
+assert.equal((await call(overridePath,'PATCH',{month:'2026-09',amount:'900',note:'Ajuste del dueño'})).override.amount,'900','owner keeps editing salaries');
+assert.equal((await call(`${overridePath}?month=2026-09`,'DELETE')).override,null);
 for(const amount of invalidSalaryAmounts)assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides`,'PATCH',{month:'2026-09',amount})).status,400,`salary override rejects ${String(amount)}`);
 assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides?month=2026-09`,'PATCH',{month:'2026-09',amount:'1250',note:'Ajuste puntual'})).override.amount,'1250');
 assert.equal((await call(`/api/agency/collaborators/${salaryPyg.collaborator.id}/salary-overrides?month=2026-09`)).override.note,'Ajuste puntual');
