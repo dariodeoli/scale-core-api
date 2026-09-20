@@ -82,4 +82,5 @@ export const migrationOrder = [
   '20260919_pipeline_stages.sql',
   '20260919_inventory_value_maintenance.sql',
   '20260920_platform_coupon_shape.sql',
+  '20260920_currency_widening.sql',
 ];

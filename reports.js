@@ -1,6 +1,7 @@
 import {forecastMonth,wholeMoney} from './forecast.js';
 import {option} from './suite-validation.js';
 import {roleCan} from './permissions.js';
+import {currencies} from './currencies.js';
 
 const timezone='America/Asuncion';
 const kinds=['unknown','company','professional','individual','other'];
@@ -138,7 +139,8 @@ async function validateTerms(db,org,input,current=null) {
  const planInput=String(input.planId||'');
  const planId=planInput===''?await ensureCustomPlan(db,org):id(planInput,'Plan');
  const recurringAmount=wholeAmount(input.recurringAmount,'El importe recurrente');
- const currency=['PYG','USD'].includes(input.currency)?input.currency:fail('Moneda inválida');
+ // Las seis monedas del sistema: la tabla ya admite EUR/BRL/ARS/MXN.
+ const currency=currencies.includes(input.currency)?input.currency:fail('Moneda inválida');
  const startsOn=requiredDate(input.startsOn,'Fecha de inicio');
  const endsOn=optionalDate(input.endsOn,'Fecha de fin');
  if(endsOn&&endsOn<startsOn)fail('La fecha de fin no puede ser anterior al inicio');
@@ -180,7 +182,7 @@ async function validateExpense(input) {
  const cadence=['monthly','recurring'].includes(input.cadence)?input.cadence:fail('Cadencia inválida');
  const effectiveMonth=monthDate(input.effectiveMonth,'Mes efectivo');
  if(typeof input.category!=='string'||input.category.trim().length<1||input.category.trim().length>120)fail('Categoría inválida');
- if(!['PYG','USD'].includes(input.currency))fail('Moneda inválida');
+ if(!currencies.includes(input.currency))fail('Moneda inválida');
  if(input.note!==null&&input.note!==undefined&&(typeof input.note!=='string'||input.note.length>1000))fail('Nota inválida');
  let kind=null;
  if(input.kind!==undefined&&input.kind!==null){
@@ -279,8 +281,11 @@ export async function reports({req,res,url,db,session,body,send}) {
   if(c)await c.query('rollback');
   // A concurrent close holds the open term (the immutability guard and the open-row
   // unique index raise here too), so those conflicts answer 409 instead of 500.
-  const conflict=['23505','23514','40001','40P01'].includes(error.code);
-  send(res,conflict?409:error.status||500,{error:conflict?'Los términos comerciales cambiaron. Recargá antes de guardar.':error.status?error.message:'No se pudo completar el informe'});
+  // 23505 (índice único), 40001/40P01 (serialización) son carreras: 409. Una
+  // violación de check (23514) es dato inválido, no un cambio de términos.
+  const conflict=['23505','40001','40P01'].includes(error.code);
+  const invalidCheck=error.code==='23514';
+  send(res,conflict?409:invalidCheck?400:error.status||500,{error:conflict?'Los términos comerciales cambiaron. Recargá antes de guardar.':error.status?error.message:'No se pudo completar el informe'});
  }
  finally{c?.release();}
  return true;
