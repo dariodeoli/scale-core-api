@@ -66,7 +66,7 @@ export async function suite({req,res,url,db,session,body,send,sendInvitation,sen
     const form=new URLSearchParams(raw),name=text(form.get('name')||'',120),action=option(form.get('action'),['accept','reject']);if(name.length<2)fail('Ingresá tu nombre');
     const revision=Number(form.get('revision'));if(!Number.isInteger(revision)||revision<1)fail('Recargá la propuesta antes de responder',409);
     await c.query("select set_config('app.current_user','budget-link',true),set_config('app.current_ip',$1,true)",[req.socket.remoteAddress||'']);
-    const result=await c.query("update agency_budgets set status=$1,accepted_by=$2,accepted_at=now(),updated_at=now() where id=$3 and revision=$4 and status='sent' and share_enabled=true and (valid_until is null or valid_until>=current_date) returning id",[action==='accept'?'accepted':'rejected',name,b.id,revision]);if(!result.rows.length)fail('La propuesta cambió, ya fue respondida o venció. Recargá la página.',409);
+    const result=await c.query("update agency_budgets set status=$1,accepted_by=$2,accepted_at=now(),updated_at=now() where id=$3 and revision=$4 and status='sent' and share_enabled=true and (valid_until is null or valid_until>="+zoneTodaySql+") returning id",[action==='accept'?'accepted':'rejected',name,b.id,revision]);if(!result.rows.length)fail('La propuesta cambió, ya fue respondida o venció. Recargá la página.',409);
     await c.query('commit');transaction=false;res.writeHead(303,{Location:`/p/${publicMatch[1]}`});res.end();return true;
    }
    if(req.method!=='GET'||publicMatch[2]==='respond')fail('Método no permitido',405);
