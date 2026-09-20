@@ -6,8 +6,11 @@ const currencies=['USD','PYG'];
 const realOrganization=alias=>`${alias}.demo_owner_user_id is null and ${alias}.demo_source_id is null and ${alias}.deleted_at is null and lower(${alias}.slug) not in ('scale-demo-controles-20260908','agenciaprueba','agencia-prueba') and lower(${alias}.name)<>'agenciaprueba'`;
 const realUser=alias=>`not ${alias}.is_demo_guest and ${alias}.deleted_at is null and ${alias}.email not ilike '%@demo.example.invalid' and ${alias}.email not ilike '%@scale-demo.example.invalid'`;
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
-const integer=(value,fallback=0)=>{if(value===null||value===undefined||value==='')return fallback;const parsed=Number(value);return Number.isInteger(parsed)&&parsed>=0?parsed:fallback;};
+// `Number.isInteger(1e21)` es true pero Postgres no acepta ese bigint: se exige safe integer.
+const integer=(value,fallback=0)=>{if(value===null||value===undefined||value==='')return fallback;const parsed=Number(value);return Number.isSafeInteger(parsed)&&parsed>=0?parsed:fallback;};
 const limit=value=>Math.min(100,Math.max(1,integer(value,25)));
+// Los ids de ruta se validan como bigint antes de tocar la base (un dígito de más era un 500).
+const routeId=value=>{const raw=String(value);if(!/^[1-9]\d{0,18}$/.test(raw)||BigInt(raw)>9223372036854775807n)fail('Agencia no encontrada o protegida.',404);return Number(raw);};
 const queryText=value=>typeof value==='string'?value.trim().slice(0,120):'';
 const couponCode=value=>{
  const code=queryText(value).toUpperCase();
@@ -121,7 +124,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
   if(agencyPath&&req.method==='DELETE'){
    requireWrite(role);
    const deleted=await mutation(db,async client=>{
-    const target=(await client.query(`select o.id,o.name,o.slug from organizations o where o.id=$1 and ${realOrganization('o')} for update`,[Number(agencyPath[1])])).rows[0];
+    const target=(await client.query(`select o.id,o.name,o.slug from organizations o where o.id=$1 and ${realOrganization('o')} for update`,[routeId(agencyPath[1])])).rows[0];
     if(!target)fail('Agencia no encontrada o protegida.',404);
     await client.query('update organizations set active=false,deleted_at=now(),deleted_by_user_id=$2 where id=$1',[target.id,user.id]);
     await client.query('delete from sessions where organization_id=$1',[target.id]);
@@ -175,7 +178,7 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    requireWrite(role);
    const targetId=Number(userPath[1]);
    if(targetId===user.id)fail('No podés cambiar tu propio acceso global.',400);
-   const input=only(await body(req),['platform_access']);
+   const input=only((await body(req))||{},['platform_access']);
    if(!['admin','viewer','none'].includes(input.platform_access))fail('El acceso global debe ser admin, viewer o none.');
    const access=await mutation(db,async client=>{
     const target=(await client.query(`select id from users where id=$1 and ${realUser('users')}`,[targetId])).rows[0];

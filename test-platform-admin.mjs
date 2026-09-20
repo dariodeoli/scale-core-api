@@ -21,6 +21,8 @@ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migra
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_platform_admin_roles.sql',import.meta.url),'utf8'));
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_platform_owner_admin.sql',import.meta.url),'utf8'));
  await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260915_coupon_free_days.sql',import.meta.url),'utf8'));
+// La forma coherente de los cupones también se exige en la base.
+await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260920_platform_coupon_shape.sql',import.meta.url),'utf8'));
 await pg.exec(`
   create table if not exists oauth_states(id bigint primary key,recent_auth_user_id bigint);
   create table if not exists destructive_action_previews(token_hash text primary key,user_id bigint);

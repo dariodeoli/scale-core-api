@@ -155,6 +155,27 @@ async function retainExpiredSessions(c, days, limit, dryRun) {
  if (dryRun) return (await c.query(`select count(*)::int as n from (${selected}) stale`, [days, limit])).rows[0].n;
  return (await c.query(`delete from sessions where ctid in (${selected})`, [days, limit])).rowCount;
 }
+// Tablas efímeras: contadores de intentos y trámites de eliminación vencidos.
+async function retainExpiredBy(c, table, limit, dryRun) {
+ const selected = `select ctid from ${tableName(table)} where expires_at<now()
+  order by expires_at limit $1 for update skip locked`;
+ if (dryRun) return (await c.query(`select count(*)::int as n from (${selected}) stale`, [limit])).rows[0].n;
+ return (await c.query(`delete from ${tableName(table)} where ctid in (${selected})`, [limit])).rowCount;
+}
+// Los hijos referencian la vista previa con on delete restrict: primero los hijos
+// vencidos y después las vistas previas que ya no tienen ninguno.
+async function retainDestructive(c, limit, dryRun) {
+ const children = ['destructive_auth_proofs', 'destructive_email_challenges', 'destructive_google_handoffs'];
+ let total = 0;
+ for (const table of children) total += await retainExpiredBy(c, table, limit, dryRun);
+ const selected = `select ctid from ${tableName('destructive_action_previews')} p where p.expires_at<now()
+  and not exists (select 1 from ${tableName('destructive_auth_proofs')} x where x.preview_token_hash=p.token_hash)
+  and not exists (select 1 from ${tableName('destructive_email_challenges')} x where x.preview_token_hash=p.token_hash)
+  and not exists (select 1 from ${tableName('destructive_google_handoffs')} x where x.preview_token_hash=p.token_hash)
+  order by p.expires_at limit $1 for update skip locked`;
+ if (dryRun) return total + (await c.query(`select count(*)::int as n from (${selected}) stale`, [limit])).rows[0].n;
+ return total + (await c.query(`delete from ${tableName('destructive_action_previews')} where ctid in (${selected})`, [limit])).rowCount;
+}
 function verifyDeletionEvidence(evidence, env) {
  let source;
  try { const u = new URL(env.DATABASE_URL); source = createHash('sha256').update(u.hostname + ':' + (u.port || '5432') + '/' + decodeURIComponent(u.pathname.slice(1))).digest('hex'); } catch { throw failure('VERIFIED_BACKUP_REQUIRED'); }
@@ -199,14 +220,17 @@ export async function runMaintenance(db, {dryRun = true, demoDryRun = true, veri
    } catch (error) {
     await raw.query('rollback to savepoint demo_cleanup');
     if (error.maintenanceCode === 'RUN_DEADLINE') throw error;
-    demos.push({organizationId: id, status: 'blocked', reason: error.maintenanceCode || 'DATABASE_GUARD:' + String(error.message || '').slice(0, 140)});
+    // El motivo va a logs y CLI: un código estable, nunca el texto crudo de Postgres.
+    demos.push({organizationId: id, status: 'blocked', reason: error.maintenanceCode || 'DATABASE_GUARD:' + (error.code || 'UNKNOWN')});
    }
   }
   const presenceTabs = await retain(c, 'agency_presence_tabs', settings.presenceDays, settings.retentionBatch, dryRun);
   const usageSessions = await retain(c, 'agency_usage_sessions', settings.usageDays, settings.retentionBatch, dryRun);
   const expiredSessions = await retainExpiredSessions(c, settings.sessionsDays, settings.retentionBatch, dryRun);
+  const expiredThrottles = await retainExpiredBy(c, 'auth_throttles', settings.retentionBatch, dryRun);
+  const expiredDestructiveFlows = await retainDestructive(c, settings.retentionBatch, dryRun);
   await raw.query(dryRun ? 'rollback' : 'commit');
-  return {dryRun, demoDryRun: dryRun || demoDryRun, demos, presenceTabs, usageSessions, expiredSessions, usersDeleted: 0, auditPreserved: true};
+  return {dryRun, demoDryRun: dryRun || demoDryRun, demos, presenceTabs, usageSessions, expiredSessions, expiredThrottles, expiredDestructiveFlows, usersDeleted: 0, auditPreserved: true};
  } catch (error) { await raw.query('rollback'); throw error; }
  finally { raw.release(); }
 }

@@ -10,7 +10,8 @@ export async function publicExperience({req,res,url,db,session,body,send,cookie,
  try{
   if(req.method!=='POST')fail('Método no permitido',405);
   if(url.pathname==='/api/demo/start'&&req.headers?.origin!=='https://sistema.scaleparaguay.com')fail('Abrí el Demo desde sistema.scaleparaguay.com',403);
-  const b=await body(req);
+  // Un cuerpo JSON nulo es entrada inválida: nunca debe terminar en 500.
+  const b=(await body(req))||{};
   if(url.pathname==='/api/public/telemetry'){
    if(!['page_view','mobile_view','whatsapp_click'].includes(b.name))fail('Evento inválido');
    if(!await throttle(db,'landing-telemetry',2000))fail('Límite temporal',429);
