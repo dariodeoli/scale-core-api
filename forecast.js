@@ -35,7 +35,14 @@ export function wholeMoney(value) {
 
 const projectMoney=(record,fields)=>Object.fromEntries(Object.entries(record).map(([key,value])=>[key,fields.includes(key)?wholeMoney(value):value]));
 
-const projectPersonnel=rows=>rows.map(row=>({...projectMoney(row,['base_amount','override_amount','expected_end_of_month_expense']),members:(row.members||[]).map(member=>projectMoney(member,['base_amount','override_amount']))}));
+// Per-person salaries and monthly adjustments are sensitive fields (salary.view).
+// A role with finance.view but without salary.view keeps the planning aggregates
+// (currency totals the forecast exists to project) and the identity, and receives
+// the per-person amounts as null — the same contract operations.js applies to the
+// team directory through withoutSalary.
+const projectMembers=(members,canSeeSalary)=>canSeeSalary?members.map(member=>projectMoney(member,['base_amount','override_amount'])):members.map(member=>({...member,base_amount:null,override_amount:null}));
+const projectPersonnel=(rows,canSeeSalary)=>rows.map(row=>({...projectMoney(row,['base_amount','override_amount','expected_end_of_month_expense']),members:projectMembers(row.members||[],canSeeSalary)}));
+const projectPersonnelTotals=rows=>rows.map(row=>projectMoney(row,['base_amount','override_amount','expected_end_of_month_expense']));
 
 const monthSeries=(start,count)=>Array.from({length:count},(_,offset)=>{const [year,index]=start.split('-').map(Number);const total=index-1+offset;return `${year+Math.floor(total/12)}-${String((total%12)+1).padStart(2,'0')}`;});
 
@@ -114,7 +121,7 @@ const projectionFor=(snapshots,openingBalance)=>{
  const months=snapshots.map(({label,records,personnel,collectedActual,commissionForecast,plannedExpenses})=>({
   label,
   issued:records.rows.map(row=>projectMoney(row,['issued_total','accepted_uninvoiced_total','expected_total'])),
-  personnel:projectPersonnel(personnel.rows),
+  personnel:projectPersonnelTotals(personnel.rows),
   collected:collectedActual.rows.map(row=>projectMoney(row,['amount'])),
   commissions:commissionForecast.rows.map(row=>projectMoney(row,['amount'])),
   planned:plannedExpenses.rows.map(row=>projectMoney(row,['amount']))
@@ -153,7 +160,7 @@ export async function financialForecast({req,res,url,db,session,send}) {
   const first=snapshots[0];
   const projectedRecords=first.records.rows.map(row=>projectMoney(row,['issued_total','accepted_uninvoiced_total','expected_total']));
   const invoiced=projectedRecords.filter(row=>row.issued_total!==0).map(row=>({currency:row.currency,amount:row.issued_total,invoice_count:row.invoice_count}));
-  const projectedPersonnel=projectPersonnel(first.personnel.rows);
+  const projectedPersonnel=projectPersonnel(first.personnel.rows,roleCan(user,'salary.view'));
   const projectedSeries=series=>series.rows.map(row=>projectMoney(row,['amount']));
   const openingBalance=projectedSeries(await db.query('select currency,coalesce(sum(balance),0)::text as amount from bank_accounts where organization_id=$1 and active=true group by currency order by currency',[user.organization_id]));
   const contractedClients=(await db.query(`
