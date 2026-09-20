@@ -57,7 +57,30 @@ async function companyState(c,userId,organizationId,{lock=false}={}){
  return {stateHash:stateHash(canonical),organization:{id:String(org.id),name:org.name,activeMemberCount:active.length},confirmation:DELETE_ACCOUNT_CONFIRMATION};
 }
 
+// Borrados globales (platform-admin): el objetivo es remoto y no es una membresía
+// del actor, así que lo que invalida la vista previa es el estado del objetivo
+// (issue #22). El id viaja en el payload de la vista previa.
+const PLATFORM_DESTRUCTIVE_ACTIONS=new Set(['platform.user.delete','platform.agency.delete']);
+async function platformState(c,action,targetId){
+ const id=Number(targetId);
+ if(!Number.isSafeInteger(id)||id<=0)fail('El objetivo del borrado no es válido.',400,'DESTRUCTIVE_TARGET_INVALID');
+ if(action==='platform.user.delete'){
+  const row=(await c.query('select id,email,is_demo_guest,deleted_at,anonymized_at from users where id=$1',[id])).rows[0];
+  if(!row)fail('El usuario ya no existe.',404,'DESTRUCTIVE_TARGET_MISSING');
+  if(row.deleted_at||row.anonymized_at)fail('El usuario ya fue eliminado.',409,'DESTRUCTIVE_TARGET_GONE');
+  if(row.is_demo_guest||/@(demo|scale-demo)[.]example[.]invalid$/i.test(row.email))fail('La cuenta demo está protegida.',404,'DESTRUCTIVE_TARGET_PROTECTED');
+  const target={id:String(row.id),kind:'user',email:row.email};
+  return {stateHash:stateHash(target),target,confirmation:row.email,blockers:[]};
+ }
+ const row=(await c.query('select id,name,slug,active,deleted_at,demo_owner_user_id,demo_source_id from organizations where id=$1',[id])).rows[0];
+ if(!row)fail('La agencia ya no existe.',404,'DESTRUCTIVE_TARGET_MISSING');
+ if(!row.active||row.deleted_at)fail('La agencia ya fue eliminada.',409,'DESTRUCTIVE_TARGET_GONE');
+ if(isDemoOrganization(row))fail('La agencia demo está protegida.',404,'DESTRUCTIVE_TARGET_PROTECTED');
+ const target={id:String(row.id),kind:'agency',name:row.name,slug:row.slug};
+ return {stateHash:stateHash(target),target,confirmation:row.name,blockers:[]};
+}
 async function deriveState(c,userId,action,organizationId,options){
+ if(PLATFORM_DESTRUCTIVE_ACTIONS.has(action))return platformState(c,action,options?.targetId);
  return action==='account.delete'?accountState(c,userId,options):companyState(c,userId,organizationId,options);
 }
 
@@ -69,7 +92,7 @@ async function previewByRaw(c,userId,raw,{lock=false}={}){
 }
 
 async function assertFreshPreview(c,row,{lock=false}={}){
- const current=await deriveState(c,row.user_id,row.action,row.organization_id,{lock});
+ const current=await deriveState(c,row.user_id,row.action,row.organization_id,{lock,targetId:row.payload?.target?.id??null});
  if(current.stateHash!==row.state_hash)fail('La empresa o sus miembros cambiaron. Generá una nueva vista previa.',409,'DELETION_PREVIEW_STALE');
  if(row.action==='account.delete'&&current.blockers.length)fail('La cuenta no se puede eliminar mientras seas el último dueño activo de una empresa compartida.',409,'LAST_ACTIVE_OWNER',{organizations:current.blockers});
  return current;
@@ -187,6 +210,45 @@ async function executeCompanyDeletion(c,userId,organizationId){
  return {organizationId:String(organizationId)};
 }
 
+function assertProofFormat(recentAuthProof){
+ if(typeof recentAuthProof!=='string'||!/^[-\w]{43}$/.test(recentAuthProof))fail('Volvé a confirmar tu identidad.',401,'RECENT_AUTH_REQUIRED');
+}
+async function lockValidProof(c,{userId,preview,recentAuthProof}){
+ assertProofFormat(recentAuthProof);
+ const proof=(await c.query(`select * from destructive_auth_proofs where token_hash=$1 and preview_token_hash=$2 and user_id=$3
+  and action=$4 and organization_id is not distinct from $5 and consumed_at is null and expires_at>now() and created_at >= $6 for update`,[hash(recentAuthProof),preview.token_hash,userId,preview.action,preview.organization_id,preview.created_at])).rows[0];
+ if(!proof)fail('La confirmación de identidad no es válida o venció.',401,'RECENT_AUTH_INVALID');
+ return proof;
+}
+async function consumeProof(c,{preview,proof}){
+ await c.query('update destructive_auth_proofs set consumed_at=now() where token_hash=$1',[proof.token_hash]);
+ await c.query('update destructive_action_previews set consumed_at=now() where token_hash=$1',[preview.token_hash]);
+}
+
+/** Vista previa de un borrado global (platform-admin): mismo patrón que la cuenta propia. */
+export async function createPlatformPreview(db,{userId,action,organizationId=null,targetId}){
+ if(!PLATFORM_DESTRUCTIVE_ACTIONS.has(action))fail('Operación de borrado inválida.',400,'DESTRUCTIVE_ACTION_INVALID');
+ const derived=await platformState(db,action,targetId);
+ const raw=token();
+ const payload={target:derived.target,consequences:{targetWillBeSoftDeleted:true,accessWillBeRevoked:true,sessionsWillBeRevoked:true,tenantDataWillBeRetained:true}};
+ const saved=(await db.query(`insert into destructive_action_previews(token_hash,user_id,action,organization_id,state_hash,confirmation,payload,expires_at)
+  values($1,$2,$3,$4,$5,$6,$7,now()+interval '${PREVIEW_MINUTES} minutes') returning expires_at`,[hash(raw),userId,action,organizationId,derived.stateHash,derived.confirmation,JSON.stringify(payload)])).rows[0];
+ return {id:raw,action,organizationId:organizationId===null?null:String(organizationId),confirmation:derived.confirmation,expiresAt:saved.expires_at,...payload};
+}
+
+/** Consume la prueba y la vista previa de un borrado global antes de ejecutarlo. */
+export async function consumePlatformDeletionProof(c,{userId,previewId,confirmation,recentAuthProof,action,organizationId=null}){
+ // Primero la prueba: sin ella no hay operación que valga (401 claro, no un 409 de vista previa).
+ assertProofFormat(recentAuthProof);
+ const preview=await previewByRaw(c,userId,previewId,{lock:true});
+ if(preview.action!==action||!same(preview.organization_id,organizationId))fail('La vista previa no corresponde a esta operación.',409,'DELETION_SCOPE_MISMATCH');
+ if(confirmation!==preview.confirmation)fail(`Escribí exactamente “${preview.confirmation}” para confirmar.`,400,'CONFIRMATION_MISMATCH');
+ const proof=await lockValidProof(c,{userId,preview,recentAuthProof});
+ const current=await assertFreshPreview(c,preview,{lock:true});
+ await consumeProof(c,{preview,proof});
+ return {preview,confirmation:preview.confirmation,target:current.target??null};
+}
+
 async function executeDeletion({db,user,previewId,recentAuthProof,confirmation,expectedAction,expectedOrganizationId=null}){
  if(expectedAction==='organization.delete'&&!same(user.organization_id,expectedOrganizationId))fail('La empresa no corresponde a tu sesión actual.',403,'DELETION_SCOPE_MISMATCH');
  const c=await db.connect();
@@ -197,13 +259,9 @@ async function executeDeletion({db,user,previewId,recentAuthProof,confirmation,e
   const preview=await previewByRaw(c,user.id,previewId,{lock:true});
   if(preview.action!==expectedAction||(expectedAction==='organization.delete'&&!same(preview.organization_id,expectedOrganizationId)))fail('La vista previa no corresponde a esta operación.',409,'DELETION_SCOPE_MISMATCH');
   if(confirmation!==preview.confirmation)fail(`Escribí exactamente “${preview.confirmation}” para confirmar.`,400,'CONFIRMATION_MISMATCH');
-  if(typeof recentAuthProof!=='string'||!/^[-\w]{43}$/.test(recentAuthProof))fail('Volvé a confirmar tu identidad.',401,'RECENT_AUTH_REQUIRED');
-  const proof=(await c.query(`select * from destructive_auth_proofs where token_hash=$1 and preview_token_hash=$2 and user_id=$3
-   and action=$4 and organization_id is not distinct from $5 and consumed_at is null and expires_at>now() and created_at >= $6 for update`,[hash(recentAuthProof),preview.token_hash,user.id,preview.action,preview.organization_id,preview.created_at])).rows[0];
-  if(!proof)fail('La confirmación de identidad no es válida o venció.',401,'RECENT_AUTH_INVALID');
+  const proof=await lockValidProof(c,{userId:user.id,preview,recentAuthProof});
   const current=await assertFreshPreview(c,preview,{lock:true});
-  await c.query('update destructive_auth_proofs set consumed_at=now() where token_hash=$1',[proof.token_hash]);
-  await c.query('update destructive_action_previews set consumed_at=now() where token_hash=$1',[preview.token_hash]);
+  await consumeProof(c,{preview,proof});
   const result=preview.action==='account.delete'?await executeAccountDeletion(c,user.id,current):await executeCompanyDeletion(c,user.id,preview.organization_id);
   await c.query('commit');return {action:preview.action,...result};
  }catch(error){await c.query('rollback');throw error;}finally{c.release();}
