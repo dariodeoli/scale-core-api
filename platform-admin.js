@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import {inspectInternalSubscription,updateInternalSubscription,realOrganization} from './platform-subscription-service.js';
-import {optionalUpdate} from './account-security.js';
+import {optionalUpdate,createPlatformPreview,consumePlatformDeletionProof} from './account-security.js';
 
 const currencies=['USD','PYG'];
 const realUser=alias=>`not ${alias}.is_demo_guest and ${alias}.deleted_at is null and ${alias}.email not ilike '%@demo.example.invalid' and ${alias}.email not ilike '%@scale-demo.example.invalid'`;
@@ -135,12 +135,22 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
    });
    send(res,200,result);return true;
   }
+  // Borrados globales (issue #22): vista previa + prueba de re-autenticación.
+  if(url.pathname==='/api/platform/destructive/preview'&&req.method==='POST'){
+   requireWrite(role);
+   const input=await body(req),action=input?.action,targetId=integer(input?.targetId);
+   if(!['platform.user.delete','platform.agency.delete'].includes(action))fail('Operación de borrado inválida.');
+   const preview=await createPlatformPreview(db,{userId:user.id,action,organizationId:action==='platform.agency.delete'?targetId:null,targetId});
+   send(res,200,{preview});return true;
+  }
   const agencyPath=url.pathname.match(/^\/api\/platform\/agencies\/(\d+)$/);
   if(agencyPath&&req.method==='DELETE'){
    requireWrite(role);
+   const input=await body(req);
    const deleted=await mutation(db,async client=>{
     const target=(await client.query(`select o.id,o.name,o.slug from organizations o where o.id=$1 and ${realOrganization('o')} for update`,[routeId(agencyPath[1])])).rows[0];
     if(!target)fail('Agencia no encontrada o protegida.',404);
+    await consumePlatformDeletionProof(client,{userId:user.id,previewId:input?.previewId,confirmation:input?.confirmation,recentAuthProof:input?.recentAuthProof,action:'platform.agency.delete',organizationId:target.id});
     await client.query('update organizations set active=false,deleted_at=now(),deleted_by_user_id=$2 where id=$1',[target.id,user.id]);
     await client.query('delete from sessions where organization_id=$1',[target.id]);
     await audit(client,user,'agency.delete','organization',target.id,{name:target.name,slug:target.slug});
@@ -211,10 +221,12 @@ export async function platformAdmin({req,res,url,db,session,body,send,bootstrapV
   }
   if(userPath&&req.method==='DELETE'){
    requireWrite(role);
+   const input=await body(req);
    const targetId=Number(userPath[1]),self=targetId===user.id;
    const deleted=await mutation(db,async client=>{
     const target=(await client.query(`select id from users where id=$1 and ${realUser('users')} for update`,[targetId])).rows[0];
     if(!target)fail('Usuario no encontrado.',404);
+    await consumePlatformDeletionProof(client,{userId:user.id,previewId:input?.previewId,confirmation:input?.confirmation,recentAuthProof:input?.recentAuthProof,action:'platform.user.delete',organizationId:null});
     if(!self){
      const adminRow=(await client.query("select 1 from platform_administrators where user_id=$1 and active=true and role='admin'",[targetId])).rows[0];
      if(adminRow)fail('No podés eliminar a otro administrador global.',403);

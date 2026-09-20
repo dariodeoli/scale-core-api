@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {platformAdmin,platformBootstrapEmail,platformBootstrapStatus,bootstrapInitialPlatformAdmin,ensurePlatformOwnerAdmin} from './platform-admin.js';
+import bcrypt from 'bcryptjs';
+import {accountSecurity} from './account-security.js';
 const pg=new PGlite();
 await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./schema.sql',import.meta.url),'utf8'));
 await pg.exec(`
@@ -27,10 +29,10 @@ await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migra
 await pg.exec(await (await import('node:fs/promises')).readFile(new URL('./migrations/20260920_platform_coupon_shape.sql',import.meta.url),'utf8'));
 await pg.exec(`
   create table if not exists oauth_states(id bigint primary key,recent_auth_user_id bigint);
-  create table if not exists destructive_action_previews(token_hash text primary key,user_id bigint);
+  create table if not exists destructive_action_previews(token_hash text primary key,user_id bigint,action text not null default 'account.delete',organization_id bigint,state_hash text not null default 'fixture',confirmation text not null default 'Eliminar',payload jsonb not null default '{}'::jsonb,expires_at timestamptz not null default now()+interval '5 minutes',consumed_at timestamptz,created_at timestamptz not null default now());
   create table if not exists destructive_email_challenges(id bigint primary key,preview_token_hash text not null references destructive_action_previews(token_hash) on delete restrict,user_id bigint);
   create table if not exists destructive_google_handoffs(token_hash text primary key,preview_token_hash text not null references destructive_action_previews(token_hash) on delete restrict,user_id bigint);
-  create table if not exists destructive_auth_proofs(token_hash text primary key,preview_token_hash text not null references destructive_action_previews(token_hash) on delete restrict,user_id bigint);
+  create table if not exists destructive_auth_proofs(token_hash text primary key,preview_token_hash text not null references destructive_action_previews(token_hash) on delete restrict,user_id bigint,action text not null default 'account.delete',organization_id bigint,method text not null default 'password',expires_at timestamptz not null default now()+interval '5 minutes',consumed_at timestamptz,created_at timestamptz not null default now());
   alter table organization_members add unique(organization_id,user_id);
   create table agency_inventory(id bigserial primary key,organization_id bigint,name text,serial_number text,unique(id,organization_id));
   create table user_personal_identities(user_id bigint primary key,full_name text not null,photo_url text,updated_at timestamptz not null default now());
@@ -46,6 +48,14 @@ async function call(path,{method='GET',actor={id:2,email:'platform@scale.example
 assert.equal(platformBootstrapEmail(' Platform@Scale.Example '),'platform@scale.example');
 assert.equal(platformBootstrapEmail('platform@scale.example,other@scale.example'),null,'the bootstrap accepts exactly one explicit email');
 assert.equal(platformBootstrapEmail('invalid'),null);
+// Borrados globales (issue #22): el admin global confirma con su contraseña real.
+await pg.query('update users set password_hash=$1 where id=2',[await bcrypt.hash('fixture-password',4)]);
+async function recentAuth(actor,previewId,password='fixture-password'){
+ let answer;const handled=await accountSecurity({req:{method:'POST',headers:{},socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('/api/auth/account/recent-auth/password','https://isolated.invalid'),db,session:async()=>actor,body:async()=>({previewId,password}),send:(_res,status,data)=>{answer={status,...data};},parseCookies:()=>({}),throttle:async()=>true,emailAvailable:false,sendDestructiveEmailCode:null});
+ assert(handled!==false,'accountSecurity cubre la re-autenticación');return answer;
+}
+const platformActor={id:2,email:'platform@scale.example'};
+const destructivePreview=(actor,action,targetId)=>call('/api/platform/destructive/preview',{method:'POST',actor,payload:{action,targetId}});
 const platformSource=fs.readFileSync(new URL('./platform-admin.js',import.meta.url),'utf8');
 assert(platformSource.includes('stripe_status as status'),'global subscription summary must use the production stripe_status column');
 assert(platformSource.includes('s.stripe_status as subscription_status'),'global agency list must use the production stripe_status column');
@@ -102,13 +112,27 @@ const opened=await call('/api/platform/agencies/20/subscription/extend',{method:
 assert.equal(opened.status,200);
 assert.equal((await pg.query('select currency from organization_subscriptions where organization_id=20')).rows[0].currency,'PYG','the manual runway uses the company currency');
 await pg.query("insert into sessions(id,user_id,organization_id,expires_at) values('1',1,10,now()+interval '7 days')");
-const removedAgency=await call('/api/platform/agencies/10',{method:'DELETE'});
-assert.equal(removedAgency.status,200);assert.deepEqual(removedAgency.data.deleted,{agencyId:10,name:'Agency One',slug:'agency-one'},'an admin can delete a real agency');
+// Borrado global (issue #22): sin prueba de re-autenticación no hay borrado.
+assert.equal((await call('/api/platform/agencies/10',{method:'DELETE'})).status,401,'an agency delete without a proof is rejected');
+assert.equal((await call('/api/platform/agencies/10',{method:'DELETE',payload:{previewId:'x'.repeat(43),confirmation:'Agency One',recentAuthProof:'x'.repeat(43)}})).status,409,'an unknown preview is rejected');
+assert.equal((await destructivePreview(platformActor,'platform.agency.delete',30)).status,404,'demo agencies are protected before the preview');
+assert.equal((await destructivePreview({id:3,email:'member@agency.example'},'platform.agency.delete',10)).status,403,'a viewer cannot even preview a deletion');
+const agencyPreview=await destructivePreview(platformActor,'platform.agency.delete',10);
+assert.equal(agencyPreview.status,200);assert.equal(agencyPreview.data.preview.confirmation,'Agency One','the confirmation is the agency name on record');
+assert.equal((await call('/api/platform/agencies/10',{method:'DELETE',payload:{previewId:agencyPreview.data.preview.id,confirmation:'Otra agencia',recentAuthProof:'x'.repeat(43)}})).status,400,'the typed confirmation must match');
+assert.equal((await recentAuth(platformActor,agencyPreview.data.preview.id,'wrong-password')).status,401,'a wrong password never issues a proof');
+const agencyAuth=await recentAuth(platformActor,agencyPreview.data.preview.id);
+assert.equal(agencyAuth.status,200,JSON.stringify(agencyAuth));
+assert.equal((await call('/api/platform/agencies/10',{method:'DELETE',payload:{previewId:agencyPreview.data.preview.id,confirmation:'Agency One',recentAuthProof:'y'.repeat(43)}})).status,401,'a forged proof is rejected');
+const removedAgency=await call('/api/platform/agencies/10',{method:'DELETE',payload:{previewId:agencyPreview.data.preview.id,confirmation:'Agency One',recentAuthProof:agencyAuth.proof}});
+assert.equal(removedAgency.status,200);assert.deepEqual(removedAgency.data.deleted,{agencyId:10,name:'Agency One',slug:'agency-one'},'an admin deletes a real agency with a fresh proof');
 assert.equal((await pg.query('select active from organizations where id=10')).rows[0].active,false,'the agency is soft-deleted');
 assert.equal((await pg.query('select deleted_at is not null as gone from organizations where id=10')).rows[0].gone,true);
 assert.equal((await pg.query('select count(*)::int as n from sessions where organization_id=10')).rows[0].n,0,'agency deletion revokes its sessions');
-assert.equal((await call('/api/platform/agencies/10',{method:'DELETE'})).status,404,'a deleted agency is no longer removable');
-assert.equal((await call('/api/platform/agencies/30',{method:'DELETE'})).status,404,'demo agencies are protected');
+assert.equal((await pg.query("select count(*)::int as n from destructive_auth_proofs where consumed_at is not null")).rows[0].n,1,'the proof is consumed exactly once');
+assert.equal((await destructivePreview(platformActor,'platform.agency.delete',10)).status,409,'a deleted agency cannot be previewed again');
+assert.equal((await call('/api/platform/agencies/10',{method:'DELETE',payload:{previewId:agencyPreview.data.preview.id,confirmation:'Agency One',recentAuthProof:agencyAuth.proof}})).status,404,'a soft-deleted agency leaves the deletable set even with a proof');
+assert.equal((await call('/api/platform/agencies/20',{method:'DELETE',payload:{previewId:agencyPreview.data.preview.id,confirmation:'Agency Two',recentAuthProof:agencyAuth.proof}})).status,409,'a consumed preview cannot be reused on another target');
 assert.equal((await call('/api/platform/audit')).data.actions.find(entry=>entry.action==='agency.delete').target_id,'10','agency deletion is audited');
 await pg.query('delete from platform_administrators');
 let bootstrap=await bootstrapInitialPlatformAdmin(db,'platform@scale.example');
@@ -144,7 +168,10 @@ assert.equal((await call('/api/platform/users/2',{method:'PATCH',payload:{platfo
 assert.equal((await call('/api/platform/users/1',{method:'PATCH',payload:{platform_access:'bogus'}})).status,400);
 assert.equal((await call('/api/platform/users/999',{method:'PATCH',payload:{platform_access:'admin'}})).status,404);
 assert.equal((await call('/api/platform/users/1',{method:'PATCH',payload:{platform_access:'admin'}})).status,200);
-assert.equal((await call('/api/platform/users/1',{method:'DELETE'})).status,403,'a global admin cannot delete another global admin');
+const adminPreview=await destructivePreview(platformActor,'platform.user.delete',1);
+assert.equal(adminPreview.status,200);assert.equal(adminPreview.data.preview.confirmation,'owner@agency.example','the confirmation is the user email on record');
+const adminAuth=await recentAuth(platformActor,adminPreview.data.preview.id);
+assert.equal((await call('/api/platform/users/1',{method:'DELETE',payload:{previewId:adminPreview.data.preview.id,confirmation:'owner@agency.example',recentAuthProof:adminAuth.proof}})).status,403,'a global admin cannot delete another global admin');
 assert.equal((await call('/api/platform/users/1',{method:'PATCH',payload:{platform_access:'none'}})).status,200,'revoking access leaves the account intact');
 assert.equal((await call('/api/platform/users')).data.users.find(row=>row.email==='owner@agency.example').platform_role,null);
 await pg.query("insert into users(id,email,password_hash,email_verified_at,is_demo_guest) values(11,'tester@scale.example','unused',now(),false)");
@@ -155,21 +182,32 @@ await pg.query("insert into agency_inventory_verifications(organization_id,inven
 await pg.query("insert into destructive_action_previews(token_hash,user_id) values('preview-11',11)");
 await pg.query("insert into destructive_email_challenges(id,preview_token_hash,user_id) values(1,'preview-11',11)");
 await pg.query("insert into destructive_google_handoffs(token_hash,preview_token_hash,user_id) values('handoff-11','preview-11',11)");
-const removedOwner=await call('/api/platform/users/11',{method:'DELETE'});
+// Sin prueba no hay borrado de usuario; con la prueba atada al objetivo, sí.
+assert.equal((await call('/api/platform/users/11',{method:'DELETE'})).status,401,'a user delete without a proof is rejected');
+const ownerPreview=await destructivePreview(platformActor,'platform.user.delete',11);
+assert.equal(ownerPreview.status,200);assert.equal(ownerPreview.data.preview.confirmation,'tester@scale.example');
+assert.equal((await call('/api/platform/users/11',{method:'DELETE',payload:{previewId:ownerPreview.data.preview.id,confirmation:'tester@scale.example',recentAuthProof:adminAuth.proof}})).status,401,'a proof issued for another preview never applies');
+const ownerAuth=await recentAuth(platformActor,ownerPreview.data.preview.id);
+const removedOwner=await call('/api/platform/users/11',{method:'DELETE',payload:{previewId:ownerPreview.data.preview.id,confirmation:'tester@scale.example',recentAuthProof:ownerAuth.proof}});
 assert.equal(removedOwner.status,200,'deleting a user with inventory history succeeds');assert.deepEqual(removedOwner.data.deleted,{userId:11,self:false,agencies:[60]},'deleting an owner removes their agency too');
 assert.equal((await pg.query('select deleted_at is not null as gone,active from organizations where id=60')).rows[0].gone,true,'the owned agency is soft-deleted with the user');
 assert.equal((await pg.query('select deleted_at is not null as gone from users where id=11')).rows[0].gone,true);
 assert.equal((await pg.query('select removed_at is not null as gone,active from organization_members where user_id=11 and organization_id=60')).rows[0].gone,true,'the membership is soft-removed, not hard-deleted');
 assert.equal((await pg.query('select count(*)::int as n from agency_inventory_verifications where verified_by_user_id=11')).rows[0].n,1,'inventory history survives the user deletion');
 assert.equal((await pg.query('select count(*)::int as n from destructive_email_challenges where user_id=11')).rows[0].n,0,'destructive challenges are removed with the user');
-const removedViewer=await call('/api/platform/users/3',{method:'DELETE'});
+const viewerPreview=await destructivePreview(platformActor,'platform.user.delete',3);
+const viewerAuth=await recentAuth(platformActor,viewerPreview.data.preview.id);
+const removedViewer=await call('/api/platform/users/3',{method:'DELETE',payload:{previewId:viewerPreview.data.preview.id,confirmation:'member@agency.example',recentAuthProof:viewerAuth.proof}});
 assert.equal(removedViewer.status,200);assert.deepEqual(removedViewer.data.deleted,{userId:3,self:false,agencies:[]});
 assert.ok(!(await call('/api/platform/users?limit=100')).data.users.some(row=>row.email==='member@agency.example'),'deleted users leave the global listing');
 assert.equal((await pg.query('select deleted_at is not null as gone from users where id=3')).rows[0].gone,true);
-assert.equal((await call('/api/platform/users/4',{method:'DELETE'})).status,404,'demo accounts are never deleted from the global panel');
-const selfDeleted=await call('/api/platform/users/2',{method:'DELETE'});
+assert.equal((await destructivePreview(platformActor,'platform.user.delete',4)).status,404,'demo accounts are never deleted from the global panel');
+assert.equal((await call('/api/platform/users/2',{method:'DELETE'})).status,401,'self deletion also requires a proof');
+const selfPreview=await destructivePreview(platformActor,'platform.user.delete',2);
+const selfAuth=await recentAuth(platformActor,selfPreview.data.preview.id);
+const selfDeleted=await call('/api/platform/users/2',{method:'DELETE',payload:{previewId:selfPreview.data.preview.id,confirmation:'platform@scale.example',recentAuthProof:selfAuth.proof}});
 assert.equal(selfDeleted.status,200);assert.equal(selfDeleted.data.deleted.self,true,'only the admin themselves can delete their own account');
 assert.equal((await pg.query('select deleted_at is not null as gone from users where id=2')).rows[0].gone,true);
 assert.equal((await pg.query('select count(*)::int as n from platform_administrators where active=true')).rows[0].n,0,'self-deletion also removes the global role');
 await pg.close();
-console.log('PASS: separated platform admin authorization, scoped lists, one-time explicit bootstrap and audit, explicit admin/viewer roles with write gating, self-protected admins, and audited user/agency deletion.');
+console.log('PASS: separated platform admin authorization, scoped lists, one-time explicit bootstrap and audit, explicit admin/viewer roles with write gating, re-authenticated global deletions (preview + single-use proof, forged/replayed/cross-preview rejection, demo targets protected), self-protected admins, and audited user/agency deletion.');
