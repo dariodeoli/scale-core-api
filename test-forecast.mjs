@@ -346,5 +346,7 @@ assert.equal((await call('/api/agency/reconciliation','POST',{accountId:String(t
 const statement=await call(`/api/agency/reconciliation?accountId=${transferSource}`,'GET',{},financeUser);
 assert.equal(statement.lines.some(line=>dateOnly(line.booked_on)),true,'statement lines carry booked_on as YYYY-MM-DD text');
 assert.equal(statement.movements.every(movement=>dateOnly(movement.booked_on)),true,'cash movements carry booked_on as YYYY-MM-DD text');
+// Each finance resource is gated by its own matrix capability.
+for(const [resource,payload] of [['payments',{invoiceId:String(paidInvoice),accountId:String(paymentAccount),amount:'10'}]])assert.equal((await call(`/api/agency/${resource}`,'POST',payload,{...user,role:'management'})).status,403,`${resource} rejects roles outside the capability`);
 await pg.close();
 console.log('PASS: forecast dates, timezone, fixed-salary authorization, signed salary overrides and per-person members, commercial-term role and integer validation, auditable planned-expense recurrence, revenue/payment segregation, leap/year boundaries, exact totals, zero, no pipeline, invoice/budget dedup, cancelled/draft/archive exclusion, role and tenant isolation; multi-month cash projection and estimated result per currency, contracted versus invoiced per client, six default currencies, partial settings, new versus existing records, real expenses with debits, cash movements, idempotent reversals and tenant isolation, no external writes');

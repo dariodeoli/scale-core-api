@@ -19,7 +19,11 @@ export async function financeControls({req,res,url,db,session,body,send}){
  let c,tx=false;
  try{
   const user=await session(req);if(!user)fail('No autenticado',401);
-  if(!roleCan(user,'accounts.manage'))fail('Tu rol no permite operar las cuentas',403);
+  // Each resource is gated by its own matrix capability (identical defaults for
+  // owner/admin/finance), so a company override on Cobros, Transferencias or
+  // Gastos actually applies. Reconciliation stays with Cuentas y custodios.
+  const capability=expenseRoute?'expenses.manage':route[1]==='payments'?'payments.manage':route[1]==='transfers'?'transfers.manage':'accounts.manage';
+  if(!roleCan(user,capability))fail('Tu rol no permite operar este recurso financiero',403);
   c=await db.connect();await c.query('begin');tx=true;
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);
   const org=user.organization_id,kind=route?.[1],key=route?.[2],action=route?.[3];let result,status=200;
