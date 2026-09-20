@@ -72,7 +72,11 @@ export async function productivity({req,res,url,db,session,body,send}){
     result={profile:{...saved,...context}};
    }else fail('Método no permitido',405);
   }else if(kind==='people'&&req.method==='GET'){
-   result={people:(await c.query("select user_id as id,email,full_name,photo_url from organization_person_identity where organization_id=$1 order by coalesce(nullif(trim(full_name),''),email)",[org])).rows};
+   // El directorio de equipo oculta correos a roles no administrativos: acá solo
+   // los reciben quienes ven el panel del equipo. El resto recibe el nombre ya
+   // resuelto (nombre o correo) para poder identificar a la persona.
+   const teamContact=roleCan(user,'members.manage')||roleCan(user,'finance.view');
+   result={people:(await c.query("select user_id as id,case when $2 then email else null end as email,coalesce(nullif(trim(full_name),''),email) as full_name,photo_url from organization_person_identity where organization_id=$1 order by coalesce(nullif(trim(full_name),''),email)",[org,teamContact])).rows};
   }else if(kind==='orders'&&key){
    const order=await owned(c,'agency_work_orders',key,org);
    if(req.method==='GET'&&!action){

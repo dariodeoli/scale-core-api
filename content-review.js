@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 import {fail,text,link,owned} from './suite-validation.js';
+import {zoneDate} from './business-time.js';
 const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hash=v=>crypto.createHash('sha256').update(v).digest('hex');
 const stamp=o=>hash(JSON.stringify([o.title,o.drive_url,o.status,o.approval_step,new Date(o.updated_at).toISOString()]));
@@ -37,7 +38,7 @@ export async function contentReview({req,res,url,db,session,body,send}){
    }
    if(req.method!=='GET'||pub[2])fail('Método no permitido',405);
    const pending=review.status==='pending'&&current;
-   const html=shell(review.title,`<p>Revisá la pieza y dejá tu respuesta. El archivo se abre en su servicio de origen.</p><a class="button" href="${escape(review.asset_url)}" target="_blank" rel="noopener noreferrer">Abrir pieza</a>${pending?`<form method="post" action="/review/${pub[1]}/respond"><label>Nombre completo<input name="name" required maxlength="120" autocomplete="name"></label><label>Comentarios o cambios<textarea name="feedback" maxlength="2000" rows="4"></textarea></label><button name="action" value="approve">Aprobar esta versión</button><button name="action" value="changes">Solicitar cambios</button></form>`:`<h2>${escape(review.status==='approved'?'Versión aprobada':review.status==='changes'?'Cambios solicitados':'La pieza fue actualizada')}</h2><p>${escape(review.feedback||'Pedí un nuevo enlace si necesitás revisar otra versión.')}</p>`}<p class="muted">Vence: ${new Date(review.expires_at).toISOString().slice(0,10)}. Quien tenga este enlace puede responder. El nombre declarado no equivale a una firma digital verificada.</p>`);
+   const html=shell(review.title,`<p>Revisá la pieza y dejá tu respuesta. El archivo se abre en su servicio de origen.</p><a class="button" href="${escape(review.asset_url)}" target="_blank" rel="noopener noreferrer">Abrir pieza</a>${pending?`<form method="post" action="/review/${pub[1]}/respond"><label>Nombre completo<input name="name" required maxlength="120" autocomplete="name"></label><label>Comentarios o cambios<textarea name="feedback" maxlength="2000" rows="4"></textarea></label><button name="action" value="approve">Aprobar esta versión</button><button name="action" value="changes">Solicitar cambios</button></form>`:`<h2>${escape(review.status==='approved'?'Versión aprobada':review.status==='changes'?'Cambios solicitados':'La pieza fue actualizada')}</h2><p>${escape(review.feedback||'Pedí un nuevo enlace si necesitás revisar otra versión.')}</p>`}<p class="muted">Vence: ${zoneDate(review.expires_at)}. Quien tenga este enlace puede responder. El nombre declarado no equivale a una firma digital verificada.</p>`);
    await c.query('commit');tx=false;res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});res.end(html);return true;
   }
   await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(user.id),req.socket.remoteAddress||'']);

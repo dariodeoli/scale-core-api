@@ -321,5 +321,27 @@ assert.equal(String(returnedTemplateRecord.storage_location_id),String(created.s
 assert.equal((await call('inventory-locations','GET',{},viewer)).status,200);
 assert.equal((await call('inventory-locations','POST',{name:'Forbidden'},producer)).status,403);
 
+// Un PATCH solo revalida el campo que llega: una fila legacy por encima de los
+// límites actuales sigue editable sin perder lo guardado (regla de AGENTS).
+const legacyCustodian=(await query("insert into users(email,password_hash) values('legacy-custodian@example.invalid','unused') returning id")).rows[0].id;
+await query("insert into organization_members(organization_id,user_id,role,active) values($1,$2,'production',false)",[org,legacyCustodian]);
+const legacyId=String((await query("insert into agency_inventory(organization_id,name,category,serial_number,custodian_user_id,value,currency,status,notes,storage_shelf,storage_row) values($1,$2,$3,$4,$5,0,'USD','available',$6,$7,'7') returning id",[org,'Equipo legacy '+'X'.repeat(180),'Categoría legacy '+'Y'.repeat(90),'S'+'9'.repeat(130),legacyCustodian,'N'.repeat(2400),'E'+'Z'.repeat(140)])).rows[0].id);
+const legacyPatch=await call(`inventory/${legacyId}`,'PATCH',{storage_row:'9'},management);
+assert.equal(legacyPatch.status,200,JSON.stringify(legacyPatch));
+assert(legacyPatch.record.name.length>160,'a legacy over-limit name travels untouched');
+assert.equal(legacyPatch.record.notes.length,2400,'legacy notes are preserved as stored');
+assert.equal(legacyPatch.record.storage_shelf.length,141,'a legacy shelf is not revalidated');
+assert.equal(legacyPatch.record.storage_row,'9','the field that arrives still applies');
+assert.equal(String(legacyPatch.record.custodian_user_id),String(legacyCustodian),'a stored suspended custodian is preserved, not revalidated');
+assert(legacyPatch.record.category===undefined||legacyPatch.record.category.length>80,'a legacy free-text category is not rewritten');
+// Los campos que sí llegan siguen revalidándose.
+assert.equal((await call(`inventory/${legacyId}`,'PATCH',{name:'X'})).status,400);
+assert.equal((await call(`inventory/${legacyId}`,'PATCH',{serial_number:'S'.repeat(130)})).status,400,'an incoming serial still respects the limit');
+assert.equal((await call(`inventory/${legacyId}`,'PATCH',{value:-5})).status,400);
+assert.equal((await call(`inventory/${legacyId}`,'PATCH',{status:'reparado'})).status,400);
+assert.equal((await call(`inventory/${legacyId}`,'PATCH',{custodian_user_id:'999999'})).status,400,'an incoming custodian must be an active member');
+assert.equal((await call(`inventory/${legacyId}`,'PATCH',{inventory_code:'OTRO'})).status,409,'the inventory code stays stable');
+assert.equal((await call(`inventory/${legacyId}`)).record.storage_row,'9','failed edits keep the stored row');
+
 await pg.close();
 console.log(`PASS: ${apiCases} API cases; category lifecycle, multi-unit/responsible workflow, conflict rollback, reschedule/cancel releases, physical availability, overdue handover, complete-return atomicity, safe rejection of partial/malformed returns, recorded locations, calendar year/midnight boundaries, tenant/role checks, GiST exclusion, unique checkout and audit. Concurrent API requests use a single-connection PGlite pool; real multi-connection PostgreSQL not run.`);

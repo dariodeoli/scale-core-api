@@ -6,6 +6,7 @@ import {pipelineStages} from './pipeline-stages.js';
 import {passwordAccess} from './password-access.js';
 import {collaboratorAccess} from './collaborator-access.js';
 import {budgetDocument} from './budget-document.js';
+import {zoneDate,zoneToday} from './business-time.js';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 const query=(sql,args)=>pg.query(sql,args),db={query,connect:async()=>({query,release(){}})};
@@ -16,6 +17,8 @@ await pg.exec(await fs.readFile('migrations/20260911_drive_links.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_project_assignees.sql','utf8'));
 for(const file of ['20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260910_work_checklists.sql','20260910_notifications.sql','20260913_ruc_collaboration.sql','20260914_production_traceability.sql','20260915_planned_expense_kind.sql','20260915_inventory_photos.sql','20260915_salary_override_signed.sql','20260919_pipeline_stages.sql'])await pg.exec(await fs.readFile('migrations/'+file,'utf8'));
 const org=(await query("select id from organizations where slug='scale'")).rows[0].id;
+const serverSource=await fs.readFile(new URL('./server.js',import.meta.url),'utf8');
+assert(serverSource.indexOf('inventoryReservations({')<serverSource.indexOf('suite({'),'inventory routes are handled before the suite in server.js');
 const other=(await query("insert into organizations(slug,name) values('suite-other','Other') returning id")).rows[0].id;
 const uid=(await query("insert into users(email,password_hash) values('suite-owner@example.invalid','unused') returning id")).rows[0].id;
 const viewer=(await query("insert into users(email,password_hash) values('suite-viewer@example.invalid','unused') returning id")).rows[0].id;
@@ -102,7 +105,11 @@ assert.equal(convertedStage.probability,100);
 assert.equal((await call(`/api/agency/pipeline-stages/${wonStage.id}`,'PATCH',{label:'Ajeno'},{...stageUser,organization_id:org})).status,404,'cross-tenant stage edits are refused');
 assert.equal((await call('/api/agency/pipeline-stages','GET',{}, {...stageUser,role:'viewer'})).status,403);
 assert.equal((await call('/api/agency/pipeline-stages','POST',{label:'Viewer'}, {...stageUser,role:'viewer'})).status,403);
-r=await call('/api/agency/inventory','POST',{name:'Camera',value:2000,currency:'USD'});assert.equal(r.status,201);
+// El inventario se escribe en inventory-reservations.js: el suite ya no reclama
+// esas rutas (si lo hiciera, volvería a guardar la forma vieja sin category_id,
+// ubicación ni valor de compra). Acá solo se necesita una fila para el tablero.
+assert.equal(await suite({req:{method:'POST',socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test/api/agency/inventory'),send:()=>{}}),false,'the suite never handles inventory routes');
+await query("insert into agency_inventory(organization_id,name,value,currency) values($1,'Camera',2000,'USD')",[org]);
 assert.equal((await call('/api/agency/plans','POST',{name:'Plan',items:[{description:'Video',quantity:2,unitPrice:100}],currency:'USD'})).status,201);
 assert.equal((await call('/api/agency/plans','POST',{name:'Invalid',items:[]})).status,400);
 assert.equal((await call('/api/agency/exchange-rates','POST',{rate_date:'2026-09-08',usd_to_pyg:7500})).status,200);
@@ -132,6 +139,22 @@ assert.equal((await call(`/api/agency/budgets/${budget}`,'PATCH',{title:'Changed
 const invoice=await call(`/api/agency/budgets/${budget}/invoice`,'POST');assert.equal(invoice.status,200);assert.equal((await call(`/api/agency/budgets/${budget}/invoice`,'POST')).invoice.id,invoice.invoice.id);
 assert.equal((await call(`/api/agency/budgets/${budget}/revoke`,'POST')).status,200);assert.equal((await call('/p/'+token)).status,404);
 const escaped=budgetDocument({number:'T',title:'<script>alert(1)</script>',organization_name:'Test',client_name:'Client',currency:'USD',subtotal:10,total:11,tax_rate:.1},[]);assert.ok(!escaped.includes('<script>'));assert.ok(escaped.includes('&lt;script&gt;'));
+// El día de negocio es America/Asuncion: la validez del presupuesto no se
+// compara contra UTC (un vencimiento de la tarde se leería como el día siguiente).
+assert.equal(zoneDate('2026-09-21T02:59:00.000Z'),'2026-09-20','late evening in Asuncion stays on the same day');
+assert.equal(zoneDate('2026-09-21T03:00:00.000Z'),'2026-09-21','midnight in Asuncion starts the next day');
+assert.equal(zoneToday(new Date('2026-01-01T02:30:00.000Z')),'2025-12-31');
+assert.equal(zoneDate('nope'),null);
+const budgetSource=await fs.readFile(new URL('./budget-document.js',import.meta.url),'utf8');
+assert.match(budgetSource,/valid_until\)\.toISOString\(\)\.slice\(0,10\)>=zoneToday\(\)/,'budget validity uses the company day');
+assert.match(budgetSource,/escape\(zoneDate\(b\.accepted_at\)\)/,'acceptance prints the company day');
+const suiteSource=await fs.readFile(new URL('./agency-suite.js',import.meta.url),'utf8');
+assert.match(suiteSource,/valid_until>="\+zoneTodaySql\+"/,'the public response compares against the company day');
+const todayToken='c'.repeat(32);
+await query("insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,public_token,share_enabled,status,valid_until) values($1,$2,'Q-TODAY','Today','USD',10,11,$3,true,'sent',$4::date)",[org,client,todayToken,zoneToday()]);
+assert.equal((await call('/p/'+todayToken+'/respond','POST',{},null,'name=Customer&action=accept&revision=1')).status,303,'a quote valid today can still be accepted');
+assert.equal((await call('/p/'+todayToken+'/respond','POST',{},null,'name=Customer&action=accept&revision=1')).status,409,'the same quote cannot be accepted twice');
+
 r=await call('/api/auth/password/request','POST',{email:'unknown@example.invalid'});assert.equal(r.status,202);assert.equal(sent,0);
 assert.equal((await call('/api/auth/password/request','POST',{email:'suite-owner@example.invalid'})).status,202);assert.equal(sent,1);assert.equal(resetToken.length,64);
 assert.equal((await call('/api/auth/password/reset','POST',{token:resetToken,password:'NuevaClave!2026'})).status,200);

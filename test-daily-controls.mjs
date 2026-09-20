@@ -7,11 +7,16 @@ import {contentReview} from './content-review.js';
 import {suite} from './agency-suite.js';
 import {budgetDocument} from './budget-document.js';
 import {budgetSections} from './budget-sections.js';
+import {zoneDate} from './business-time.js';
 const pg=new PGlite();await pg.exec(await fs.readFile('schema.sql','utf8'));
 for(const name of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql'])await pg.exec(await fs.readFile('migrations/'+name,'utf8'));
 // The current work-order PATCH writes drive_links, as in the production migration chain.
 await pg.exec(await fs.readFile('migrations/20260911_drive_links.sql','utf8'));
 await identitySchema(pg);
+// El PATCH de proyectos escribe `active` y el archivo de proyecto depende de los permisos por rol:
+// sin estas migraciones la cadena del fixture fallaba con 42703.
+await pg.exec(await fs.readFile('migrations/20260914_role_permissions.sql','utf8'));
+await pg.exec(await fs.readFile('migrations/20260918_collaborator_role_and_project_archive.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_project_assignees.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_work_checklists.sql','utf8'));
 await pg.exec(await fs.readFile('migrations/20260910_notifications.sql','utf8'));
@@ -106,6 +111,8 @@ for(const [kind,key,table,rename] of [
 r=await call(`/api/agency/work-orders/${order}/client-review`,'POST');assert.equal(r.status,200);let token=r.url.split('/').at(-1);
 assert.equal((await call(`/api/agency/work-orders/${order}/publish`,'POST')).status,400);
 assert.equal((await call(`/review/${token}`)).status,200);
+const reviewExpiry=(await query('select expires_at from agency_content_reviews order by id desc limit 1')).rows[0].expires_at;
+assert((await call(`/review/${token}`)).content.includes('Vence: '+zoneDate(reviewExpiry)),'the public review page prints the company day, not the UTC day');
 r=await call(`/api/agency/work-orders/${order}`,'PATCH',{drive_url:'https://drive.google.com/new-version'});
 assert.equal(r.status,200,'Updating the piece must succeed before checking stale review rejection');
 assert.equal((await query('select drive_url from agency_work_orders where id=$1',[order])).rows[0].drive_url,'https://drive.google.com/new-version','The requested asset must be persisted; do not accept a review invalidated only by an unrelated timestamp change');

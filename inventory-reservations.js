@@ -251,7 +251,7 @@ async function storageLocation(c,org,old,payload,key=null){
   if(!customName)fail('Ingresá la ubicación personalizada');
   return {id:null,shelf:customName};
  }
- if(candidate===null||candidate===undefined||candidate==='')return {id:null,shelf:text(payload.storage_shelf??old.storage_shelf??'',100)};
+ if(candidate===null||candidate===undefined||candidate==='')return {id:null,shelf:Object.hasOwn(payload,'storage_shelf')?text(payload.storage_shelf,100):(old.storage_shelf??'')};
  const row=(await c.query('select * from agency_inventory_storage_locations where id=$1 and organization_id=$2',[identifier(candidate),org])).rows[0];
  if(!row)fail('Lugar de guardado no encontrado',404);
  if(!row.active&&(String(row.id)!==String(old.storage_location_id)||!key))fail('Elegí un lugar de guardado activo');
@@ -267,41 +267,57 @@ async function listStorageLocations(c,org){
 
 async function saveItem(c,user,org,key,payload){
  const old=key?(await equipment(c,org,[key]))[0]:{};
- const merged={...old,...payload},name=text(merged.name,160);if(name.length<2)fail('Ingresá el nombre del equipo');
+ const sent=field=>Object.hasOwn(payload,field);
+ // Un PATCH solo revalida el campo que llega: lo guardado viaja tal cual para no
+ // romper filas legacy cargadas antes de los límites o reglas actuales.
+ const name=sent('name')?text(payload.name,160):old.name;
+ if(!name||name.length<2)fail('Ingresá el nombre del equipo');
  let category;
- if(Object.hasOwn(payload,'category_id')||!Object.hasOwn(payload,'category')&&old.category_id){
-  category=(await c.query('select * from agency_inventory_categories where id=$1 and organization_id=$2',[identifier(merged.category_id),org])).rows[0];
+ if(sent('category_id')||!sent('category')&&old.category_id){
+  category=(await c.query('select * from agency_inventory_categories where id=$1 and organization_id=$2',[identifier(sent('category_id')?payload.category_id:old.category_id),org])).rows[0];
  }else{
-  const categoryName=text(merged.category||'Otro',80);
-  if(!categoryName)fail('Ingresá el nombre de la categoría');
-  category=(await c.query('select * from agency_inventory_categories where organization_id=$1 and lower(trim(name))=lower($2)',[org,categoryName])).rows[0];
-  if(!category)category=(await c.query('insert into agency_inventory_categories(organization_id,name) values($1,$2) returning *',[org,categoryName])).rows[0];
+  const rawCategory=sent('category')?payload.category||'Otro':old.category||'Otro';
+  if(!sent('category')&&typeof rawCategory==='string'&&rawCategory.length>80){
+   // Categoría legacy por encima del límite actual: viaja tal cual, sin resolver ficha.
+   category={id:old.category_id??null,name:rawCategory};
+  }else{
+   const categoryName=text(rawCategory,80);
+   if(!categoryName)fail('Ingresá el nombre de la categoría');
+   category=(await c.query('select * from agency_inventory_categories where organization_id=$1 and lower(trim(name))=lower($2)',[org,categoryName])).rows[0];
+   if(!category)category=(await c.query('insert into agency_inventory_categories(organization_id,name) values($1,$2) returning *',[org,categoryName])).rows[0];
+  }
  }
  if(!category||!category.active&&String(category.id)!==String(old.category_id))fail('Elegí una categoría activa de esta empresa');
- const status=option(merged.status||'available',['available','in_use','maintenance','retired']);
+ const status=sent('status')?option(payload.status,['available','in_use','maintenance','retired']):old.status||'available';
  if(status==='in_use'&&old.status!=='in_use')fail('Usá Registrar retiro para indicar quién lleva el equipo');
- const custodian=optionalId(merged.custodian_user_id);if(custodian)await activeMembers(c,org,[custodian]);
- const location=await storageLocation(c,org,old,payload,key);const shelf=location.shelf,storageRow=text(merged.storage_row||'',80);
+ const custodian=sent('custodian_user_id')?optionalId(payload.custodian_user_id):old.custodian_user_id??null;
+ // Solo se valida la pertenencia cuando el PATCH envía un custodio nuevo.
+ if(sent('custodian_user_id')&&custodian)await activeMembers(c,org,[custodian]);
+ const location=await storageLocation(c,org,old,payload,key);const shelf=location.shelf,storageRow=sent('storage_row')?text(payload.storage_row,80):old.storage_row??'';
  const photo=Object.hasOwn(payload,'photo_url')?await profilePhoto(payload.photo_url):old.photo_url||null;
  const locationChanged=String(location.id||'')!==String(old.storage_location_id||'')||shelf!==(old.storage_shelf||'');
  if(key){
   const open=(await c.query("select status from agency_inventory_reservation_items where inventory_id=$1 and organization_id=$2 and status in ('reserved','checked_out')",[key,org])).rows;
   if(open.length&&status!==old.status)fail('Cerrá o cancelá las reservas antes de cambiar el estado del equipo',409);
-  if(open.some(r=>r.status==='checked_out')&&(custodian!==optionalId(old.custodian_user_id)||shelf!==old.storage_shelf||storageRow!==old.storage_row))fail('La ubicación y el custodio se cambian al registrar la devolución',409);
+  if(open.some(row=>row.status==='checked_out')&&(String(custodian??'')!==String(old.custodian_user_id??'')||locationChanged))fail('La ubicación y el custodio se cambian al registrar la devolución',409);
  }
- if(key&&Object.hasOwn(payload,'inventory_code')&&text(payload.inventory_code,60)!==old.inventory_code)fail('El código de inventario es estable y no se puede cambiar',409);
- const code=key?old.inventory_code:text(merged.inventory_code||'',60);
- const purchaseValue=Object.hasOwn(payload,'purchase_value')?(payload.purchase_value===null||payload.purchase_value===''?null:amount(payload.purchase_value)):(old.purchase_value===undefined||old.purchase_value===null?null:Number(old.purchase_value));
- const purchaseDate=Object.hasOwn(payload,'purchase_date')?date(payload.purchase_date):date(old.purchase_date);
- const depreciationMethod=option(payload.depreciation_method===undefined?old.depreciation_method||'none':payload.depreciation_method,['none','linear']);
- const lifeInput=Object.hasOwn(payload,'useful_life_months')?payload.useful_life_months:old.useful_life_months??null;
+ // El código de inventario es estable: cualquier diferencia se rechaza sin revalidar el guardado.
+ if(key&&sent('inventory_code')&&String(payload.inventory_code??'')!==String(old.inventory_code??''))fail('El código de inventario es estable y no se puede cambiar',409);
+ const code=key?old.inventory_code:text(payload.inventory_code||'',60);
+ const purchaseValue=sent('purchase_value')?(payload.purchase_value===null||payload.purchase_value===''?null:amount(payload.purchase_value)):(old.purchase_value===undefined||old.purchase_value===null?null:Number(old.purchase_value));
+ const purchaseDate=sent('purchase_date')?date(payload.purchase_date):date(old.purchase_date);
+ const depreciationMethod=option(sent('depreciation_method')?payload.depreciation_method:old.depreciation_method||'none',['none','linear']);
+ const lifeInput=sent('useful_life_months')?payload.useful_life_months:old.useful_life_months??null;
  const usefulLife=lifeInput===null||lifeInput===undefined||lifeInput===''?null:Number(lifeInput);
  if(usefulLife!==null&&(!Number.isInteger(usefulLife)||usefulLife<1||usefulLife>600))fail('La vida útil debe estar entre 1 y 600 meses');
- const residual=Object.hasOwn(payload,'residual_value')?(payload.residual_value===null||payload.residual_value===''?0:amount(payload.residual_value)):(old.residual_value===undefined?0:Number(old.residual_value||0));
- if(purchaseValue===null&&residual>0)fail('Cargá primero el valor de compra');
- if(purchaseValue!==null&&Math.round(residual*100)>Math.round(purchaseValue*100))fail('El valor residual no puede superar el valor de compra');
- if(depreciationMethod==='linear'&&(purchaseValue===null||!purchaseDate||usefulLife===null))fail('Para depreciación lineal indicá valor de compra, fecha y vida útil');
- const values=[name,category.name,serial(merged.serial_number||''),custodian,amount(merged.value??0),option(merged.currency===undefined?await companyCurrency(c,org):merged.currency,currencies),status,date(merged.acquired_on),text(merged.notes||''),category.id,location.id,shelf,storageRow,code,photo,purchaseValue,purchaseDate,depreciationMethod,usefulLife,residual,org];
+ const residual=sent('residual_value')?(payload.residual_value===null||payload.residual_value===''?0:amount(payload.residual_value)):(old.residual_value===undefined?0:Number(old.residual_value||0));
+ // Las reglas cruzadas del valor solo aplican al alta o cuando el borrador toca alguno de esos campos.
+ if(!key||['purchase_value','purchase_date','depreciation_method','useful_life_months','residual_value'].some(sent)){
+  if(purchaseValue===null&&residual>0)fail('Cargá primero el valor de compra');
+  if(purchaseValue!==null&&Math.round(residual*100)>Math.round(purchaseValue*100))fail('El valor residual no puede superar el valor de compra');
+  if(depreciationMethod==='linear'&&(purchaseValue===null||!purchaseDate||usefulLife===null))fail('Para depreciación lineal indicá valor de compra, fecha y vida útil');
+ }
+ const values=[name,category.name,sent('serial_number')?serial(payload.serial_number||''):old.serial_number??'',custodian,sent('value')?amount(payload.value):old.value??0,sent('currency')?option(payload.currency,currencies):old.currency??await companyCurrency(c,org),status,sent('acquired_on')?date(payload.acquired_on):old.acquired_on??null,sent('notes')?text(payload.notes||''):old.notes??'',category.id,location.id,shelf,storageRow,code,photo,purchaseValue,purchaseDate,depreciationMethod,usefulLife,residual,org];
  const result=key?await c.query(`update agency_inventory set name=$1,category=$2,serial_number=$3,custodian_user_id=$4,value=$5,currency=$6,status=$7,acquired_on=$8,notes=$9,category_id=$10,storage_location_id=$11,storage_shelf=$12,storage_row=$13,inventory_code=$14,photo_url=$15,purchase_value=$16,purchase_date=$17,depreciation_method=$18,useful_life_months=$19,residual_value=$20${locationChanged?',location_changed_at=now()':''} where organization_id=$21 and id=$22 returning *`,[...values,key]):await c.query('insert into agency_inventory(name,category,serial_number,custodian_user_id,value,currency,status,acquired_on,notes,category_id,storage_location_id,storage_shelf,storage_row,inventory_code,photo_url,purchase_value,purchase_date,depreciation_method,useful_life_months,residual_value,organization_id,location_changed_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,now()) returning *',values);
  const saved=(await inventoryRecord(c,org,String(result.rows[0].id)))||inventoryPayload(result.rows[0]);
  await traceInventory(c,org,[String(saved.id)],key?'inventory.updated':'inventory.created',user.id,null,{inventory_code:saved.inventory_code,name:saved.name,status:saved.status});

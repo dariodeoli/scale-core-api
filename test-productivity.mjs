@@ -50,6 +50,18 @@ assert.equal((await query('select photo_url from agency_collaborators where id=$
 await query('update agency_collaborators set photo_url=null where id=$1',[person.id]);
 assert.equal((await call(base+'/profile')).profile.photo_url,null);
 assert.equal((await call(base+'/people')).people[0].full_name,'Nombre conectado');
+// El correo solo lo reciben los roles que ven el panel del equipo; el nombre
+// resuelto viaja siempre para poder identificar a la persona.
+const anonymous=(await query("insert into users(email,password_hash) values('sin-nombre@example.invalid','unused') returning id")).rows[0].id;
+await query("insert into organization_members(organization_id,user_id,role) values($1,$2,'viewer')",[org,anonymous]);
+assert((await call(base+'/people')).people.some(row=>row.email==='sin-nombre@example.invalid'),'the team panel roles receive emails');
+const viewerPeople=(await call(base+'/people','GET',{}, {...user,role:'viewer'})).people;
+assert.equal(viewerPeople.find(row=>String(row.id)===String(anonymous)).email,null,'non-administrative roles never receive the email field');
+assert.equal(viewerPeople.find(row=>String(row.id)===String(anonymous)).full_name,'sin-nombre@example.invalid','the resolved name identifies people without a profile name');
+assert.equal(viewerPeople.find(row=>String(row.id)===String(uid)).full_name,'Nombre conectado');
+assert.equal((await call(base+'/people','GET',{}, {...user,role:'collaborator'})).people.find(row=>String(row.id)===String(uid)).email,null,'collaborator keeps names without emails');
+assert.equal((await call(base+'/people','GET',{}, {...user,role:'finance'})).people.find(row=>String(row.id)===String(uid)).email,'productivity@example.invalid','finance sees the team panel');
+assert.equal((await call(base+'/people','GET',{}, {...user,role:'management'})).people.find(row=>String(row.id)===String(uid)).email,'productivity@example.invalid');
 await pg.exec(await fs.readFile('migrations/20260910_profile_identity.sql','utf8'));
 assert.equal((await call(base+'/profile')).profile.full_name,'Nombre conectado');
 const png=await sharp({create:{width:400,height:120,channels:3,background:{r:120,g:60,b:90}}}).png().toBuffer();

@@ -5,12 +5,13 @@ import {identitySchema} from './scripts/test-identity-schema.mjs';
 import {financialForecast,forecastMonth,companyCurrency} from './forecast.js';
 import {financeControls} from './finance-controls.js';
 import {suite} from './agency-suite.js';
+import {inventoryReservations} from './inventory-reservations.js';
 import {operations} from './operations.js';
 import {agencyReport,reports} from './reports.js';
 
 const pg=new PGlite();
 await pg.exec(await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8'));
-for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_billing_cadence_and_coupons.sql','20260915_planned_expense_kind.sql','20260915_expenses.sql','20260915_client_terms_end_date.sql','20260915_salary_override_signed.sql','20260910_inventory_reservations.sql','20260912_inventory_verifications.sql','20260913_inventory_advanced_traceability.sql','20260914_inventory_storage_locations.sql','20260915_inventory_category_icons.sql','20260915_inventory_photos.sql','20260915_inventory_location_pipeline.sql','20260919_pipeline_stages.sql']) {
+for(const file of ['20260908_treasury_ledger.sql','20260908_people_commissions_comments.sql','20260908_operations_complete.sql','20260908_referral_discounts.sql','20260908_collaborator_profiles.sql','20260908_agency_suite.sql','20260908_daily_controls.sql','20260910_productivity.sql','20260910_profile_identity.sql','20260910_client_lifecycle.sql','20260910_currencies.sql','20260910_company_currency.sql','20260911_agency_reports.sql','20260914_salary_forecast.sql','20260914_client_commercial_lifecycle.sql','20260914_client_terms_and_planned_expenses.sql','20260915_optional_commission_terms.sql','20260915_billing_cadence_and_coupons.sql','20260915_planned_expense_kind.sql','20260915_expenses.sql','20260915_client_terms_end_date.sql','20260915_salary_override_signed.sql','20260910_inventory_reservations.sql','20260912_inventory_verifications.sql','20260913_inventory_advanced_traceability.sql','20260914_inventory_storage_locations.sql','20260915_inventory_category_icons.sql','20260915_inventory_photos.sql','20260915_inventory_location_pipeline.sql','20260919_inventory_value_maintenance.sql','20260919_pipeline_stages.sql']) {
  await pg.exec(await fs.readFile(new URL(`./migrations/${file}`,import.meta.url),'utf8'));
 }
 // Startup migrations must be repeatable.
@@ -293,7 +294,7 @@ for(const role of ['management','finance','sales','production','editor','viewer'
 }
 assert.equal((await call('/api/agency/settings','PATCH',{default_currency:'BRL',organization_id:other})).status,200);
 assert.equal(await companyCurrency(db,other),'PYG');
-for(const kind of ['leads','inventory','plans']){
+for(const kind of ['leads','plans']){
  const payload={name:'Default currency',items:[{description:'Fixture item',quantity:1,unitPrice:1}]};
  const created=await call(`/api/agency/${kind}`,'POST',payload);assert.equal(created.status,201);assert.equal(created.record.currency,'BRL');
  await call('/api/agency/settings','PATCH',{default_currency:'USD'});
@@ -301,6 +302,18 @@ for(const kind of ['leads','inventory','plans']){
  const explicit=await call(`/api/agency/${kind}`,'POST',{...payload,currency:'ARS'});assert.equal(explicit.record.currency,'ARS');
  await call('/api/agency/settings','PATCH',{default_currency:'BRL'});
 }
+// El inventario se sirve desde inventory-reservations.js: misma regla de moneda.
+const inventoryArgs=(method,payload={})=>({req:{method,socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test/api/agency/inventory'),db,session:async()=>user,body:async()=>payload,send:(_,status,data)=>{inventoryResult={status,...data};}});
+let inventoryResult;
+assert.equal(await inventoryReservations(inventoryArgs('POST',{name:'Default currency',value:1})),true);
+assert.equal(inventoryResult.status,201);assert.equal(inventoryResult.record.currency,'BRL');
+await call('/api/agency/settings','PATCH',{default_currency:'USD'});
+const inventoryArgsPatch={...inventoryArgs('PATCH',{name:'Existing record'}),url:new URL('https://test/api/agency/inventory/'+inventoryResult.record.id)};
+assert.equal(await inventoryReservations(inventoryArgsPatch),true);
+assert.equal(inventoryResult.record.currency,'BRL','an edit without currency keeps the stored one');
+assert.equal(await inventoryReservations(inventoryArgs('POST',{name:'Explicit currency',value:1,currency:'ARS'})),true);
+assert.equal(inventoryResult.record.currency,'ARS');
+await call('/api/agency/settings','PATCH',{default_currency:'BRL'});
 const person=await call('/api/agency/collaborators','POST',{full_name:'Currency fixture',compensation_amount:20});
 assert.equal(person.status,201);assert.equal(person.collaborator.currency,'BRL');
 await call('/api/agency/settings','PATCH',{default_currency:'MXN'});
