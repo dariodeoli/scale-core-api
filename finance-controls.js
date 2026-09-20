@@ -1,4 +1,5 @@
 import {fail,text,id,optId,amount,option,date,owned} from './suite-validation.js';
+import {currencies} from './currencies.js';
 import {roleCan} from './permissions.js';
 import {attributeActors} from './actor-identity.js';
 // `date` columns must travel as text (YYYY-MM-DD): node-pg parses them into a
@@ -37,7 +38,7 @@ export async function financeControls({req,res,url,db,session,body,send}){
     const b=await body(req),paid=wholeAmount(b.amount);
     const category=option(b.category,['Operación','Herramientas','Marketing','Administración','Otro']);
     const kind=b.kind===undefined||b.kind===null?null:option(b.kind,['fixed','variable']);
-    const currency=option(b.currency,['PYG','USD']);
+    const currency=option(b.currency,currencies);
     const account=(await c.query('select * from bank_accounts where id=$1 and organization_id=$2 for update',[id(b.accountId),org])).rows[0];
     if(!account||!account.active)fail('La cuenta debe estar activa y pertenecer a la empresa');
     if(account.currency!==currency)fail('La moneda debe coincidir con la cuenta');

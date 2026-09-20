@@ -361,5 +361,14 @@ assert.equal(statement.lines.some(line=>dateOnly(line.booked_on)),true,'statemen
 assert.equal(statement.movements.every(movement=>dateOnly(movement.booked_on)),true,'cash movements carry booked_on as YYYY-MM-DD text');
 // Each finance resource is gated by its own matrix capability.
 for(const [resource,payload] of [['payments',{invoiceId:String(paidInvoice),accountId:String(paymentAccount),amount:'10'}]])assert.equal((await call(`/api/agency/${resource}`,'POST',payload,{...user,role:'management'})).status,403,`${resource} rejects roles outside the capability`);
+// Real expenses accept the six company currencies: the account decides the currency.
+const eurAccount=(await query("insert into bank_accounts(organization_id,name,account_type,currency,balance) values($1,'Gastos EUR','bank','EUR',900) returning id",[org])).rows[0].id;
+assert.equal((await call(realExpensesPath,'POST',{...realExpensePayload,accountId:String(eurAccount),amount:'120'},financeUser)).status,400,'an expense must use its account currency');
+const eurExpense=await call(realExpensesPath,'POST',{...realExpensePayload,currency:'EUR',accountId:String(eurAccount),amount:'120'},financeUser);
+assert.equal(eurExpense.status,201,'an EUR expense registers on an EUR account');
+assert.equal(eurExpense.expense.currency,'EUR');assert.equal(eurExpense.expense.amount,120);
+assert.equal((await query('select balance from bank_accounts where id=$1',[eurAccount])).rows[0].balance,'780.00','the EUR expense debits its own account');
+assert.equal((await call(realExpensesPath,'POST',{...realExpensePayload,currency:'GBP',accountId:String(eurAccount),amount:'10'},financeUser)).status,400,'unknown currency codes stay rejected');
+assert.equal((await call(realExpensesPath,'GET',{},financeUser)).expenses.some(expense=>expense.currency==='EUR'),true,'the EUR expense stays in the month list');
 await pg.close();
 console.log('PASS: forecast dates, timezone, fixed-salary authorization, signed salary overrides and per-person members, commercial-term role and integer validation, auditable planned-expense recurrence, revenue/payment segregation, leap/year boundaries, exact totals, zero, no pipeline, invoice/budget dedup, cancelled/draft/archive exclusion, role and tenant isolation; multi-month cash projection and estimated result per currency, contracted versus invoiced per client, six default currencies, partial settings, new versus existing records, real expenses with debits, cash movements, idempotent reversals and tenant isolation, no external writes');
