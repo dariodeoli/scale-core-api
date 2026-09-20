@@ -28,7 +28,10 @@ export async function operations({req,res,url,db,session,body,send,sendInvitatio
  if(!teamRoute&&!commentMatch&&!collaboratorMatch&&!salaryOverrideMatch&&!commissionMatch&&!commissionMonthlyRoute&&!payoutRoute&&!discountMatch&&!jobMatch) return false;
  const user=await session(req);
  if(!user) {send(res,401,{error:'No autenticado'});return true;}
- const allowed=teamRoute&&req.method==='GET' ? true : commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? roleCan(user,'members.manage') : collaboratorMatch ? roleCan(user,'members.manage')||roleCan(user,'finance.view') : roleCan(user,'finance.view');
+ // Comisiones y referidos siguen a `commissions.manage` (el toggle del panel);
+ // `/payouts` también paga honorarios del equipo y queda en finance.view.
+ const commissionsRoute=commissionMatch||commissionMonthlyRoute||discountMatch;
+ const allowed=teamRoute&&req.method==='GET' ? true : commentMatch ? req.method==='GET'||user.role!=='viewer' : jobMatch&&req.method!=='GET' ? roleCan(user,'members.manage') : collaboratorMatch ? roleCan(user,'members.manage')||roleCan(user,'finance.view') : commissionsRoute ? roleCan(user,'commissions.manage') : roleCan(user,'finance.view');
  if(!allowed) {send(res,403,{error:'Tu rol no permite esta operación'});return true;}
  const c=await db.connect();
  try {
