@@ -4,7 +4,7 @@ import {existsSync,lstatSync,mkdtempSync,readFileSync,realpathSync,rmSync} from 
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import pg from 'pg';
-import {agencyCore} from './agency-core.js';
+import {financeControls} from './finance-controls.js';
 
 // pg falls back to PG* even for some explicitly empty options. Strip names only,
 // without reading or printing their values; this affects this standalone process.
@@ -76,7 +76,9 @@ try{
  async function call(method,pathname,payload){
   let response;
   const req={method,socket:{remoteAddress:'127.0.0.1'},headers:{cookie:`scale_session=${token}`}};
-  const handled=await agencyCore({req,res:{},url:new URL(`https://test${pathname}`),db,session,body:async()=>payload,send:(_,status,data)=>{response={status,...data};},cookie:()=>{},parseCookies:()=>({}),id:()=>'fixture',requestSubscription:async()=>({hasAccess:true}),sendInvitation:async()=>true,auditContext:async()=>{},auditedQuery:async()=>({rows:[]})});
+  // Issue #13: cobros y transferencias los sirve finance-controls, que corre antes
+  // que agency-core en server.js; las copias legacy se retiraron.
+  const handled=await financeControls({req,res:{},url:new URL(`https://test${pathname}`),db,session,body:async()=>payload,send:(_,status,data)=>{response={status,...data};}});
   if(handled!==true)console.log('NOT HANDLED',pathname,response);assert.equal(handled,true,pathname);
   return response;
  }
@@ -91,7 +93,7 @@ try{
  const transfers=await Promise.all([call('POST','/api/agency/transfers',{fromAccountId:accountC,toAccountId:accountB,amount:40}),call('POST','/api/agency/transfers',{fromAccountId:accountC,toAccountId:accountB,amount:40})]);
  const transferStatuses=transfers.map(t=>t.status).sort();
  
- assert.deepEqual(transferStatuses,[201,400],`one transfer wins, the other is rejected: ${JSON.stringify(transfers)}`);
+ assert.deepEqual(transferStatuses,[201,409],`one transfer wins, the other is rejected with insufficient funds: ${JSON.stringify(transfers)}`);
  const balances=(await query('select id,balance from bank_accounts where organization_id=$1 order by id',[org])).rows;
  assert.equal(Number(balances.find(row=>Number(row.id)===Number(accountC)).balance),10,'source account never goes negative under concurrency');
  assert.equal(Number(balances.find(row=>Number(row.id)===Number(accountB)).balance),40,'destination receives exactly one transfer');

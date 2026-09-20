@@ -58,6 +58,24 @@ assert.equal((await query('select paid_amount from agency_invoices where id=$1',
 assert.equal((await query('select amount from agency_payments where id=$1',[receipt])).rows[0].amount,'750000.00');
 assert.equal((await call('/api/agency/payments','POST',{invoiceId:invoice,accountId:cash,amount:1000000,reference:'R-2',receivedOn:'2026-09-08'})).status,201);
 assert.equal((await query('select status from agency_invoices where id=$1',[invoice])).rows[0].status,'paid');
+// Issue #13: /api/agency/payments y /api/agency/transfers se resuelven en el
+// módulo financiero (finance-controls corre antes que agency-core en server.js),
+// no en las copias legacy que se retiraron. El helper `call` de arriba acepta
+// cualquier módulo, así que acá se fija el módulo real, su gate y su validación.
+async function financial(path,method='GET',payload={},as=user){
+ let answer=null;
+ const handled=await financeControls({req:{method,headers:{},socket:{remoteAddress:'127.0.0.1'}},res:{},url:new URL('https://test'+path),db,session:async()=>as,body:async()=>payload,send:(_res,status,data)=>{answer={status,...data};}});
+ return {handled,answer};
+}
+for(const path of ['/api/agency/payments','/api/agency/transfers'])assert.equal((await financial(path,'GET')).handled,true,`${path} lo sirve finance-controls`);
+assert.equal((await financial('/api/agency/payments','POST',{invoiceId:invoice,accountId:cash,amount:0})).answer.error,'El importe debe ser mayor a cero','validación del módulo financiero, no la del legacy');
+assert.equal((await financial('/api/agency/payments','GET',{}, {...user,role:'sales'})).answer.error,'Tu rol no permite operar este recurso financiero','gate del módulo financiero, no billing.view');
+assert.equal((await financial('/api/agency/transfers','POST',{fromAccountId:cash,toAccountId:cash,amount:10})).answer.error,'Seleccioná dos cuentas distintas y un importe positivo','validación de transferencias del módulo financiero');
+const coreSource=await fs.readFile(new URL('./agency-core.js',import.meta.url),'utf8');
+for(const path of ['/api/agency/payments','/api/agency/transfers'])assert.ok(!coreSource.includes(`url.pathname === '${path}'`),`${path} ya no tiene handler legacy en agency-core.js`);
+const serverSource=await fs.readFile(new URL('./server.js',import.meta.url),'utf8');
+assert.ok(serverSource.indexOf('financeControls({')<serverSource.indexOf('agencyCore({'),'finance-controls corre antes que agency-core en server.js');
+
 const lines=[{external_id:'bank-1',booked_on:'2026-09-08',amount:750000,reference:'R-1'},{external_id:'bank-2',booked_on:'2026-09-08',amount:-750000,reference:'FX-1'},{external_id:'bank-3',booked_on:'2026-09-08',amount:1000000,reference:'R-2'}];
 assert.equal((await call('/api/agency/reconciliation','POST',{accountId:cash,lines})).imported,3);
 assert.equal((await call('/api/agency/reconciliation','POST',{accountId:cash,lines})).imported,0);
@@ -135,4 +153,4 @@ assert.equal((await query("select count(*)::int as n from agency_operation_audit
 // Apply migration again: no balance changes, no duplicate data.
 await pg.exec(await fs.readFile('migrations/20260908_daily_controls.sql','utf8'));
 assert.equal((await query('select balance from bank_accounts where id=$1',[cash])).rows[0].balance,'1000000.00');
-await pg.close();console.log('PASS: partial receipts, FX, reversal idempotency, insufficient funds, tenant/role isolation, reconciliation import/dedup/matches, client review and publication gate, PDF sections, actor audit, migration re-run');
+await pg.close();console.log('PASS: partial receipts, FX, reversal idempotency, insufficient funds, tenant/role isolation, reconciliation import/dedup/matches, client review and publication gate, PDF sections, actor audit, migration re-run, and payments/transfers routed to finance-controls (no legacy handlers)');
