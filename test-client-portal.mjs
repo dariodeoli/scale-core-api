@@ -69,8 +69,14 @@ assert.equal(session.length,64);
 // CP-4: only links explicitly marked client-visible reach the portal detail.
 await query("insert into agency_work_order_links(organization_id,work_order_id,label,url,created_by_user_id) values($1,$2,'Oculto','https://drive.google.com/oculto',$3)",[org,orderA,owner]);
 await query("insert into agency_work_order_links(organization_id,work_order_id,label,url,created_by_user_id,visible_to_client) values($1,$2,'Aprobación','https://drive.google.com/aprobacion',$3,true)",[org,orderA,owner]);
-// CP-2: only owner/admin/management/production invite portal users.
-assert.equal((await call(`/api/agency/clients/${clientA}/client-portal-invites`,{method:'POST',payload:{email:'no-role@example.invalid'},actor:{...employee,role:'editor'}})).status,403,'viewer or editor roles cannot invite');
+// CP-2 (issue #26): invitar y revocar clientes sigue al ADR — portal-access.manage
+// para owner/admin/management/production; collaborator ya no participa.
+for(const role of ['owner','admin','management','production'])assert.equal((await call(`/api/agency/clients/${clientA}/client-portal-invites`,{method:'POST',payload:{email:`invite-${role}@example.invalid`},actor:{...employee,role}})).status,201,`${role} invita clientes del portal`);
+for(const role of ['collaborator','editor','viewer','finance','sales'])assert.equal((await call(`/api/agency/clients/${clientA}/client-portal-invites`,{method:'POST',payload:{email:'no-role@example.invalid'},actor:{...employee,role}})).status,403,`${role} no invita clientes del portal`);
+assert.equal((await call(`/api/agency/clients/${clientA}/client-portal-invites`,{actor:{...employee,role:'collaborator'}})).status,403,'collaborator tampoco lista los accesos del portal');
+// Publicar entregas y revisiones sigue con portal.manage: collaborator no cambia.
+assert.equal((await call(`/api/agency/work-orders/${orderA}/client-portal-delivery`,{method:'PATCH',payload:{visible:true},actor:{...employee,role:'collaborator'}})).status,200,'collaborator sigue publicando entregas');
+assert.equal((await call(`/api/agency/clients/${clientA}/client-portal-invites`,{method:'POST',payload:{email:'no-role@example.invalid'},actor:{...employee,role:'editor'}})).status,403,'editor no invita clientes del portal');
 // CP-3: a delivery in review can never be published to the portal.
 const orderReview=(await query("insert into agency_work_orders(organization_id,project_id,title,status) values($1,$2,'En revisión','review') returning id",[org,projectA])).rows[0].id;
 assert.equal((await call(`/api/agency/work-orders/${orderReview}/client-portal-delivery`,{method:'POST',payload:{assetUrl:'https://drive.google.com/review',assetName:'Revisión'}})).status,409,'review status is not publishable');

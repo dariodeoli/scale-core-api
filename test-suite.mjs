@@ -126,7 +126,9 @@ assert.equal((await call('/api/agency/dashboard')).inventory[0].total,'2000.00')
 await query("insert into agency_user_profiles(organization_id,user_id,full_name,photo_url) values($1,$2,'Autor local','https://example.invalid/actor.png')",[org,uid]);
 const activity=await call('/api/agency/activity');assert.equal(activity.status,200);assert.ok(activity.records.length>=5);
 const authored=activity.records.find(row=>row.actor===String(uid));assert.equal(authored.actor_name,'Autor local');assert.equal(authored.actor_photo_url,'https://example.invalid/actor.png');assert.equal(authored.actor_verified,true);
-assert.equal((await call('/api/agency/activity','GET',{}, {...user,role:'viewer'})).status,403);
+for(const role of ['owner','admin'])assert.equal((await call('/api/agency/activity','GET',{}, {...user,role})).status,200,`${role} ve la actividad`);
+for(const role of ['viewer','finance','sales','production','editor','collaborator'])assert.equal((await call('/api/agency/activity','GET',{}, {...user,role})).status,403,`${role} no ve la actividad`);
+assert.equal((await call('/api/agency/activity','GET',{}, {...user,role:'management'})).status,403,'gerencia no ve la actividad del equipo');
 assert.equal((await call('/api/agency/activity','GET',{},null)).status,401);
 assert.equal((await call('/api/agency/activity','GET',{}, {...user,organization_id:other})).records.length,0);
 const token='a'.repeat(32);const budget=(await query("insert into agency_budgets(organization_id,client_id,number,title,currency,subtotal,total,public_token) values($1,$2,'Q-TEST','Quote','USD',200,220,$3) returning id",[org,client,token])).rows[0].id;
