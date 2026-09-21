@@ -16,7 +16,7 @@ const insert=async(sql,values)=>String((await query(sql+' returning id',values))
 const org=String((await query("select id from organizations where slug='scale'")).rows[0].id);
 const other=await insert("insert into organizations(slug,name) values('assignees-other','Other')");
 const people={};
-for(const role of ['owner','admin','management','production','editor','viewer','finance','sales']){
+for(const role of ['owner','admin','management','production','collaborator','editor','viewer','finance','sales']){
  const id=await insert("insert into users(email,password_hash) values($1,'unused')",[role+'@assignees.example.invalid']);
  await query('insert into organization_members(organization_id,user_id,role) values($1,$2,$3)',[org,id,role]);
  people[role]={id,organization_id:org,role};
@@ -59,11 +59,13 @@ for(const kind of [projectPath,orderPath]){
  assert.equal((await save(kind,[outsider],outsider)).status,400);
  assert.equal((await save(kind,[people.viewer.id],people.editor.id)).status,400);
  assert.equal((await save(kind,[people.viewer.id],null)).status,400);
- for(const role of ['viewer','finance','sales'])assert.equal((await save(kind,[],null,people[role])).status,403);
- for(const role of ['owner','admin','management','production'])assert.equal((await save(kind,[people.editor.id,people.viewer.id],people.editor.id,people[role])).status,200);
+ // Asignar responsables sigue a assignees.manage (issue #26): mismos defaults.
+ for(const role of ['viewer','finance','sales','editor'])assert.equal((await save(kind,[],null,people[role])).status,403,`${role} no asigna responsables`);
+ for(const role of ['owner','admin','management','production','collaborator'])assert.equal((await save(kind,[people.editor.id,people.viewer.id],people.editor.id,people[role])).status,200,`${role} asigna responsables`);
 }
 assert.equal((await save(projectPath,[],null,people.editor)).status,403);
-assert.equal((await save(orderPath,[people.viewer.id],people.viewer.id,people.editor)).status,200);
+assert.equal((await save(orderPath,[people.viewer.id],people.viewer.id,people.editor)).status,403,'editor no asigna ni en piezas (la capacidad es assignees.manage)');
+assert.equal((await save(orderPath,[people.viewer.id],people.viewer.id,people.collaborator)).status,200,'collaborator sigue asignando como antes');
 assert.deepEqual((await query('select * from organization_members order by organization_id,user_id')).rows,membersBefore,'assignment never changes access or role');
 assert.equal((await save(orderPath,[],null,{...people.viewer,role:'owner'})).status,403,'database role defeats a stale or forged elevated session');
 assert.equal((await save(orderPath,[],null,{...user,role:'viewer'})).status,403,'session role also restricts access');

@@ -35,6 +35,7 @@ export const CAPABILITIES=[
  {id:'inventory.manage',label:'Gestionar inventario',description:'Equipos, categorías y ubicaciones.',roles:['owner','admin','management','production','finance','collaborator']},
  {id:'inventory.book',label:'Reservar equipos',description:'Crear y editar reservas de equipos.',roles:['owner','admin','management','production','collaborator']},
  {id:'studio.manage',label:'Estudio',description:'Espacios y reservas del estudio.',roles:['owner','admin','management','sales','production','collaborator']},
+ {id:'portal-access.manage',label:'Accesos del portal',description:'Invitar y revocar clientes del portal.',roles:['owner','admin','management','production']},
  {id:'portal.manage',label:'Portal del cliente',description:'Publicar entregas y gestionar revisiones.',roles:['owner','admin','management','production','collaborator']},
  {id:'salary.view',label:'Ver salarios',description:'Salarios y ajustes mensuales del equipo.',roles:['owner','admin','finance']},
 ];

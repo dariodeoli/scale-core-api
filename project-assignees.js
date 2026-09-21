@@ -3,10 +3,12 @@ import {roleCan} from './permissions.js';
 
 
 
-const readers='inventory.view',managers='projects.manage';
+// La lectura mantiene su gate actual (sin cambio visible); asignar responsables
+// se gobierna con assignees.manage en proyectos y piezas.
+const readers='inventory.view',writers='assignees.manage';
 const definitions={
- projects:{table:'agency_projects',links:'agency_project_assignees',key:'project_id',writers:'projects.edit'},
- 'work-orders':{table:'agency_work_orders',links:'agency_work_order_assignees',key:'work_order_id',writers:'work-orders.edit'},
+ projects:{table:'agency_projects',links:'agency_project_assignees',key:'project_id'},
+ 'work-orders':{table:'agency_work_orders',links:'agency_work_order_assignees',key:'work_order_id'},
 };
 const definition=kind=>Object.hasOwn(definitions,kind)?definitions[kind]:fail('Tipo de registro inválido');
 function identifier(value,zero=false){
@@ -47,7 +49,7 @@ export async function getRecordAssignees(c,user,kind,key){
  const org=await authorize(c,user);return snapshot(c,kind,await record(c,kind,key,org),org);
 }
 export async function setRecordAssignees(c,user,kind,key,payload){
- const d=definition(kind),org=await authorize(c,user,d.writers);
+ const d=definition(kind),org=await authorize(c,user,writers);
  if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(k=>!['assigned_user_ids','assigned_user_id','expected_version'].includes(k)))fail('Asignación inválida');
  const ids=normalizeAssigneeIds(payload.assigned_user_ids),version=identifier(payload.expected_version,true);
  const r=await record(c,kind,key,org);

@@ -65,7 +65,9 @@ async function validInvite(c,raw,{lock=false}={}){
  if(!invite.client_active||!invite.organization_active)fail('Este enlace venció o fue desactivado.',410);
  return invite;
 }
-function actor(user){if(!user||!roleCan(user,'portal.manage'))fail('Sin permiso para gestionar el portal de clientes',403);}
+// Invitar y revocar clientes sigue al ADR (owner/admin/management/production, sin
+// collaborator); publicar entregas y revisiones sigue con portal.manage.
+function actor(user,capability='portal.manage',message='Sin permiso para gestionar el portal de clientes'){if(!user||!roleCan(user,capability))fail(message,403);}
 async function notifyPortalActivity(c,delivery,{label,body,dedupe}){
  const order=(await c.query('select w.title,w.project_id from agency_work_orders w where w.id=$1 and w.organization_id=$2',[delivery.work_order_id,delivery.organization_id])).rows[0];
  if(!order)return;
@@ -140,7 +142,9 @@ export async function clientPortal({req,res,url,db,session,body,send,sendPasswor
  let c,transaction=false;
  try{
   if(internalInvite||revokeInvite||revokeGrant||internalDelivery){
-   const employee=await session(req);actor(employee);c=await db.connect();await c.query('begin');transaction=true;
+   const employee=await session(req);
+   actor(employee,internalDelivery?'portal.manage':'portal-access.manage',internalDelivery?'Sin permiso para gestionar el portal de clientes':'Sin permiso para gestionar los accesos del portal de clientes');
+   c=await db.connect();await c.query('begin');transaction=true;
    await c.query("select set_config('app.current_user',$1,true),set_config('app.current_ip',$2,true)",[String(employee.id),req.socket.remoteAddress||'']);
    if(internalInvite){
     const client=await owned(c,'agency_clients',internalInvite[1],employee.organization_id);
